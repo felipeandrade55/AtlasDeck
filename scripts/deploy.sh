@@ -6,7 +6,7 @@
 set -eo pipefail
 
 # ─── CONFIGURAÇÃO ─────────────────────────────────────────────────────────────
-VPS_DIR="/.openclaw/workspace/mission-control"
+VPS_DIR="${HOME}/.openclaw/workspace/mission-control"
 BRANCH="main"
 REPO_URL="https://github.com/felipeandrade55/AtlasDeck.git"
 APP_PORT="3000"
