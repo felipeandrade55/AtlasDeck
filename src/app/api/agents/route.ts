@@ -62,6 +62,10 @@ export async function GET() {
     const config = JSON.parse(readFileSync(configPath, "utf-8"));
 
     // Get agents from config
+    if (!config.agents?.list?.length) {
+      return NextResponse.json({ agents: [] });
+    }
+
     const agents: Agent[] = config.agents.list.map((agent: any) => {
       const agentInfo = getAgentDisplayInfo(agent.id, agent);
 
@@ -121,7 +125,7 @@ export async function GET() {
         emoji: agentInfo.emoji,
         color: agentInfo.color,
         model:
-          agent.model?.primary || config.agents.defaults.model.primary,
+          agent.model?.primary || config.agents.defaults?.model?.primary || "claude-3-5-sonnet",
         workspace: agent.workspace,
         dmPolicy:
           telegramAccount?.dmPolicy ||
@@ -137,11 +141,9 @@ export async function GET() {
     });
 
     return NextResponse.json({ agents });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error reading agents:", error);
-    return NextResponse.json(
-      { error: "Failed to load agents" },
-      { status: 500 }
-    );
+    // Config file not found or parse/structure error — degrade gracefully
+    return NextResponse.json({ agents: [] });
   }
 }
