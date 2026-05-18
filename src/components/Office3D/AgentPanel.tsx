@@ -5,11 +5,14 @@ import type { AgentConfig, AgentState } from './agentsConfig';
 
 interface AgentPanelProps {
   agent: AgentConfig;
-  state: AgentState;
+  state?: AgentState;
   onClose: () => void;
 }
 
-export default function AgentPanel({ agent, state, onClose }: AgentPanelProps) {
+const IDLE_STATE: AgentState = { id: '', status: 'idle' };
+
+export default function AgentPanel({ agent, state: stateProp, onClose }: AgentPanelProps) {
+  const state = stateProp ?? IDLE_STATE;
   const getStatusColor = () => {
     switch (state.status) {
       case 'working': return 'text-green-500';

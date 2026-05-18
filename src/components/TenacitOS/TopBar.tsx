@@ -1,15 +1,34 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Search, Bell, User, Command } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Search, Bell, User, Command, LogOut, Settings, ChevronDown } from "lucide-react";
 import { GlobalSearch } from "@/components/GlobalSearch";
 import { NotificationDropdown } from "@/components/NotificationDropdown";
+import { useRouter } from "next/navigation";
 
 const OWNER_NAME = process.env.NEXT_PUBLIC_OWNER_NAME ?? "User";
 const OWNER_INITIAL = OWNER_NAME.charAt(0).toUpperCase();
 
 export function TopBar() {
   const [showSearch, setShowSearch] = useState(false);
+  const [showUserMenu, setShowUserMenu] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement>(null);
+  const router = useRouter();
+
+  const handleLogout = async () => {
+    await fetch("/api/auth/logout", { method: "POST" });
+    router.push("/login");
+  };
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
+        setShowUserMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -121,41 +140,144 @@ export function TopBar() {
           <NotificationDropdown />
 
           {/* User Area */}
-          <div className="flex items-center gap-2">
-            {/* Avatar */}
-            <div
+          <div ref={userMenuRef} style={{ position: "relative" }}>
+            <button
+              onClick={() => setShowUserMenu(!showUserMenu)}
+              className="flex items-center gap-2"
               style={{
-                width: "28px",
-                height: "28px",
-                borderRadius: "14px",
-                backgroundColor: "var(--accent)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                padding: "4px 6px",
+                borderRadius: "8px",
+                backgroundColor: showUserMenu ? "var(--card-elevated)" : "transparent",
               }}
             >
-              <span
+              {/* Avatar */}
+              <div
                 style={{
-                  fontFamily: "var(--font-heading)",
-                  fontSize: "12px",
-                  fontWeight: 700,
-                  color: "var(--text-primary)",
+                  width: "28px",
+                  height: "28px",
+                  borderRadius: "14px",
+                  backgroundColor: "var(--accent)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
                 }}
               >
-                {OWNER_INITIAL}
+                <span
+                  style={{
+                    fontFamily: "var(--font-heading)",
+                    fontSize: "12px",
+                    fontWeight: 700,
+                    color: "var(--text-primary)",
+                  }}
+                >
+                  {OWNER_INITIAL}
+                </span>
+              </div>
+              {/* Name */}
+              <span
+                style={{
+                  fontFamily: "var(--font-body)",
+                  fontSize: "12px",
+                  fontWeight: 500,
+                  color: "var(--text-secondary)",
+                }}
+              >
+                {OWNER_NAME}
               </span>
-            </div>
-            {/* Name */}
-            <span
-              style={{
-                fontFamily: "var(--font-body)",
-                fontSize: "12px",
-                fontWeight: 500,
-                color: "var(--text-secondary)",
-              }}
-            >
-              {OWNER_NAME}
-            </span>
+              <ChevronDown
+                style={{
+                  width: "12px",
+                  height: "12px",
+                  color: "var(--text-muted)",
+                  transform: showUserMenu ? "rotate(180deg)" : "rotate(0deg)",
+                  transition: "transform 0.15s",
+                }}
+              />
+            </button>
+
+            {/* Dropdown */}
+            {showUserMenu && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 8px)",
+                  right: 0,
+                  minWidth: "180px",
+                  backgroundColor: "var(--card)",
+                  border: "1px solid var(--border)",
+                  borderRadius: "10px",
+                  boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+                  overflow: "hidden",
+                  zIndex: 100,
+                }}
+              >
+                {/* User info header */}
+                <div
+                  style={{
+                    padding: "12px 14px",
+                    borderBottom: "1px solid var(--border)",
+                  }}
+                >
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--text-primary)" }}>
+                    {OWNER_NAME}
+                  </div>
+                  <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "2px" }}>
+                    Administrador
+                  </div>
+                </div>
+
+                {/* Menu items */}
+                <div style={{ padding: "6px" }}>
+                  <a
+                    href="/settings"
+                    onClick={() => setShowUserMenu(false)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "10px",
+                      padding: "8px 10px",
+                      borderRadius: "6px",
+                      fontSize: "13px",
+                      color: "var(--text-secondary)",
+                      textDecoration: "none",
+                      cursor: "pointer",
+                    }}
+                    onMouseEnter={e => (e.currentTarget.style.backgroundColor = "var(--card-elevated)")}
+                    onMouseLeave={e => (e.currentTarget.style.backgroundColor = "transparent")}
+                  >
+                    <Settings style={{ width: "14px", height: "14px" }} />
+                    Configurações
+                  </a>
+
+                  <button
+                    onClick={handleLogout}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "10px",
+                      width: "100%",
+                      padding: "8px 10px",
+                      borderRadius: "6px",
+                      fontSize: "13px",
+                      color: "var(--error)",
+                      background: "none",
+                      border: "none",
+                      cursor: "pointer",
+                      textAlign: "left",
+                    }}
+                    onMouseEnter={e => (e.currentTarget.style.backgroundColor = "rgba(255,59,48,0.08)")}
+                    onMouseLeave={e => (e.currentTarget.style.backgroundColor = "transparent")}
+                  >
+                    <LogOut style={{ width: "14px", height: "14px" }} />
+                    Sair
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
