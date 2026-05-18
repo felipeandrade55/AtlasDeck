@@ -1,7 +1,11 @@
 #!/bin/bash
 # deploy.sh — Roda no VPS: baixa atualizações do GitHub, build, restart e health check
 #
-# Uso: ./scripts/deploy.sh
+# Uso: ./scripts/deploy.sh [--bidirecional]
+#
+# Sem flags:        pull destrutivo (GitHub → VPS). Mudanças locais no VPS são descartadas.
+# --bidirecional:   antes do pull, commita e dá push em qualquer alteração feita no VPS,
+#                   sincronizando VPS → GitHub. Requer PAT com escopo 'repo' (write).
 
 set -eo pipefail
 
@@ -12,6 +16,35 @@ REPO_URL="https://github.com/felipeandrade55/AtlasDeck.git"
 APP_PORT="3000"
 APP_NAME="atlasdeck"
 HEALTH_TIMEOUT=90
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ─── PARSE DE ARGUMENTOS ──────────────────────────────────────────────────────
+BIDIRECTIONAL=false
+for arg in "$@"; do
+  case "$arg" in
+    --bidirecional|--bidirectional)
+      BIDIRECTIONAL=true
+      ;;
+    -h|--help)
+      cat <<EOF
+Uso: $0 [opções]
+
+Opções:
+  --bidirecional   Antes de puxar do GitHub, commita e dá push em qualquer
+                   alteração local detectada no VPS (sincronização VPS → GitHub).
+                   Requer PAT com escopo 'repo' (write).
+  -h, --help       Exibe esta ajuda.
+
+Sem flags, opera em modo padrão (apenas pull destrutivo: GitHub → VPS).
+EOF
+      exit 0
+      ;;
+    *)
+      echo "Argumento desconhecido: $arg (use --help)" >&2
+      exit 1
+      ;;
+  esac
+done
 # ─────────────────────────────────────────────────────────────────────────────
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'
@@ -63,6 +96,12 @@ echo "║       AtlasDeck — Update Script          ║"
 echo "╚══════════════════════════════════════════╝"
 echo -e "${NC}"
 
+if $BIDIRECTIONAL; then
+  echo -e "  ${YELLOW}${BOLD}Modo:${NC} ${YELLOW}BIDIRECIONAL${NC} ${DIM}(VPS → GitHub antes do pull)${NC}\n"
+else
+  echo -e "  ${DIM}Modo: padrão (GitHub → VPS, sem push)${NC}\n"
+fi
+
 APP_URL="http://localhost:${APP_PORT}"
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -103,8 +142,42 @@ step "Atualizando código..."
 T=$(now)
 
 if [ -d "$VPS_DIR/.git" ]; then
-  info "Repositório encontrado — baixando atualizações..."
   cd "$VPS_DIR"
+
+  if $BIDIRECTIONAL; then
+    info "Verificando alterações locais no VPS..."
+
+    if [[ -n "$(git status --porcelain)" ]]; then
+      warn "Alterações locais detectadas — enviando para o GitHub antes de puxar"
+
+      # Garante identidade git para o commit automático
+      if [[ -z "$(git config user.email 2>/dev/null)" ]]; then
+        git config user.email "deploy@$(hostname).local"
+        git config user.name "VPS Auto-Sync"
+      fi
+
+      git add -A
+      git commit -m "auto(vps): sync local changes from $(hostname) [$(date +'%Y-%m-%d %H:%M:%S')]"
+
+      # Tenta push direto; se remoto adiantou-se, faz rebase e tenta de novo
+      if ! git push origin "$BRANCH"; then
+        warn "Remoto à frente — sincronizando via rebase..."
+        if ! git pull --rebase origin "$BRANCH"; then
+          err "Conflito durante rebase — abortando para preservar o estado"
+          git rebase --abort 2>/dev/null || true
+          record "Sync bidirecional" "fail" "$(elapsed $T)"
+          exit 1
+        fi
+        git push origin "$BRANCH"
+      fi
+      ok "Alterações do VPS publicadas no GitHub"
+    else
+      info "Sem alterações locais no VPS"
+    fi
+  else
+    info "Repositório encontrado — baixando atualizações..."
+  fi
+
   git fetch origin
   git reset --hard "origin/$BRANCH"
   ok "Código atualizado (branch: $BRANCH)"
@@ -150,8 +223,8 @@ elif git diff HEAD@{1} HEAD --name-only 2>/dev/null | grep -qE "package.*json"; 
 fi
 
 if $NEEDS_INSTALL; then
-  npm install --production=false
-  ok "npm install concluído"
+  npm ci
+  ok "npm ci concluído"
   record "npm install" "ok" "$(elapsed $T)"
 else
   ok "Sem novas dependências"
