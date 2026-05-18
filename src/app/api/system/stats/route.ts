@@ -53,16 +53,16 @@ export async function GET() {
       const { stdout } = await execAsync("tailscale status 2>/dev/null || true");
       vpnActive = stdout.trim().length > 0 && !stdout.includes("Tailscale is stopped");
     } catch {
-      vpnActive = true; // We know it's active
+      vpnActive = false;
     }
 
     // Firewall Status
-    let firewallActive = true;
+    let firewallActive = false;
     try {
       const { stdout } = await execAsync("ufw status 2>/dev/null | head -1 || true");
       firewallActive = stdout.includes("active");
     } catch {
-      firewallActive = true;
+      firewallActive = false;
     }
 
     // Uptime

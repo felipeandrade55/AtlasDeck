@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { execSync } from 'child_process';
 
 import { OPENCLAW_WORKSPACE, WORKSPACE_IDENTITY } from '@/lib/paths';
 
@@ -26,8 +27,22 @@ function parseIdentityMd(): { name: string; creature: string; emoji: string } {
   }
 }
 
+function getLastSessionTime(): string | null {
+  try {
+    const raw = execSync('openclaw sessions list --json 2>/dev/null', { timeout: 4000 }).toString().trim();
+    if (!raw) return null;
+    const sessions: Array<{ updatedAt: number }> = JSON.parse(raw);
+    if (!sessions.length) return null;
+    const latest = sessions.reduce((a, b) => (a.updatedAt > b.updatedAt ? a : b));
+    return new Date(latest.updatedAt).toISOString();
+  } catch {
+    return null;
+  }
+}
+
 function getIntegrationStatus() {
   const integrations = [];
+  const lastSessionTime = getLastSessionTime();
 
   // Telegram — read from openclaw.json (channels.telegram)
   let telegramEnabled = false;
@@ -46,7 +61,7 @@ function getIntegrationStatus() {
     name: 'Telegram',
     status: telegramEnabled ? 'connected' : 'disconnected',
     icon: 'MessageCircle',
-    lastActivity: telegramEnabled ? new Date().toISOString() : null,
+    lastActivity: telegramEnabled ? lastSessionTime : null,
     detail: telegramEnabled ? `${telegramAccounts} bots configured` : null,
   });
 

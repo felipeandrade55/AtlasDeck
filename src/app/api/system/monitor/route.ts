@@ -1,9 +1,39 @@
 import { NextResponse } from "next/server";
 import { exec } from "child_process";
 import { promisify } from "util";
+import { readFileSync } from "fs";
 import os from "os";
 
 const execAsync = promisify(exec);
+
+// ── Per-core CPU from /proc/stat ─────────────────────────────────────────────
+interface CpuCoreStat {
+  user: number; nice: number; system: number; idle: number;
+  iowait: number; irq: number; softirq: number; steal: number;
+}
+interface CpuSnapshot { ts: number; cores: CpuCoreStat[] }
+
+function parseProcStat(): CpuSnapshot {
+  try {
+    const content = readFileSync('/proc/stat', 'utf-8');
+    const lines = content.split('\n').filter((l) => /^cpu\d/.test(l));
+    const cores: CpuCoreStat[] = lines.map((line) => {
+      const parts = line.trim().split(/\s+/).slice(1).map(Number);
+      return { user: parts[0]||0, nice: parts[1]||0, system: parts[2]||0, idle: parts[3]||0, iowait: parts[4]||0, irq: parts[5]||0, softirq: parts[6]||0, steal: parts[7]||0 };
+    });
+    return { ts: Date.now(), cores };
+  } catch {
+    return { ts: Date.now(), cores: os.cpus().map(() => ({ user:0, nice:0, system:0, idle:0, iowait:0, irq:0, softirq:0, steal:0 })) };
+  }
+}
+
+function corePct(prev: CpuCoreStat, curr: CpuCoreStat): number {
+  const pT = prev.user+prev.nice+prev.system+prev.idle+prev.iowait+prev.irq+prev.softirq+prev.steal;
+  const cT = curr.user+curr.nice+curr.system+curr.idle+curr.iowait+curr.irq+curr.softirq+curr.steal;
+  const dT = cT - pT;
+  if (dT <= 0) return 0;
+  return Math.round(Math.max(0, Math.min(100, ((dT - (curr.idle - prev.idle)) / dT) * 100)));
+}
 
 // Services monitored per backend
 const SYSTEMD_SERVICES = ["mission-control"];
@@ -74,6 +104,15 @@ export async function GET() {
     const cpuCount = os.cpus().length;
     const loadAvg = os.loadavg();
     const cpuUsage = Math.min(Math.round((loadAvg[0] / cpuCount) * 100), 100);
+
+    // Per-core % using /proc/stat delta (same pattern as network)
+    const currCpu = parseProcStat();
+    let corePercents: number[] = currCpu.cores.map(() => 0);
+    const prevCpu = (global as Record<string, unknown>).__cpuPrev as CpuSnapshot | undefined;
+    if (prevCpu && prevCpu.cores.length === currCpu.cores.length) {
+      corePercents = currCpu.cores.map((c, i) => corePct(prevCpu.cores[i], c));
+    }
+    (global as Record<string, unknown>).__cpuPrev = currCpu;
 
     // ── RAM ──────────────────────────────────────────────────────────────────
     const totalMem = os.totalmem();
@@ -225,7 +264,7 @@ export async function GET() {
 
     // ── Tailscale VPN ─────────────────────────────────────────────────────────
     let tailscaleActive = false;
-    let tailscaleIp = "100.122.105.85";
+    let tailscaleIp = "";
     const tailscaleDevices: TailscaleDevice[] = [];
     try {
       const { stdout: tsStatus } = await execAsync("tailscale status 2>/dev/null || true");
@@ -285,7 +324,7 @@ export async function GET() {
     return NextResponse.json({
       cpu: {
         usage: cpuUsage,
-        cores: os.cpus().map(() => Math.round(Math.random() * 100)),
+        cores: corePercents,
         loadAvg,
       },
       ram: {
@@ -305,19 +344,12 @@ export async function GET() {
       tailscale: {
         active: tailscaleActive,
         ip: tailscaleIp,
-        devices:
-          tailscaleDevices.length > 0
-            ? tailscaleDevices
-            : [
-                { ip: "100.122.105.85", hostname: "srv1328267", os: "linux", online: true },
-                { ip: "100.106.86.52", hostname: "iphone182", os: "iOS", online: true },
-                { ip: "100.72.14.113", hostname: "macbook-pro-de-carlos", os: "macOS", online: true },
-              ],
+        devices: tailscaleDevices,
       },
       firewall: {
-        active: firewallActive || true,
+        active: firewallActive,
         rules: firewallRulesList.length > 0 ? firewallRulesList : staticFirewallRules,
-        ruleCount: staticFirewallRules.length,
+        ruleCount: firewallRulesList.length > 0 ? firewallRulesList.length : staticFirewallRules.length,
       },
       timestamp: new Date().toISOString(),
     });

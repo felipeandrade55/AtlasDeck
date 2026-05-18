@@ -144,9 +144,12 @@ export function QuickActions({ onActionComplete }: QuickActionsProps) {
 
   return (
     <>
-      <div className="bg-gray-900 rounded-xl p-6">
-        <h2 className="text-xl font-semibold text-white mb-6 flex items-center gap-2">
-          <RefreshCw className="w-5 h-5 text-emerald-400" />
+      <div className="rounded-xl p-6" style={{ backgroundColor: "var(--card)" }}>
+        <h2
+          className="text-xl font-semibold mb-6 flex items-center gap-2"
+          style={{ color: "var(--text-primary)", fontFamily: "var(--font-heading)" }}
+        >
+          <RefreshCw className="w-5 h-5" style={{ color: "var(--accent)" }} />
           Ações Rápidas
         </h2>
 
@@ -210,23 +213,24 @@ export function QuickActions({ onActionComplete }: QuickActionsProps) {
           onClick={() => setLogsModal(null)}
         >
           <div
-            className="bg-gray-900 rounded-xl w-full max-w-3xl max-h-[80vh] flex flex-col"
-            style={{ border: "1px solid var(--border)" }}
+            className="rounded-xl w-full max-w-3xl max-h-[80vh] flex flex-col"
+            style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between p-4 border-b border-gray-800">
-              <h3 className="font-semibold text-white flex items-center gap-2">
-                <FileText className="w-4 h-4 text-emerald-400" />
+            <div className="flex items-center justify-between p-4" style={{ borderBottom: "1px solid var(--border)" }}>
+              <h3 className="font-semibold flex items-center gap-2" style={{ color: "var(--text-primary)" }}>
+                <FileText className="w-4 h-4" style={{ color: "var(--accent)" }} />
                 Logs do Gateway (openclaw-gateway)
               </h3>
               <button
                 onClick={() => setLogsModal(null)}
-                className="text-gray-400 hover:text-white p-1 rounded"
+                className="p-1 rounded transition-colors"
+                style={{ color: "var(--text-muted)" }}
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <pre className="p-4 text-xs font-mono whitespace-pre-wrap overflow-auto flex-1 text-gray-200">
+            <pre className="p-4 text-xs font-mono whitespace-pre-wrap overflow-auto flex-1" style={{ color: "var(--text-primary)" }}>
               {logsModal}
             </pre>
           </div>
