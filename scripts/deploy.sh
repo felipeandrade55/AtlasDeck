@@ -188,6 +188,18 @@ if ! command -v pm2 &>/dev/null; then
   ok "PM2 instalado"
 fi
 
+# Libera a porta se estiver ocupada por processo órfão (fora do PM2)
+ORPHAN_PID=$(lsof -ti :"$APP_PORT" 2>/dev/null | head -1)
+if [[ -n "$ORPHAN_PID" ]]; then
+  PM2_PIDS=$(pm2 list 2>/dev/null | grep -oP '\d+(?=\s+\|)' || true)
+  if ! echo "$PM2_PIDS" | grep -qw "$ORPHAN_PID"; then
+    warn "Porta $APP_PORT ocupada pelo PID $ORPHAN_PID (fora do PM2) — liberando..."
+    kill -9 "$ORPHAN_PID" 2>/dev/null || true
+    sleep 1
+    ok "Porta $APP_PORT liberada"
+  fi
+fi
+
 if pm2 list 2>/dev/null | grep -q "$APP_NAME"; then
   pm2 restart "$APP_NAME" --update-env
   ok "PM2: processo reiniciado"
