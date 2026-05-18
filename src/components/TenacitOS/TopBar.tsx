@@ -5,6 +5,9 @@ import { Search, Bell, User, Command } from "lucide-react";
 import { GlobalSearch } from "@/components/GlobalSearch";
 import { NotificationDropdown } from "@/components/NotificationDropdown";
 
+const OWNER_NAME = process.env.NEXT_PUBLIC_OWNER_NAME ?? "User";
+const OWNER_INITIAL = OWNER_NAME.charAt(0).toUpperCase();
+
 export function TopBar() {
   const [showSearch, setShowSearch] = useState(false);
 
@@ -139,7 +142,7 @@ export function TopBar() {
                   color: "var(--text-primary)",
                 }}
               >
-                C
+                {OWNER_INITIAL}
               </span>
             </div>
             {/* Name */}
@@ -151,7 +154,7 @@ export function TopBar() {
                 color: "var(--text-secondary)",
               }}
             >
-              Carlos
+              {OWNER_NAME}
             </span>
           </div>
         </div>
