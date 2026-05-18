@@ -165,6 +165,13 @@ step "Build..."
 T=$(now)
 
 cd "$VPS_DIR"
+
+# Limpa cache do Next.js para garantir build limpo
+if [ -d ".next" ]; then
+  rm -rf .next
+  info "Cache .next removido"
+fi
+
 npm run build
 ok "Build concluído"
 record "Build" "ok" "$(elapsed $T)"
