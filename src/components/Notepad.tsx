@@ -65,14 +65,14 @@ export function Notepad() {
       }}>
         <StickyNote className="w-3.5 h-3.5" style={{ color: "#fbbf24", flexShrink: 0 }} />
         <span style={{ fontSize: "0.75rem", color: "var(--text-secondary)", flex: 1, fontWeight: 500 }}>
-          Notepad
+          Bloco de Notas
         </span>
         {!saved && (
-          <span style={{ fontSize: "0.65rem", color: "var(--text-muted)" }}>saving...</span>
+          <span style={{ fontSize: "0.65rem", color: "var(--text-muted)" }}>salvando...</span>
         )}
         {saved && lastSaved && (
           <span style={{ fontSize: "0.65rem", color: "var(--text-muted)" }}>
-            saved {lastSaved.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+            salvo às {lastSaved.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
           </span>
         )}
         <button
@@ -88,7 +88,7 @@ export function Notepad() {
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder="Quick notes, reminders, ideas..."
+        placeholder="Notas rápidas, lembretes, ideias..."
         style={{
           flex: 1,
           resize: "none",

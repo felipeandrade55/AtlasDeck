@@ -366,9 +366,9 @@ function SessionDetail({
             }}
           >
             {[
-              { label: `${userCount} user`, color: "var(--accent)" },
-              { label: `${assistantCount} assistant`, color: "#60a5fa" },
-              { label: `${toolCount} tool calls`, color: "#4ade80" },
+              { label: `${userCount} usuário`, color: "var(--accent)" },
+              { label: `${assistantCount} assistente`, color: "#60a5fa" },
+              { label: `${toolCount} chamadas de tool`, color: "#4ade80" },
             ].map(({ label, color }) => (
               <span key={label} style={{ fontSize: "0.72rem", color }}>
                 {label}
@@ -406,7 +406,7 @@ function SessionDetail({
                   animation: "spin 0.8s linear infinite",
                 }}
               />
-              Loading transcript...
+              Carregando transcrição...
             </div>
           )}
 
@@ -439,7 +439,7 @@ function SessionDetail({
               <MessageSquare
                 style={{ width: "40px", height: "40px", margin: "0 auto 0.75rem", opacity: 0.3 }}
               />
-              <p>No messages in this session</p>
+              <p>Nenhuma mensagem nesta sessão</p>
             </div>
           )}
 
@@ -596,10 +596,10 @@ function SessionRow({
 type FilterType = "all" | "main" | "cron" | "subagent" | "direct";
 
 const FILTER_TABS: Array<{ id: FilterType; label: string; emoji: string }> = [
-  { id: "all", label: "All", emoji: "📋" },
-  { id: "main", label: "Main", emoji: "🦞" },
+  { id: "all", label: "Todas", emoji: "📋" },
+  { id: "main", label: "Principal", emoji: "🦞" },
   { id: "cron", label: "Cron", emoji: "🕐" },
-  { id: "subagent", label: "Sub-agents", emoji: "🤖" },
+  { id: "subagent", label: "Sub-agentes", emoji: "🤖" },
   { id: "direct", label: "Chats", emoji: "💬" },
 ];
 
@@ -663,10 +663,10 @@ export default function SessionsPage() {
               marginBottom: "0.25rem",
             }}
           >
-            💬 Session History
+            💬 Histórico de Sessões
           </h1>
           <p style={{ color: "var(--text-secondary)", fontSize: "0.875rem" }}>
-            All OpenClaw agent sessions — main, cron, sub-agents, and chats
+            Todas as sessões dos agentes OpenClaw — principais, cron, sub-agentes e chats
           </p>
         </div>
 
@@ -681,25 +681,25 @@ export default function SessionsPage() {
         >
           {[
             {
-              label: "Total Sessions",
+              label: "Total de Sessões",
               value: sessions.length,
               icon: MessageSquare,
               color: "var(--accent)",
             },
             {
-              label: "Total Tokens",
+              label: "Tokens Totais",
               value: formatTokens(totalTokens),
               icon: Hash,
               color: "#60a5fa",
             },
             {
-              label: "Cron Runs",
+              label: "Execuções Cron",
               value: counts.cron || 0,
               icon: Clock,
               color: "#a78bfa",
             },
             {
-              label: "Models Used",
+              label: "Modelos Utilizados",
               value: uniqueModels.length,
               icon: Bot,
               color: "#4ade80",
@@ -829,7 +829,7 @@ export default function SessionsPage() {
                 <input
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Filter sessions..."
+                  placeholder="Filtrar sessões..."
                   style={{
                     background: "none",
                     border: "none",
@@ -872,13 +872,13 @@ export default function SessionsPage() {
           >
             <div style={{ width: "32px", flexShrink: 0 }} />
             <div style={{ flex: 1, fontSize: "0.7rem", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-              Session
+              Sessão
             </div>
             <div style={{ minWidth: "100px", textAlign: "right", fontSize: "0.7rem", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
               Tokens / ctx
             </div>
             <div style={{ minWidth: "80px", textAlign: "right", fontSize: "0.7rem", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-              Updated
+              Atualizado
             </div>
             <div style={{ width: "14px", flexShrink: 0 }} />
           </div>
@@ -905,7 +905,7 @@ export default function SessionsPage() {
                   animation: "spin 0.8s linear infinite",
                 }}
               />
-              Loading sessions...
+              Carregando sessões...
             </div>
           )}
 
@@ -937,7 +937,7 @@ export default function SessionsPage() {
               <MessageSquare
                 style={{ width: "40px", height: "40px", margin: "0 auto 0.75rem", opacity: 0.3 }}
               />
-              <p>No sessions match your filter</p>
+              <p>Nenhuma sessão corresponde ao filtro</p>
             </div>
           )}
 

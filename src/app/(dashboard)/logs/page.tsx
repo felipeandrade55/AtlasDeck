@@ -112,10 +112,10 @@ export default function LogsPage() {
       {/* Header */}
       <div style={{ padding: "1.5rem 1.5rem 1rem" }}>
         <h1 style={{ fontFamily: "var(--font-heading)", fontSize: "1.75rem", fontWeight: 700, color: "var(--text-primary)", marginBottom: "0.25rem" }}>
-          Log Viewer
+          Visualizador de Logs
         </h1>
         <p style={{ color: "var(--text-secondary)", fontSize: "0.875rem" }}>
-          Real-time log streaming from services
+          Streaming de logs em tempo real dos serviços
         </p>
       </div>
 
@@ -152,7 +152,7 @@ export default function LogsPage() {
         <div style={{ marginLeft: "auto", display: "flex", gap: "0.5rem", alignItems: "center" }}>
           {/* Filter */}
           <input
-            placeholder="Filter logs..."
+            placeholder="Filtrar logs..."
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             style={{
@@ -213,12 +213,12 @@ export default function LogsPage() {
             {streaming ? (
               <>
                 <Square className="w-3.5 h-3.5" />
-                Stop
+                Parar
               </>
             ) : (
               <>
                 <Play className="w-3.5 h-3.5" />
-                Stream
+                Iniciar
               </>
             )}
           </button>
@@ -239,14 +239,14 @@ export default function LogsPage() {
             style={{ fill: streaming ? "#4ade80" : "#6b7280", color: streaming ? "#4ade80" : "#6b7280" }}
           />
           <span style={{ color: streaming ? "#4ade80" : "#6b7280" }}>
-            {streaming ? "LIVE" : "STOPPED"}
+            {streaming ? "AO VIVO" : "PARADO"}
           </span>
         </div>
         <span style={{ color: "#8b949e" }}>
           {selectedService.label} · {selectedService.backend}
         </span>
         <span style={{ color: "#8b949e", marginLeft: "auto" }}>
-          {filteredLines.length} lines{filter && ` (filtered from ${lines.length})`}
+          {filteredLines.length} linhas{filter && ` (filtrado de ${lines.length})`}
         </span>
       </div>
 
@@ -272,7 +272,7 @@ export default function LogsPage() {
         {filteredLines.length === 0 ? (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", color: "#8b949e" }}>
             <Terminal className="w-12 h-12 mb-3 opacity-30" />
-            <p>{streaming ? "Waiting for logs..." : "Click 'Stream' to start live log viewer"}</p>
+            <p>{streaming ? "Aguardando logs..." : "Clique em 'Iniciar' para visualizar logs ao vivo"}</p>
           </div>
         ) : (
           filteredLines.map((l) => (

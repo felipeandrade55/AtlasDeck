@@ -60,17 +60,17 @@ export default function AgentsPage() {
   };
 
   const formatLastActivity = (timestamp?: string) => {
-    if (!timestamp) return "Never";
+    if (!timestamp) return "Nunca";
     const date = new Date(timestamp);
     const now = new Date();
     const diff = now.getTime() - date.getTime();
     const minutes = Math.floor(diff / 60000);
-    if (minutes < 1) return "Just now";
-    if (minutes < 60) return `${minutes}m ago`;
+    if (minutes < 1) return "Agora mesmo";
+    if (minutes < 60) return `há ${minutes}m`;
     const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}h ago`;
+    if (hours < 24) return `há ${hours}h`;
     const days = Math.floor(hours / 24);
-    return `${days}d ago`;
+    return `há ${days}d`;
   };
 
   if (loading) {
@@ -78,7 +78,7 @@ export default function AgentsPage() {
       <div className="p-8">
         <div className="flex items-center justify-center min-h-[400px]">
           <div className="animate-pulse text-lg" style={{ color: "var(--text-muted)" }}>
-            Loading agents...
+            Carregando agentes...
           </div>
         </div>
       </div>
@@ -98,17 +98,17 @@ export default function AgentsPage() {
           }}
         >
           <Users className="inline-block w-8 h-8 mr-2 mb-1" />
-          Agents
+          Agentes
         </h1>
         <p style={{ color: "var(--text-secondary)", fontSize: "14px" }}>
-          Multi-agent system overview • {agents.length} agents configured
+          Visão geral do sistema multi-agente • {agents.length} agentes configurados
         </p>
       </div>
 
       {/* Tab switcher */}
       <div className="flex gap-2 mb-6 border-b" style={{ borderColor: "var(--border)" }}>
         {[
-          { id: "cards" as const, label: "Agent Cards", icon: LayoutGrid },
+          { id: "cards" as const, label: "Cards dos Agentes", icon: LayoutGrid },
           { id: "organigrama" as const, label: "Organigrama", icon: GitBranch },
         ].map(({ id, label, icon: Icon }) => (
           <button
@@ -135,8 +135,8 @@ export default function AgentsPage() {
       {activeTab === "organigrama" && (
         <div className="rounded-xl" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
           <div className="px-5 py-4" style={{ borderBottom: "1px solid var(--border)" }}>
-            <h2 className="font-semibold" style={{ color: "var(--text-primary)" }}>Agent Hierarchy</h2>
-            <p className="text-sm" style={{ color: "var(--text-muted)" }}>Visualization of agent communication allowances</p>
+            <h2 className="font-semibold" style={{ color: "var(--text-primary)" }}>Hierarquia dos Agentes</h2>
+            <p className="text-sm" style={{ color: "var(--text-muted)" }}>Visualização das permissões de comunicação dos agentes</p>
           </div>
           <AgentOrganigrama agents={agents} />
         </div>
@@ -225,7 +225,7 @@ export default function AgentsPage() {
                     className="text-xs font-medium mb-1"
                     style={{ color: "var(--text-muted)" }}
                   >
-                    Model
+                    Modelo
                   </div>
                   <div
                     className="text-sm font-mono truncate"
@@ -247,7 +247,7 @@ export default function AgentsPage() {
                     className="text-xs font-medium mb-1"
                     style={{ color: "var(--text-muted)" }}
                   >
-                    Workspace
+                    Espaço de Trabalho
                   </div>
                   <div
                     className="text-sm font-mono truncate"
@@ -271,7 +271,7 @@ export default function AgentsPage() {
                       className="text-xs font-medium mb-1"
                       style={{ color: "var(--text-muted)" }}
                     >
-                      DM Policy
+                      Política de DM
                     </div>
                     <div
                       className="text-sm font-medium"
@@ -295,7 +295,7 @@ export default function AgentsPage() {
                       className="text-xs font-medium mb-2"
                       style={{ color: "var(--text-muted)" }}
                     >
-                      Can spawn subagents ({agent.allowAgents.length})
+                      Pode criar sub-agentes ({agent.allowAgents.length})
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {agent.allowAgentsDetails && agent.allowAgentsDetails.length > 0 ? (
@@ -345,7 +345,7 @@ export default function AgentsPage() {
                 <div className="flex items-center gap-2">
                   <Activity className="w-4 h-4" style={{ color: "var(--text-muted)" }} />
                   <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-                    Last activity: {formatLastActivity(agent.lastActivity)}
+                    Última atividade: {formatLastActivity(agent.lastActivity)}
                   </span>
                 </div>
                 {agent.activeSessions > 0 && (
@@ -356,7 +356,7 @@ export default function AgentsPage() {
                       color: "var(--success)",
                     }}
                   >
-                    {agent.activeSessions} active
+                    {agent.activeSessions} ativo(s)
                   </span>
                 )}
               </div>

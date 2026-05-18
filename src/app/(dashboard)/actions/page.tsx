@@ -27,45 +27,45 @@ interface QuickAction {
 const ACTIONS: QuickAction[] = [
   {
     id: "heartbeat",
-    label: "Check Heartbeat",
-    description: "Verify all services are up and the site is reachable",
+    label: "Verificar Heartbeat",
+    description: "Verifica se todos os serviços estão ativos e o site está acessível",
     icon: Heart,
     color: "var(--success)",
   },
   {
     id: "git-status",
-    label: "Git Status (All Repos)",
-    description: "Check uncommitted changes in all workspace repositories",
+    label: "Status Git (Todos os Repos)",
+    description: "Verificar mudanças não comitadas em todos os repositórios",
     icon: GitBranch,
     color: "#60A5FA",
   },
   {
     id: "usage-stats",
-    label: "Collect Usage Stats",
-    description: "Get disk, CPU, and memory usage summary",
+    label: "Coletar Estatísticas de Uso",
+    description: "Resumo de uso de disco, CPU e memória",
     icon: BarChart3,
     color: "#C084FC",
   },
   {
     id: "restart-gateway",
-    label: "Restart Gateway",
-    description: "Restart the OpenClaw gateway service",
+    label: "Reiniciar Gateway",
+    description: "Reiniciar o serviço OpenClaw gateway",
     icon: RotateCcw,
     color: "var(--warning, #f59e0b)",
     dangerous: true,
   },
   {
     id: "clear-temp",
-    label: "Clear Temp Files",
-    description: "Remove temporary files and trim large PM2 logs",
+    label: "Limpar Arquivos Temporários",
+    description: "Remover arquivos temporários e reduzir logs grandes do PM2",
     icon: Trash2,
     color: "var(--error)",
     dangerous: true,
   },
   {
     id: "npm-audit",
-    label: "NPM Security Audit",
-    description: "Check for vulnerabilities in mission-control dependencies",
+    label: "Auditoria de Segurança NPM",
+    description: "Verificar vulnerabilidades nas dependências do mission-control",
     icon: Shield,
     color: "#4ADE80",
   },
@@ -120,10 +120,10 @@ export default function ActionsPage() {
           className="text-3xl font-bold mb-2"
           style={{ fontFamily: "var(--font-heading)", color: "var(--text-primary)" }}
         >
-          Quick Actions Hub
+          Ações Rápidas
         </h1>
         <p style={{ color: "var(--text-secondary)" }}>
-          Run common maintenance and diagnostic tasks with one click
+          Execute tarefas comuns de manutenção e diagnóstico com um clique
         </p>
       </div>
 
@@ -178,7 +178,7 @@ export default function ActionsPage() {
                     <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
                   )}
                   <span className="flex-1 truncate">
-                    {result.status === "success" ? "Success" : "Failed"} · {result.duration_ms}ms
+                    {result.status === "success" ? "Sucesso" : "Falhou"} · {result.duration_ms}ms
                   </span>
                   <Clock className="w-3 h-3 flex-shrink-0" />
                   <span style={{ color: "var(--text-muted)" }}>
@@ -212,12 +212,12 @@ export default function ActionsPage() {
                 {isRunning ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    Running...
+                    Executando...
                   </>
                 ) : (
                   <>
                     <Play className="w-4 h-4" />
-                    Run
+                    Executar
                     {action.dangerous && <span style={{ fontSize: "0.7rem", opacity: 0.7 }}>⚠️</span>}
                   </>
                 )}
@@ -232,7 +232,7 @@ export default function ActionsPage() {
         <div className="rounded-xl" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
           <div className="p-4 border-b" style={{ borderColor: "var(--border)" }}>
             <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-              Recent Results
+              Resultados Recentes
             </h2>
           </div>
           <div className="divide-y" style={{ borderColor: "var(--border)" }}>
@@ -302,20 +302,20 @@ export default function ActionsPage() {
               ⚠️ Confirm: {confirmAction.label}
             </h3>
             <p style={{ color: "var(--text-secondary)", marginBottom: "1.5rem", fontSize: "0.9rem" }}>
-              This action may affect running services. Are you sure?
+              Esta ação pode afetar serviços em execução. Tem certeza?
             </p>
             <div style={{ display: "flex", gap: "0.75rem", justifyContent: "flex-end" }}>
               <button
                 onClick={() => setConfirmAction(null)}
                 style={{ padding: "0.5rem 1rem", borderRadius: "0.5rem", background: "var(--card-elevated)", color: "var(--text-secondary)", border: "none", cursor: "pointer" }}
               >
-                Cancel
+                Cancelar
               </button>
               <button
                 onClick={() => executeAction(confirmAction)}
                 style={{ padding: "0.5rem 1rem", borderRadius: "0.5rem", background: "var(--error, #ef4444)", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 }}
               >
-                Run Anyway
+                Executar Assim Mesmo
               </button>
             </div>
           </div>

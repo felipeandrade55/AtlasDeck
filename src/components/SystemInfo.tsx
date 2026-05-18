@@ -54,27 +54,27 @@ export function SystemInfo({ data }: SystemInfoProps) {
   const infoItems = [
     {
       icon: Server,
-      label: "Agent Name",
+      label: "Nome do Agente",
       value: `${data.agent.emoji} ${data.agent.name}`,
       sublabel: data.agent.creature,
     },
     {
       icon: Clock,
-      label: "Uptime",
+      label: "Tempo Ativo",
       value: data.system.uptimeFormatted,
       sublabel: `${data.system.hostname}`,
     },
     {
       icon: Cpu,
-      label: "Node.js Version",
+      label: "Versão Node.js",
       value: data.system.nodeVersion,
       sublabel: data.system.platform,
     },
     {
       icon: Brain,
-      label: "Current Model",
+      label: "Modelo Atual",
       value: data.system.model.split("/").pop() || data.system.model,
-      sublabel: data.system.model.includes("/") ? data.system.model.split("/")[0] : "provider",
+      sublabel: data.system.model.includes("/") ? data.system.model.split("/")[0] : "provedor",
     },
     {
       icon: FolderOpen,
@@ -84,9 +84,9 @@ export function SystemInfo({ data }: SystemInfoProps) {
     },
     {
       icon: HardDrive,
-      label: "Memory",
+      label: "Memória",
       value: `${formatBytes(data.system.memory.used)} / ${formatBytes(data.system.memory.total)}`,
-      sublabel: `${formatBytes(data.system.memory.free)} free`,
+      sublabel: `${formatBytes(data.system.memory.free)} livre`,
     },
   ];
 
@@ -100,7 +100,7 @@ export function SystemInfo({ data }: SystemInfoProps) {
         style={{ color: "var(--text-primary)", fontFamily: "var(--font-heading)" }}
       >
         <Server className="w-5 h-5" style={{ color: "var(--accent)" }} />
-        System Information
+        Informações do Sistema
       </h2>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

@@ -94,7 +94,7 @@ export function ActivityFeed({ limit = 10 }: ActivityFeedProps) {
     return (
       <div className="text-center py-12" style={{ color: 'var(--text-secondary)' }}>
         <Zap className="w-12 h-12 mx-auto mb-4 opacity-50" />
-        <p>No activities logged yet</p>
+        <p>Nenhuma atividade registrada ainda</p>
       </div>
     );
   }
@@ -138,25 +138,25 @@ export function ActivityFeed({ limit = 10 }: ActivityFeedProps) {
                   {activity.type}
                 </span>
                 {activity.status === 'success' && (
-                  <span 
+                  <span
                     className="badge text-[10px] md:text-xs py-0.5 px-1.5 md:px-2 hidden sm:inline-block"
-                    style={{ 
+                    style={{
                       backgroundColor: status.bgColor,
                       color: status.color,
                     }}
                   >
-                    Success
+                    Sucesso
                   </span>
                 )}
                 {activity.status === 'error' && (
-                  <span 
+                  <span
                     className="badge text-[10px] md:text-xs py-0.5 px-1.5 md:px-2"
-                    style={{ 
+                    style={{
                       backgroundColor: status.bgColor,
                       color: status.color,
                     }}
                   >
-                    Error
+                    Erro
                   </span>
                 )}
               </div>

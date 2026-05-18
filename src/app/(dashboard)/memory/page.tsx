@@ -87,7 +87,7 @@ export default function MemoryPage() {
   const handleSelectFile = useCallback(
     async (path: string) => {
       if (hasUnsavedChanges) {
-        const confirmed = window.confirm("You have unsaved changes. Discard them?");
+        const confirmed = window.confirm("Você tem alterações não salvas. Descartar?");
         if (!confirmed) return;
       }
       setSelectedPath(path);
@@ -138,7 +138,7 @@ export default function MemoryPage() {
           Memory Browser
         </h1>
         <p style={{ fontFamily: "var(--font-body)", fontSize: "13px", color: "var(--text-secondary)" }}>
-          Ver y editar archivos de memoria de los agentes
+          Visualize e edite os arquivos de memória dos agentes
         </p>
       </div>
 
@@ -373,7 +373,7 @@ export default function MemoryPage() {
                 >
                   {isLoading ? (
                     <div style={{ padding: "24px", textAlign: "center", color: "var(--text-secondary)" }}>
-                      Loading...
+                      Carregando...
                     </div>
                   ) : error && files.length === 0 ? (
                     <div style={{ padding: "24px", textAlign: "center", color: "var(--negative)" }}>
@@ -420,7 +420,7 @@ export default function MemoryPage() {
                     >
                       <div style={{ textAlign: "center" }}>
                         <Brain style={{ width: "64px", height: "64px", margin: "0 auto 16px", opacity: 0.3 }} />
-                        <p style={{ fontSize: "14px" }}>Selecciona un archivo para ver o editar</p>
+                        <p style={{ fontSize: "14px" }}>Selecione um arquivo para visualizar ou editar</p>
                       </div>
                     </div>
                   )}
@@ -438,7 +438,7 @@ export default function MemoryPage() {
                 fontSize: "14px",
               }}
             >
-              Selecciona un workspace
+              Selecione um workspace
             </div>
           )}
         </main>

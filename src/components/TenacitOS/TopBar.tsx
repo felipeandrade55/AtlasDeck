@@ -113,7 +113,7 @@ export function TopBar() {
                 color: "var(--text-muted)",
               }}
             >
-              Search... ⌘K
+              Buscar... ⌘K
             </span>
           </button>
 

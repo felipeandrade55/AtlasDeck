@@ -41,17 +41,17 @@ export function ChangePasswordModal({
 
     // Validation
     if (!currentPassword || !newPassword || !confirmPassword) {
-      setError("All fields are required");
+      setError("Todos os campos são obrigatórios");
       return;
     }
 
     if (newPassword !== confirmPassword) {
-      setError("New passwords do not match");
+      setError("As novas senhas não coincidem");
       return;
     }
 
     if (newPassword.length < 6) {
-      setError("New password must be at least 6 characters");
+      setError("A nova senha deve ter pelo menos 6 caracteres");
       return;
     }
 
@@ -70,13 +70,13 @@ export function ChangePasswordModal({
       const data = await res.json();
 
       if (!res.ok) {
-        throw new Error(data.error || "Failed to change password");
+        throw new Error(data.error || "Falha ao alterar senha");
       }
 
       resetForm();
       onSuccess();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to change password");
+      setError(err instanceof Error ? err.message : "Falha ao alterar senha");
     } finally {
       setLoading(false);
     }
@@ -100,7 +100,7 @@ export function ChangePasswordModal({
             <div className="p-2 bg-emerald-500/10 rounded-lg">
               <Key className="w-5 h-5 text-emerald-400" />
             </div>
-            <h2 className="text-xl font-semibold text-white">Change Password</h2>
+            <h2 className="text-xl font-semibold text-white">Alterar Senha</h2>
           </div>
           <button
             onClick={handleClose}
@@ -123,7 +123,7 @@ export function ChangePasswordModal({
           {/* Current Password */}
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-2">
-              Current Password
+              Senha Atual
             </label>
             <div className="relative">
               <input
@@ -131,7 +131,7 @@ export function ChangePasswordModal({
                 value={currentPassword}
                 onChange={(e) => setCurrentPassword(e.target.value)}
                 className="w-full px-4 py-3 pr-12 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500"
-                placeholder="Enter current password"
+                placeholder="Digite a senha atual"
               />
               <button
                 type="button"
@@ -150,7 +150,7 @@ export function ChangePasswordModal({
           {/* New Password */}
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-2">
-              New Password
+              Nova Senha
             </label>
             <div className="relative">
               <input
@@ -158,7 +158,7 @@ export function ChangePasswordModal({
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 className="w-full px-4 py-3 pr-12 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500"
-                placeholder="Enter new password"
+                placeholder="Digite a nova senha"
               />
               <button
                 type="button"
@@ -177,7 +177,7 @@ export function ChangePasswordModal({
           {/* Confirm Password */}
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-2">
-              Confirm New Password
+              Confirmar Nova Senha
             </label>
             <div className="relative">
               <input
@@ -185,7 +185,7 @@ export function ChangePasswordModal({
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 className="w-full px-4 py-3 pr-12 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500"
-                placeholder="Confirm new password"
+                placeholder="Confirme a nova senha"
               />
               <button
                 type="button"
@@ -208,7 +208,7 @@ export function ChangePasswordModal({
               onClick={handleClose}
               className="flex-1 px-4 py-3 bg-gray-800 text-gray-300 rounded-lg font-medium hover:bg-gray-700 transition-colors"
             >
-              Cancel
+              Cancelar
             </button>
             <button
               type="submit"
@@ -218,10 +218,10 @@ export function ChangePasswordModal({
               {loading ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  Updating...
+                  Atualizando...
                 </>
               ) : (
-                "Update Password"
+                "Atualizar Senha"
               )}
             </button>
           </div>

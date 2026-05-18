@@ -43,17 +43,17 @@ const skills = [
 ];
 
 const personality = [
-  { trait: "Direct", desc: "Straight to the point" },
-  { trait: "Efficient", desc: "Results over process" },
-  { trait: "Curious", desc: "Always learning" },
-  { trait: "Loyal", desc: "Your success is my success" },
+  { trait: "Direto", desc: "Vai direto ao ponto" },
+  { trait: "Eficiente", desc: "Resultados acima de processos" },
+  { trait: "Curioso", desc: "Sempre aprendendo" },
+  { trait: "Leal", desc: "Seu sucesso é meu sucesso" },
 ];
 
 const philosophies = [
-  "Actions over words. Less 'I can help you' and more actually helping.",
-  "Having opinions is fine. An assistant with no personality is just a search engine with extra steps.",
-  "Try before asking. Read the file, search, explore — then ask if needed.",
-  "Privacy is sacred. Access ≠ permission to share.",
+  "Ações falam mais que palavras. Menos 'posso te ajudar' e mais ajuda de verdade.",
+  "Ter opiniões é saudável. Um assistente sem personalidade é só um buscador com passos extras.",
+  "Tente antes de perguntar. Leia o arquivo, pesquise, explore — depois pergunte se necessário.",
+  "Privacidade é sagrada. Acesso ≠ permissão para compartilhar.",
 ];
 
 export default function AboutPage() {
@@ -165,7 +165,7 @@ export default function AboutPage() {
               {BRANDING.birthDate && (
                 <span className="flex items-center justify-center sm:justify-start gap-1.5">
                   <Calendar className="w-4 h-4" />
-                  Born {new Date(BRANDING.birthDate).toLocaleDateString("en-US", {
+                  Criado em {new Date(BRANDING.birthDate).toLocaleDateString("pt-BR", {
                     year: "numeric",
                     month: "long",
                     day: "numeric",
@@ -214,7 +214,7 @@ export default function AboutPage() {
               {uptime}
             </div>
             <div className="text-xs" style={{ color: "var(--text-muted)" }}>
-              uptime
+              tempo ativo
             </div>
           </div>
         )}
@@ -240,7 +240,7 @@ export default function AboutPage() {
             {stats?.totalActivities.toLocaleString() || "..."}
           </div>
           <div className="text-xs" style={{ color: "var(--text-muted)" }}>
-            activities
+            atividades
           </div>
         </div>
 
@@ -265,7 +265,7 @@ export default function AboutPage() {
             {stats?.successRate || "..."}%
           </div>
           <div className="text-xs" style={{ color: "var(--text-muted)" }}>
-            success rate
+            taxa de sucesso
           </div>
         </div>
 
@@ -290,7 +290,7 @@ export default function AboutPage() {
             {stats?.skillsCount || "..."}
           </div>
           <div className="text-xs" style={{ color: "var(--text-muted)" }}>
-            skills
+            habilidades
           </div>
         </div>
       </div>
@@ -313,7 +313,7 @@ export default function AboutPage() {
                 color: "var(--text-primary)",
               }}
             >
-              About
+              Sobre
             </h2>
           </div>
           <div
@@ -321,25 +321,25 @@ export default function AboutPage() {
             style={{ color: "var(--text-secondary)", lineHeight: 1.7 }}
           >
             <p>
-              I am{" "}
+              Sou{" "}
               <strong style={{ color: "var(--text-primary)" }}>
                 {agentName} {agentEmoji}
               </strong>
-              , an AI agent running on{" "}
-              <span style={{ color: "var(--accent)" }}>OpenClaw</span> with
-              Claude as my brain.
+              , um agente de IA rodando em{" "}
+              <span style={{ color: "var(--accent)" }}>OpenClaw</span> com
+              Claude como meu cérebro.
             </p>
             <p>
-              My purpose is to assist{" "}
+              Meu propósito é auxiliar{" "}
               <strong style={{ color: "var(--text-primary)" }}>
                 {ownerUsername}
               </strong>{" "}
-              with daily tasks: managing communications, scheduling, research,
-              file management, and acting as a digital co-pilot.
+              nas tarefas do dia a dia: gerenciar comunicações, agenda, pesquisas,
+              arquivos, e atuar como um co-piloto digital.
             </p>
             <p>
-              I have access to workspaces, calendars, and integrations — a
-              privilege I handle with care and respect.
+              Tenho acesso a workspaces, calendários e integrações — um
+              privilégio que trato com cuidado e respeito.
             </p>
           </div>
         </div>
@@ -361,7 +361,7 @@ export default function AboutPage() {
                 color: "var(--text-primary)",
               }}
             >
-              Personality
+              Personalidade
             </h2>
           </div>
           <div className="grid grid-cols-2 gap-2 md:gap-3">
@@ -406,7 +406,7 @@ export default function AboutPage() {
               color: "var(--text-primary)",
             }}
           >
-            Working Philosophy
+            Filosofia de Trabalho
           </h2>
         </div>
         <div className="grid md:grid-cols-2 gap-2 md:gap-3">
@@ -447,7 +447,7 @@ export default function AboutPage() {
               color: "var(--text-primary)",
             }}
           >
-            Capabilities
+            Capacidades
           </h2>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-3">
@@ -492,7 +492,7 @@ export default function AboutPage() {
             className="text-sm md:text-base"
             style={{ color: "var(--text-secondary)" }}
           >
-            Built with <span style={{ color: "var(--accent)" }}>♥</span> on{" "}
+            Feito com <span style={{ color: "var(--accent)" }}>♥</span> em{" "}
             <a
               href="https://github.com/openclaw/openclaw"
               target="_blank"
@@ -504,7 +504,7 @@ export default function AboutPage() {
           </span>
         </div>
         <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-          {agentName} {agentEmoji} — Your AI co-pilot
+          {agentName} {agentEmoji} — Seu co-piloto com IA
         </p>
       </div>
     </div>

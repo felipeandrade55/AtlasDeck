@@ -143,7 +143,7 @@ export default function SystemMonitorPage() {
       <div className="flex items-center justify-center min-h-[60vh]">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 mx-auto mb-4" style={{ borderColor: "var(--accent)" }}></div>
-          <p style={{ color: "var(--text-secondary)" }}>Loading system data...</p>
+          <p style={{ color: "var(--text-secondary)" }}>Carregando dados do sistema...</p>
         </div>
       </div>
     );
@@ -154,7 +154,7 @@ export default function SystemMonitorPage() {
       <div className="flex items-center justify-center min-h-[60vh]">
         <div className="text-center">
           <Server className="w-16 h-16 mx-auto mb-4" style={{ color: "var(--text-muted)" }} />
-          <p style={{ color: "var(--text-secondary)" }}>Failed to load system data</p>
+          <p style={{ color: "var(--text-secondary)" }}>Falha ao carregar dados do sistema</p>
         </div>
       </div>
     );
@@ -188,9 +188,9 @@ export default function SystemMonitorPage() {
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-3xl font-bold mb-2" style={{ fontFamily: "var(--font-heading)", color: "var(--text-primary)" }}>
-            System Monitor
+            Monitor do Sistema
           </h1>
-          <p style={{ color: "var(--text-secondary)" }}>Real-time monitoring of server resources and services</p>
+          <p style={{ color: "var(--text-secondary)" }}>Monitoramento em tempo real dos recursos e serviços do servidor</p>
         </div>
         <div className="flex items-center gap-2 mt-1">
           <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium" style={{ backgroundColor: "rgba(34,197,94,0.12)", color: "var(--success)" }}>
@@ -205,7 +205,7 @@ export default function SystemMonitorPage() {
 
       {/* Tabs */}
       <div className="flex gap-2 border-b" style={{ borderColor: "var(--border)" }}>
-        {[{ id: "hardware", label: "Hardware", icon: Cpu }, { id: "services", label: "Services", icon: Server }].map((tab) => {
+        {[{ id: "hardware", label: "Hardware", icon: Cpu }, { id: "services", label: "Serviços", icon: Server }].map((tab) => {
           const Icon = tab.icon;
           const isActive = selectedTab === tab.id;
           return (
@@ -243,7 +243,7 @@ export default function SystemMonitorPage() {
               <div className="h-full transition-all duration-500" style={{ width: `${systemData.cpu.usage}%`, backgroundColor: cpuColor }} />
             </div>
             <div className="flex justify-between text-sm" style={{ color: "var(--text-secondary)" }}>
-              <span>Load Average</span>
+              <span>Carga Média</span>
               <span>{systemData.cpu.loadAvg[0].toFixed(2)} / {systemData.cpu.loadAvg[1].toFixed(2)} / {systemData.cpu.loadAvg[2].toFixed(2)}</span>
             </div>
           </div>
@@ -339,16 +339,16 @@ export default function SystemMonitorPage() {
           <div className="p-6 rounded-xl" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
             <h3 className="text-lg font-semibold mb-4 flex items-center gap-2" style={{ color: "var(--text-primary)" }}>
               <Server className="w-5 h-5" style={{ color: "var(--accent)" }} />
-              Services ({activeServices}/{systemData.systemd.length} active)
+              Serviços ({activeServices}/{systemData.systemd.length} ativos)
             </h3>
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
                   <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                    <th className="text-left py-2 px-3 text-sm font-medium" style={{ color: "var(--text-secondary)" }}>Service</th>
-                    <th className="text-left py-2 px-3 text-sm font-medium" style={{ color: "var(--text-secondary)" }}>Description</th>
+                    <th className="text-left py-2 px-3 text-sm font-medium" style={{ color: "var(--text-secondary)" }}>Serviço</th>
+                    <th className="text-left py-2 px-3 text-sm font-medium" style={{ color: "var(--text-secondary)" }}>Descrição</th>
                     <th className="text-left py-2 px-3 text-sm font-medium" style={{ color: "var(--text-secondary)" }}>Status</th>
-                    <th className="text-right py-2 px-3 text-sm font-medium" style={{ color: "var(--text-secondary)" }}>Actions</th>
+                    <th className="text-right py-2 px-3 text-sm font-medium" style={{ color: "var(--text-secondary)" }}>Ações</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -479,17 +479,17 @@ export default function SystemMonitorPage() {
                 <div>
                   <h3 className="font-semibold" style={{ color: "var(--text-primary)" }}>Tailscale VPN</h3>
                   <p className="text-sm" style={{ color: systemData.tailscale.active ? "var(--success)" : "var(--error)" }}>
-                    {systemData.tailscale.active ? "Active" : "Inactive"}
+                    {systemData.tailscale.active ? "Ativo" : "Inativo"}
                   </p>
                 </div>
               </div>
               <div className="space-y-2 mb-4">
                 <div className="flex justify-between text-sm">
-                  <span style={{ color: "var(--text-secondary)" }}>This server</span>
+                  <span style={{ color: "var(--text-secondary)" }}>Este servidor</span>
                   <span className="font-mono" style={{ color: "var(--text-primary)" }}>{systemData.tailscale.ip}</span>
                 </div>
                 <div className="flex justify-between text-sm">
-                  <span style={{ color: "var(--text-secondary)" }}>Devices connected</span>
+                  <span style={{ color: "var(--text-secondary)" }}>Dispositivos conectados</span>
                   <span style={{ color: "var(--text-primary)" }}>{systemData.tailscale.devices.length}</span>
                 </div>
               </div>
@@ -521,7 +521,7 @@ export default function SystemMonitorPage() {
                 <div>
                   <h3 className="font-semibold" style={{ color: "var(--text-primary)" }}>Firewall (UFW)</h3>
                   <p className="text-sm" style={{ color: systemData.firewall.active ? "var(--success)" : "var(--error)" }}>
-                    {systemData.firewall.active ? "Active" : "Inactive"}
+                    {systemData.firewall.active ? "Ativo" : "Inativo"}
                   </p>
                 </div>
               </div>
@@ -601,7 +601,7 @@ export default function SystemMonitorPage() {
                   color: "#c9d1d9", whiteSpace: "pre-wrap", wordBreak: "break-all",
                   lineHeight: 1.6,
                 }}>
-                  {logsModal.content || "No log output"}
+                  {logsModal.content || "Sem saída de log"}
                 </pre>
               )}
             </div>

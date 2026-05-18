@@ -80,10 +80,10 @@ const statusConfig: Record<string, { icon: React.ComponentType<{ className?: str
 const allTypes = ["file", "search", "message", "command", "security", "build", "task", "cron", "memory"];
 
 const datePresets = [
-  { label: "Today", days: 0 },
-  { label: "Last 7 days", days: 7 },
-  { label: "Last 30 days", days: 30 },
-  { label: "All time", days: -1 },
+  { label: "Hoje", days: 0 },
+  { label: "Últimos 7 dias", days: 7 },
+  { label: "Últimos 30 dias", days: 30 },
+  { label: "Todo o período", days: -1 },
 ];
 
 function formatDuration(ms: number): string {
@@ -243,9 +243,9 @@ export default function ActivityPage() {
             color: 'var(--text-primary)',
             fontFamily: 'var(--font-heading)'
           }}>
-            Activity Log
+            Registro de Atividades
           </h1>
-          <p style={{ color: 'var(--text-secondary)' }}>Complete history of agent actions</p>
+          <p style={{ color: 'var(--text-secondary)' }}>Histórico completo das ações dos agentes</p>
         </div>
         <a
           href="/api/activities?format=csv&limit=10000"
@@ -259,7 +259,7 @@ export default function ActivityPage() {
           }}
         >
           <Download className="w-4 h-4" />
-          Export CSV
+          Exportar CSV
         </a>
       </div>
 
@@ -274,7 +274,7 @@ export default function ActivityPage() {
       }}>
         <div className="flex items-center gap-3 md:gap-4 mb-3 md:mb-4">
           <Calendar className="w-4 h-4 md:w-5 md:h-5" style={{ color: 'var(--text-secondary)' }} />
-          <span className="text-xs md:text-sm" style={{ color: 'var(--text-secondary)' }}>Date Range</span>
+          <span className="text-xs md:text-sm" style={{ color: 'var(--text-secondary)' }}>Período</span>
         </div>
         
         <div className="flex flex-wrap items-center gap-2 md:gap-3">
@@ -318,7 +318,7 @@ export default function ActivityPage() {
                 outline: 'none'
               }}
             />
-            <span style={{ color: 'var(--text-muted)' }}>to</span>
+            <span style={{ color: 'var(--text-muted)' }}>até</span>
             <input
               type="date"
               value={endDate}
@@ -346,7 +346,7 @@ export default function ActivityPage() {
       }}>
         <div className="flex items-center gap-3 md:gap-4 mb-3 md:mb-4">
           <Filter className="w-5 h-5" style={{ color: 'var(--text-secondary)' }} />
-          <span style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>Filter by Type</span>
+          <span style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>Filtrar por Tipo</span>
           {selectedTypes.size > 0 && (
             <button
               onClick={clearTypeFilters}
@@ -359,7 +359,7 @@ export default function ActivityPage() {
                 cursor: 'pointer'
               }}
             >
-              Clear all
+              Limpar
             </button>
           )}
         </div>
@@ -412,10 +412,10 @@ export default function ActivityPage() {
             cursor: 'pointer'
           }}
         >
-          <option value="all">All Statuses</option>
-          <option value="success">Success</option>
-          <option value="error">Error</option>
-          <option value="pending">Pending</option>
+          <option value="all">Todos os Status</option>
+          <option value="success">Sucesso</option>
+          <option value="error">Erro</option>
+          <option value="pending">Pendente</option>
         </select>
 
         <button
@@ -434,11 +434,11 @@ export default function ActivityPage() {
           }}
         >
           <ArrowUpDown className="w-4 h-4" />
-          <span>{sort === "newest" ? "Newest first" : "Oldest first"}</span>
+          <span>{sort === "newest" ? "Mais recente" : "Mais antigo"}</span>
         </button>
 
         <div className="text-xs md:text-sm w-full md:w-auto md:ml-auto mt-2 md:mt-0" style={{ color: 'var(--text-muted)' }}>
-          Showing {activities.length} of {total} activities
+          Exibindo {activities.length} de {total} atividades
         </div>
       </div>
 
@@ -447,7 +447,7 @@ export default function ActivityPage() {
         {activities.length === 0 && (
           <div style={{ textAlign: 'center', padding: '3rem 0', color: 'var(--text-secondary)' }}>
             <Zap className="w-12 h-12" style={{ margin: '0 auto 1rem', opacity: 0.5 }} />
-            <p>No activities found</p>
+            <p>Nenhuma atividade encontrada</p>
           </div>
         )}
 
@@ -529,7 +529,7 @@ export default function ActivityPage() {
                       gap: '0.25rem'
                     }}>
                       <ChevronDown className="w-3 h-3" />
-                      View metadata
+                      Ver metadados
                     </summary>
                     <pre style={{
                       marginTop: '0.5rem',
@@ -579,12 +579,12 @@ export default function ActivityPage() {
             {loadingMore ? (
               <>
                 <RefreshCw className="w-4 h-4 animate-spin" />
-                Loading...
+                Carregando...
               </>
             ) : (
               <>
                 <ChevronDown className="w-4 h-4" />
-                Load more activities
+                Carregar mais atividades
               </>
             )}
           </button>
@@ -594,7 +594,7 @@ export default function ActivityPage() {
       {/* End of list indicator */}
       {!hasMore && activities.length > 0 && (
         <div style={{ textAlign: 'center', marginTop: '1.5rem', color: 'var(--text-muted)', fontSize: '0.875rem' }}>
-          — End of activity log —
+          — Fim do registro de atividades —
         </div>
       )}
     </div>

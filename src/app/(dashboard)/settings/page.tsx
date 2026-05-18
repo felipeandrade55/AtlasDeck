@@ -75,10 +75,10 @@ export default function SettingsPage() {
             style={{ color: "var(--text-primary)", fontFamily: "var(--font-heading)" }}
           >
             <Settings className="w-6 h-6 md:w-8 md:h-8" style={{ color: "var(--accent)" }} />
-            Settings
+            Configurações
           </h1>
           <p className="text-sm md:text-base" style={{ color: "var(--text-secondary)" }}>
-            System status, integrations, and configuration
+            Status do sistema, integrações e configurações
           </p>
         </div>
 
@@ -93,14 +93,14 @@ export default function SettingsPage() {
           }}
         >
           <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-          Refresh
+          Atualizar
         </button>
       </div>
 
       {/* Last Refresh Time */}
       {lastRefresh && (
         <div className="text-sm mb-6" style={{ color: "var(--text-muted)" }}>
-          Last updated: {lastRefresh.toLocaleTimeString()}
+          Última atualização: {lastRefresh.toLocaleTimeString()}
         </div>
       )}
 

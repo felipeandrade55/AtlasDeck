@@ -95,7 +95,7 @@ export default function GitPage() {
             Git Dashboard
           </h1>
           <p style={{ color: "var(--text-secondary)", fontSize: "14px" }}>
-            {repos.length} repositories · {dirtyRepos.length} with changes
+            {repos.length} repositórios · {dirtyRepos.length} com alterações
           </p>
         </div>
         <button
@@ -109,7 +109,7 @@ export default function GitPage() {
           }}
         >
           <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} />
-          Refresh
+          Atualizar
         </button>
       </div>
 
@@ -120,7 +120,7 @@ export default function GitPage() {
       ) : repos.length === 0 ? (
         <div style={{ textAlign: "center", padding: "3rem", color: "var(--text-muted)" }}>
           <FolderGit2 className="w-12 h-12 mx-auto mb-3 opacity-30" />
-          <p>No git repos found in workspace</p>
+          <p>Nenhum repositório git encontrado no workspace</p>
         </div>
       ) : (
         <div className="space-y-4">
@@ -154,17 +154,17 @@ export default function GitPage() {
                     </div>
                     {repo.ahead > 0 && (
                       <span className="flex items-center gap-0.5 text-xs" style={{ color: "var(--success)" }}>
-                        <ArrowUp className="w-3 h-3" /> {repo.ahead} ahead
+                        <ArrowUp className="w-3 h-3" /> {repo.ahead} à frente
                       </span>
                     )}
                     {repo.behind > 0 && (
                       <span className="flex items-center gap-0.5 text-xs" style={{ color: "var(--warning, #f59e0b)" }}>
-                        <ArrowDown className="w-3 h-3" /> {repo.behind} behind
+                        <ArrowDown className="w-3 h-3" /> {repo.behind} atrás
                       </span>
                     )}
                     {!repo.isDirty && (
                       <span className="flex items-center gap-1 text-xs" style={{ color: "var(--success)" }}>
-                        <CheckCircle className="w-3 h-3" /> clean
+                        <CheckCircle className="w-3 h-3" /> limpo
                       </span>
                     )}
                     {repo.isDirty && (
@@ -225,33 +225,33 @@ export default function GitPage() {
                         {repo.staged.slice(0, 5).map((f) => (
                           <div key={f} className="text-xs font-mono truncate" style={{ color: "var(--text-secondary)" }}>{f}</div>
                         ))}
-                        {repo.staged.length > 5 && <div className="text-xs" style={{ color: "var(--text-muted)" }}>+{repo.staged.length - 5} more</div>}
+                        {repo.staged.length > 5 && <div className="text-xs" style={{ color: "var(--text-muted)" }}>+{repo.staged.length - 5} mais</div>}
                       </div>
                     </div>
                   )}
                   {repo.unstaged.length > 0 && (
                     <div>
                       <div className="text-xs font-semibold mb-1" style={{ color: "#fbbf24" }}>
-                        Modified ({repo.unstaged.length})
+                        Modificados ({repo.unstaged.length})
                       </div>
                       <div className="space-y-0.5">
                         {repo.unstaged.slice(0, 5).map((f) => (
                           <div key={f} className="text-xs font-mono truncate" style={{ color: "var(--text-secondary)" }}>{f}</div>
                         ))}
-                        {repo.unstaged.length > 5 && <div className="text-xs" style={{ color: "var(--text-muted)" }}>+{repo.unstaged.length - 5} more</div>}
+                        {repo.unstaged.length > 5 && <div className="text-xs" style={{ color: "var(--text-muted)" }}>+{repo.unstaged.length - 5} mais</div>}
                       </div>
                     </div>
                   )}
                   {repo.untracked.length > 0 && (
                     <div>
                       <div className="text-xs font-semibold mb-1" style={{ color: "var(--text-muted)" }}>
-                        Untracked ({repo.untracked.length})
+                        Não rastreados ({repo.untracked.length})
                       </div>
                       <div className="space-y-0.5">
                         {repo.untracked.slice(0, 5).map((f) => (
                           <div key={f} className="text-xs font-mono truncate" style={{ color: "var(--text-secondary)" }}>{f}</div>
                         ))}
-                        {repo.untracked.length > 5 && <div className="text-xs" style={{ color: "var(--text-muted)" }}>+{repo.untracked.length - 5} more</div>}
+                        {repo.untracked.length > 5 && <div className="text-xs" style={{ color: "var(--text-muted)" }}>+{repo.untracked.length - 5} mais</div>}
                       </div>
                     </div>
                   )}

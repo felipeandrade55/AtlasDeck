@@ -21,7 +21,7 @@ function formatSize(bytes: number): string {
 
 function formatDate(iso: string): string {
   const d = new Date(iso);
-  return d.toLocaleDateString("es-ES", {
+  return d.toLocaleDateString("pt-BR", {
     day: "numeric",
     month: "short",
     year: "numeric",
@@ -105,10 +105,10 @@ export default function ReportsPage() {
                 fontFamily: "var(--font-heading)",
               }}
             >
-              Reports
+              Relatórios
             </h1>
             <p className="text-xs md:text-sm hidden sm:block" style={{ color: "var(--text-secondary)" }}>
-              Analysis reports and insights
+              Relatórios de análise e insights
             </p>
           </div>
         </div>
@@ -141,16 +141,16 @@ export default function ReportsPage() {
               className="text-sm font-semibold uppercase tracking-wide"
               style={{ color: "var(--text-secondary)" }}
             >
-              {isLoading ? "Loading..." : `${reports.length} Reports`}
+              {isLoading ? "Carregando..." : `${reports.length} Relatórios`}
             </h2>
           </div>
 
           {!isLoading && reports.length === 0 && (
             <div className="p-6 text-center" style={{ color: "var(--text-muted)" }}>
               <FileBarChart className="w-12 h-12 mx-auto mb-3 opacity-30" />
-              <p>No reports found</p>
+              <p>Nenhum relatório encontrado</p>
               <p className="text-xs mt-1">
-                Reports matching *-analysis-* or *-report-* patterns in memory/ will appear here
+                Relatórios com padrões *-analysis-* ou *-report-* em memory/ aparecerão aqui
               </p>
             </div>
           )}
@@ -258,7 +258,7 @@ export default function ReportsPage() {
                 className="flex items-center justify-center h-full"
                 style={{ color: "var(--text-secondary)" }}
               >
-                Loading report...
+                Carregando relatório...
               </div>
             ) : (
               <MarkdownPreview content={content} />
@@ -270,7 +270,7 @@ export default function ReportsPage() {
             >
               <div className="text-center">
                 <FileBarChart className="w-16 h-16 mx-auto mb-4 opacity-30" />
-                <p className="text-lg">Select a report to preview</p>
+                <p className="text-lg">Selecione um relatório para visualizar</p>
               </div>
             </div>
           )}

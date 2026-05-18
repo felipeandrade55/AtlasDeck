@@ -195,11 +195,11 @@ fi
 record "PM2 restart" "ok" "$(elapsed $T)"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FASE 6 — HEALTH CHECK
+# FASE 6 — HEALTH CHECK: DASHBOARD
 # ══════════════════════════════════════════════════════════════════════════════
-step "Health check — aguardando $APP_URL..."
+step "Health check — aguardando dashboard ($APP_URL)..."
 T=$(now)
-HEALTH_OK=false
+DASH_OK=false
 LAST_CODE="000"
 
 for i in $(seq 1 $HEALTH_TIMEOUT); do
@@ -207,10 +207,10 @@ for i in $(seq 1 $HEALTH_TIMEOUT); do
     --connect-timeout 2 --max-time 4 "$APP_URL" 2>/dev/null || echo "000")
 
   if [[ "$LAST_CODE" =~ ^(200|301|302|307|308)$ ]]; then
-    HEALTH_OK=true
+    DASH_OK=true
     echo ""
-    ok "App online — HTTP $LAST_CODE (${i}s)"
-    record "Health check" "ok" "$(elapsed $T)"
+    ok "Dashboard online — HTTP $LAST_CODE (${i}s)"
+    record "Dashboard" "ok" "$(elapsed $T)"
     break
   fi
 
@@ -221,10 +221,79 @@ done
 
 echo ""
 
-if ! $HEALTH_OK; then
-  err "App não respondeu após ${HEALTH_TIMEOUT}s (último HTTP: $LAST_CODE)"
+if ! $DASH_OK; then
+  err "Dashboard não respondeu após ${HEALTH_TIMEOUT}s (último HTTP: $LAST_CODE)"
   warn "Veja os logs: pm2 logs $APP_NAME --lines 80"
-  record "Health check" "fail" "$(elapsed $T)"
+  record "Dashboard" "fail" "$(elapsed $T)"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FASE 7 — HEALTH CHECK: SERVIÇOS VIA /api/health
+# ══════════════════════════════════════════════════════════════════════════════
+step "Health check — serviços internos (/api/health)..."
+T=$(now)
+
+HEALTH_JSON=$(curl -s --connect-timeout 5 --max-time 10 \
+  "$APP_URL/api/health" 2>/dev/null || echo "")
+
+if [[ -n "$HEALTH_JSON" ]] && echo "$HEALTH_JSON" | grep -q '"status"'; then
+  OVERALL=$(echo "$HEALTH_JSON" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+  case "$OVERALL" in
+    healthy)  ok "Status geral: HEALTHY"; record "Serviços (/api/health)" "ok" "$(elapsed $T)" ;;
+    degraded) warn "Status geral: DEGRADED"; record "Serviços (/api/health)" "fail" "$(elapsed $T)" ;;
+    critical) err "Status geral: CRITICAL"; record "Serviços (/api/health)" "fail" "$(elapsed $T)" ;;
+    *)        warn "Status geral: $OVERALL"; record "Serviços (/api/health)" "skip" "$(elapsed $T)" ;;
+  esac
+
+  # Exibe cada serviço individualmente
+  echo ""
+  echo -e "  ${DIM}Detalhes dos serviços:${NC}"
+  echo "$HEALTH_JSON" | grep -o '"name":"[^"]*","status":"[^"]*"' | while IFS= read -r line; do
+    SVC_NAME=$(echo "$line" | cut -d'"' -f4)
+    SVC_STATUS=$(echo "$line" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+    case "$SVC_STATUS" in
+      up)      echo -e "    ${GREEN}✓${NC} $SVC_NAME" ;;
+      down)    echo -e "    ${RED}✗${NC} $SVC_NAME" ;;
+      degraded)echo -e "    ${YELLOW}⚠${NC} $SVC_NAME" ;;
+      *)       echo -e "    ${DIM}–${NC} $SVC_NAME ($SVC_STATUS)" ;;
+    esac
+  done
+  echo ""
+else
+  warn "Não foi possível consultar /api/health (dashboard ainda iniciando?)"
+  record "Serviços (/api/health)" "skip" "$(elapsed $T)"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FASE 8 — HEALTH CHECK: OPENCLAW CLI
+# ══════════════════════════════════════════════════════════════════════════════
+step "Health check — OpenClaw..."
+T=$(now)
+
+# Gateway via systemd
+GATEWAY_STATUS=$(systemctl is-active openclaw-gateway 2>/dev/null || echo "unknown")
+if [[ "$GATEWAY_STATUS" == "active" ]]; then
+  ok "openclaw-gateway: active (systemd)"
+  record "OpenClaw Gateway" "ok" "$(elapsed $T)"
+else
+  warn "openclaw-gateway: $GATEWAY_STATUS"
+  record "OpenClaw Gateway" "fail" "$(elapsed $T)"
+fi
+
+# OpenClaw CLI status
+if command -v openclaw &>/dev/null; then
+  OPENCLAW_OUT=$(openclaw status 2>/dev/null | head -5 || echo "")
+  if [[ -n "$OPENCLAW_OUT" ]]; then
+    ok "openclaw status:"
+    echo "$OPENCLAW_OUT" | while IFS= read -r line; do
+      echo -e "    ${DIM}$line${NC}"
+    done
+  else
+    warn "openclaw status não retornou saída"
+  fi
+else
+  warn "CLI 'openclaw' não encontrada no PATH"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -233,7 +302,7 @@ fi
 echo ""
 if print_report; then
   echo -e "\n  ${GREEN}${BOLD}🚀 Update concluído com sucesso!${NC}"
-  echo -e "  ${DIM}App rodando em: ${APP_URL}${NC}\n"
+  echo -e "  ${DIM}Dashboard: ${APP_URL}${NC}\n"
 else
   echo -e "\n  ${YELLOW}${BOLD}⚠ Update com problemas — veja o relatório acima.${NC}\n"
 fi

@@ -94,7 +94,7 @@ export default function SkillsPage() {
             marginBottom: "4px",
           }}
         >
-          Skills Manager
+          Gerenciador de Skills
         </h1>
         <p
           style={{
@@ -103,7 +103,7 @@ export default function SkillsPage() {
             color: "var(--text-secondary)",
           }}
         >
-          Skills disponibles en el sistema OpenClaw
+          Skills disponíveis no sistema OpenClaw
         </p>
       </div>
 
@@ -116,17 +116,17 @@ export default function SkillsPage() {
           marginBottom: "24px",
         }}
       >
-        <MetricCard icon={Puzzle} value={skills.length} label="Total Skills" />
+        <MetricCard icon={Puzzle} value={skills.length} label="Total de Skills" />
         <MetricCard
           icon={FolderOpen}
           value={workspaceCount}
-          label="Workspace Skills"
+          label="Skills de Workspace"
           changeColor="positive"
         />
         <MetricCard
           icon={Package}
           value={systemCount}
-          label="System Skills"
+          label="Skills do Sistema"
           changeColor="secondary"
         />
       </div>
@@ -225,7 +225,7 @@ export default function SkillsPage() {
               transition: "all 150ms ease",
             }}
           >
-            System ({systemCount})
+            Sistema ({systemCount})
           </button>
         </div>
       </div>
@@ -248,14 +248,14 @@ export default function SkillsPage() {
               margin: "0 auto 16px",
             }}
           />
-          <p style={{ color: "var(--text-secondary)" }}>No se encontraron skills</p>
+          <p style={{ color: "var(--text-secondary)" }}>Nenhuma skill encontrada</p>
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "32px" }}>
           {/* Workspace Skills */}
           {workspaceSkills.length > 0 && (filterSource === "all" || filterSource === "workspace") && (
             <div>
-              <SectionHeader label="WORKSPACE SKILLS" />
+              <SectionHeader label="SKILLS DO WORKSPACE" />
               <div
                 style={{
                   display: "grid",
@@ -274,7 +274,7 @@ export default function SkillsPage() {
           {/* System Skills */}
           {systemSkills.length > 0 && (filterSource === "all" || filterSource === "system") && (
             <div>
-              <SectionHeader label="SYSTEM SKILLS" />
+              <SectionHeader label="SKILLS DO SISTEMA" />
               <div
                 style={{
                   display: "grid",
@@ -412,7 +412,7 @@ function SkillCard({ skill, onClick }: { skill: Skill; onClick: () => void }) {
               color: "var(--text-muted)",
             }}
           >
-            {skill.fileCount} files
+            {skill.fileCount} arquivos
           </span>
         </div>
         {skill.homepage && (
@@ -502,7 +502,7 @@ function SkillDetailModal({ skill, onClose }: { skill: Skill; onClose: () => voi
               </p>
               <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                 <div className="badge-positive">{skill.source}</div>
-                <div className="badge-info">{skill.fileCount} archivos</div>
+                <div className="badge-info">{skill.fileCount} arquivos</div>
                 {skill.agents && skill.agents.length > 0 && skill.agents.map((agent) => (
                   <div
                     key={agent}
@@ -554,7 +554,7 @@ function SkillDetailModal({ skill, onClose }: { skill: Skill; onClose: () => voi
               marginBottom: "12px",
             }}
           >
-            Archivos ({skill.files.length})
+            Arquivos ({skill.files.length})
           </h3>
           <div
             style={{

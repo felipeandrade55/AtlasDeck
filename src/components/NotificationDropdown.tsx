@@ -238,10 +238,10 @@ export function NotificationDropdown() {
                   marginBottom: "2px",
                 }}
               >
-                Notifications
+                Notificações
               </h3>
               <p style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                {unreadCount > 0 ? `${unreadCount} unread` : "All caught up!"}
+                {unreadCount > 0 ? `${unreadCount} não lida(s)` : "Tudo em dia!"}
               </p>
             </div>
 
@@ -250,7 +250,7 @@ export function NotificationDropdown() {
               {unreadCount > 0 && (
                 <button
                   onClick={markAllAsRead}
-                  title="Mark all as read"
+                  title="Marcar todas como lidas"
                   style={{
                     padding: "6px",
                     borderRadius: "6px",
@@ -278,7 +278,7 @@ export function NotificationDropdown() {
               {notifications.some((n) => n.read) && (
                 <button
                   onClick={clearRead}
-                  title="Clear read notifications"
+                  title="Limpar notificações lidas"
                   style={{
                     padding: "6px",
                     borderRadius: "6px",
@@ -318,7 +318,7 @@ export function NotificationDropdown() {
                   color: "var(--text-muted)",
                 }}
               >
-                Loading...
+                Carregando...
               </div>
             )}
 
@@ -335,7 +335,7 @@ export function NotificationDropdown() {
                 }}
               >
                 <Bell size={48} style={{ opacity: 0.3, marginBottom: "12px" }} />
-                <p style={{ fontSize: "14px" }}>No notifications yet</p>
+                <p style={{ fontSize: "14px" }}>Nenhuma notificação ainda</p>
               </div>
             )}
 
@@ -441,7 +441,7 @@ export function NotificationDropdown() {
                               e.stopPropagation();
                               markAsRead(notification.id);
                             }}
-                            title="Mark as read"
+                            title="Marcar como lida"
                             style={{
                               padding: "4px",
                               borderRadius: "4px",
@@ -471,7 +471,7 @@ export function NotificationDropdown() {
                             e.stopPropagation();
                             deleteNotification(notification.id);
                           }}
-                          title="Delete"
+                          title="Excluir"
                           style={{
                             padding: "4px",
                             borderRadius: "4px",

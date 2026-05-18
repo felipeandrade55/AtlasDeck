@@ -40,7 +40,7 @@ export function QuickActions({ onActionComplete }: QuickActionsProps) {
 
   const handleRestartGateway = async () => {
     // Placeholder - would call openclaw gateway restart
-    showNotification("success", "Gateway restart command sent (placeholder)");
+    showNotification("success", "Comando de reinicialização enviado (placeholder)");
   };
 
   const handleClearActivityLog = async () => {
@@ -54,10 +54,10 @@ export function QuickActions({ onActionComplete }: QuickActionsProps) {
 
       if (!res.ok) throw new Error("Failed to clear log");
 
-      showNotification("success", "Activity log cleared successfully");
+      showNotification("success", "Registro de atividades limpo com sucesso");
       onActionComplete?.();
     } catch {
-      showNotification("error", "Failed to clear activity log");
+      showNotification("error", "Falha ao limpar registro de atividades");
     } finally {
       setLoadingAction(null);
     }
@@ -65,13 +65,13 @@ export function QuickActions({ onActionComplete }: QuickActionsProps) {
 
   const handleViewLogs = async () => {
     // Placeholder - would open gateway logs
-    showNotification("success", "Opening gateway logs... (placeholder)");
+    showNotification("success", "Abrindo logs do gateway... (placeholder)");
   };
 
   const actions: ActionButton[] = [
     {
       id: "restart",
-      label: "Restart Gateway",
+      label: "Reiniciar Gateway",
       icon: RefreshCw,
       color: "blue",
       action: handleRestartGateway,
@@ -79,14 +79,14 @@ export function QuickActions({ onActionComplete }: QuickActionsProps) {
     },
     {
       id: "clear_log",
-      label: "Clear Activity Log",
+      label: "Limpar Registro de Atividades",
       icon: Trash2,
       color: "yellow",
       action: handleClearActivityLog,
     },
     {
       id: "view_logs",
-      label: "View Gateway Logs",
+      label: "Ver Logs do Gateway",
       icon: FileText,
       color: "emerald",
       action: handleViewLogs,
@@ -94,7 +94,7 @@ export function QuickActions({ onActionComplete }: QuickActionsProps) {
     },
     {
       id: "change_password",
-      label: "Change Password",
+      label: "Alterar Senha",
       icon: Key,
       color: "red",
       action: () => setShowPasswordModal(true),
@@ -115,7 +115,7 @@ export function QuickActions({ onActionComplete }: QuickActionsProps) {
       <div className="bg-gray-900 rounded-xl p-6">
         <h2 className="text-xl font-semibold text-white mb-6 flex items-center gap-2">
           <RefreshCw className="w-5 h-5 text-emerald-400" />
-          Quick Actions
+          Ações Rápidas
         </h2>
 
         {/* Notification */}
@@ -169,7 +169,7 @@ export function QuickActions({ onActionComplete }: QuickActionsProps) {
         isOpen={showPasswordModal}
         onClose={() => setShowPasswordModal(false)}
         onSuccess={() => {
-          showNotification("success", "Password changed successfully");
+          showNotification("success", "Senha alterada com sucesso");
           setShowPasswordModal(false);
         }}
       />

@@ -217,7 +217,7 @@ export function StatusBar() {
             color: "var(--text-muted)",
           }}
         >
-          Uptime: {stats.uptime}
+          Ativo: {stats.uptime}
         </span>
       </div>
     </div>

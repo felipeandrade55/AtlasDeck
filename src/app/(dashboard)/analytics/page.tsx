@@ -39,7 +39,7 @@ export default function AnalyticsPage() {
             className="w-8 h-8 border-2 border-t-transparent rounded-full animate-spin"
             style={{ borderColor: "var(--accent)", borderTopColor: "transparent" }}
           />
-          <span style={{ color: "var(--text-secondary)" }}>Loading analytics...</span>
+          <span style={{ color: "var(--text-secondary)" }}>Carregando analytics...</span>
         </div>
       </div>
     );
@@ -48,7 +48,7 @@ export default function AnalyticsPage() {
   if (!data) {
     return (
       <div className="p-4 md:p-8" style={{ backgroundColor: "var(--background)" }}>
-        <p style={{ color: "var(--error)" }}>Failed to load analytics data</p>
+        <p style={{ color: "var(--error)" }}>Falha ao carregar dados de analytics</p>
       </div>
     );
   }
@@ -69,7 +69,7 @@ export default function AnalyticsPage() {
           📊 Analytics
         </h1>
         <p className="text-sm md:text-base" style={{ color: "var(--text-secondary)" }}>
-          Insights and trends from agent activity
+          Insights e tendências da atividade dos agentes
         </p>
       </div>
 
@@ -79,7 +79,7 @@ export default function AnalyticsPage() {
           className="rounded-xl p-3 md:p-4"
           style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
         >
-          <p className="text-xs md:text-sm mb-1" style={{ color: "var(--text-secondary)" }}>Total This Week</p>
+          <p className="text-xs md:text-sm mb-1" style={{ color: "var(--text-secondary)" }}>Total Esta Semana</p>
           <p className="text-xl md:text-2xl font-bold" style={{ color: "var(--text-primary)" }}>
             {totalThisWeek}
           </p>
@@ -88,7 +88,7 @@ export default function AnalyticsPage() {
           className="rounded-xl p-3 md:p-4"
           style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
         >
-          <p className="text-xs md:text-sm mb-1" style={{ color: "var(--text-secondary)" }}>Most Active Day</p>
+          <p className="text-xs md:text-sm mb-1" style={{ color: "var(--text-secondary)" }}>Dia Mais Ativo</p>
           <p className="text-xl md:text-2xl font-bold" style={{ color: "var(--accent)" }}>
             {mostActiveDay}
           </p>
@@ -97,7 +97,7 @@ export default function AnalyticsPage() {
           className="rounded-xl p-3 md:p-4"
           style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
         >
-          <p className="text-xs md:text-sm mb-1" style={{ color: "var(--text-secondary)" }}>Top Activity Type</p>
+          <p className="text-xs md:text-sm mb-1" style={{ color: "var(--text-secondary)" }}>Tipo Mais Frequente</p>
           <p className="text-xl md:text-2xl font-bold capitalize" style={{ color: "var(--info)" }}>
             {data.byType[0]?.type || "-"}
           </p>
@@ -106,7 +106,7 @@ export default function AnalyticsPage() {
           className="rounded-xl p-3 md:p-4"
           style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
         >
-          <p className="text-xs md:text-sm mb-1" style={{ color: "var(--text-secondary)" }}>Success Rate</p>
+          <p className="text-xs md:text-sm mb-1" style={{ color: "var(--text-secondary)" }}>Taxa de Sucesso</p>
           <p className="text-xl md:text-2xl font-bold" style={{ color: "var(--success)" }}>
             {data.successRate.toFixed(0)}%
           </p>
@@ -126,7 +126,7 @@ export default function AnalyticsPage() {
               className="text-lg md:text-xl font-bold"
               style={{ color: "var(--text-primary)", fontFamily: "var(--font-heading)" }}
             >
-              Activity Over Time
+              Atividade ao Longo do Tempo
             </h2>
           </div>
           <ActivityLineChart data={data.byDay} />
@@ -143,7 +143,7 @@ export default function AnalyticsPage() {
               className="text-lg md:text-xl font-bold"
               style={{ color: "var(--text-primary)", fontFamily: "var(--font-heading)" }}
             >
-              Activity by Type
+              Atividade por Tipo
             </h2>
           </div>
           <ActivityPieChart data={data.byType} />
@@ -160,7 +160,7 @@ export default function AnalyticsPage() {
               className="text-lg md:text-xl font-bold"
               style={{ color: "var(--text-primary)", fontFamily: "var(--font-heading)" }}
             >
-              Activity by Hour
+              Atividade por Hora
             </h2>
           </div>
           <HourlyHeatmap data={data.byHour} />
@@ -177,7 +177,7 @@ export default function AnalyticsPage() {
               className="text-lg md:text-xl font-bold"
               style={{ color: "var(--text-primary)", fontFamily: "var(--font-heading)" }}
             >
-              Success Rate
+              Taxa de Sucesso
             </h2>
           </div>
           <SuccessRateGauge rate={data.successRate} />

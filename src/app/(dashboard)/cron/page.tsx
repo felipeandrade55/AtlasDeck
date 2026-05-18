@@ -94,14 +94,14 @@ export default function CronJobsPage() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4 md:mb-8">
         <div>
-          <h1 className="text-2xl md:text-3xl font-bold mb-1" style={{ 
+          <h1 className="text-2xl md:text-3xl font-bold mb-1" style={{
             color: 'var(--text-primary)',
             fontFamily: 'var(--font-heading)'
           }}>
-            Cron Jobs
+            Tarefas Agendadas
           </h1>
           <p className="text-sm md:text-base" style={{ color: 'var(--text-secondary)' }}>
-            Scheduled tasks from OpenClaw Gateway
+            Tarefas programadas do OpenClaw Gateway
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -174,7 +174,7 @@ export default function CronJobsPage() {
             }}
           >
             <RefreshCw className="w-4 h-4" />
-            Refresh
+            Atualizar
           </button>
         </div>
       </div>
@@ -195,7 +195,7 @@ export default function CronJobsPage() {
           </div>
           <div>
             <p style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--text-primary)' }}>{jobs.length}</p>
-            <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>Total Jobs</p>
+            <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>Total</p>
           </div>
         </div>
         <div style={{
@@ -212,7 +212,7 @@ export default function CronJobsPage() {
           </div>
           <div>
             <p style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--text-primary)' }}>{activeJobs}</p>
-            <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>Active</p>
+            <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>Ativos</p>
           </div>
         </div>
         <div style={{
@@ -229,7 +229,7 @@ export default function CronJobsPage() {
           </div>
           <div>
             <p style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--text-primary)' }}>{pausedJobs}</p>
-            <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>Paused</p>
+            <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>Pausados</p>
           </div>
         </div>
       </div>
@@ -249,7 +249,7 @@ export default function CronJobsPage() {
           <AlertCircle className="w-5 h-5" style={{ color: 'var(--error)' }} />
           <span style={{ color: 'var(--error)' }}>{error}</span>
           <button onClick={() => setError(null)} style={{ marginLeft: 'auto', color: 'var(--error)', background: 'none', border: 'none', cursor: 'pointer' }}>
-            Dismiss
+            Fechar
           </button>
         </div>
       )}
@@ -267,10 +267,10 @@ export default function CronJobsPage() {
         <div style={{ textAlign: 'center', padding: '4rem 0' }}>
           <Clock className="w-8 h-8 mx-auto mb-4" style={{ color: 'var(--text-muted)' }} />
           <h3 style={{ fontSize: '1.125rem', fontWeight: 500, color: 'var(--text-primary)', marginBottom: '0.5rem' }}>
-            No cron jobs found
+            Nenhuma tarefa agendada encontrada
           </h3>
           <p style={{ color: 'var(--text-secondary)' }}>
-            Create cron jobs via Telegram or the OpenClaw CLI
+            Crie tarefas via Telegram ou OpenClaw CLI
           </p>
         </div>
       ) : viewMode === "timeline" ? (
@@ -302,7 +302,7 @@ export default function CronJobsPage() {
                 fontFamily: 'var(--font-heading)',
               }}
             >
-              7-Day Schedule Overview
+              Programação dos Próximos 7 Dias
             </h2>
             <span
               style={{
@@ -314,7 +314,7 @@ export default function CronJobsPage() {
                 borderRadius: '0.35rem',
               }}
             >
-              All times in local timezone
+              Horários no fuso local
             </span>
           </div>
           <CronWeeklyTimeline jobs={jobs} />
@@ -341,15 +341,15 @@ export default function CronJobsPage() {
                   zIndex: 10,
                 }}>
                   <div style={{ textAlign: 'center' }}>
-                    <p style={{ color: 'var(--text-primary)', marginBottom: '1rem' }}>Delete &quot;{job.name}&quot;?</p>
+                    <p style={{ color: 'var(--text-primary)', marginBottom: '1rem' }}>Excluir &quot;{job.name}&quot;?</p>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                       <button onClick={() => setDeleteConfirm(null)}
                         style={{ padding: '0.5rem 1rem', color: 'var(--text-secondary)', background: 'none', border: 'none', borderRadius: '0.5rem', cursor: 'pointer' }}>
-                        Cancel
+                        Cancelar
                       </button>
                       <button onClick={() => handleDelete(job.id)}
                         style={{ padding: '0.5rem 1rem', backgroundColor: 'var(--error)', color: 'var(--text-primary)', border: 'none', borderRadius: '0.5rem', cursor: 'pointer' }}>
-                        Delete
+                        Excluir
                       </button>
                     </div>
                   </div>
@@ -390,8 +390,8 @@ export default function CronJobsPage() {
             style={{ color: runToast.status === "success" ? 'var(--success)' : 'var(--error)' }}
           />
           {runToast.status === "success"
-            ? `✓ "${runToast.name}" triggered!`
-            : `✗ Failed to trigger "${runToast.name}"`}
+            ? `✓ "${runToast.name}" disparado!`
+            : `✗ Falha ao disparar "${runToast.name}"`}
         </div>
       )}
 

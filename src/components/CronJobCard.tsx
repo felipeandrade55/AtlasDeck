@@ -118,7 +118,7 @@ export function CronJobCard({ job, onToggle, onDelete, onRun }: CronJobCardProps
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return "—";
     const date = new Date(dateStr);
-    return date.toLocaleString("es-ES", {
+    return date.toLocaleString("pt-BR", {
       weekday: "short",
       month: "short",
       day: "numeric",
@@ -137,18 +137,18 @@ export function CronJobCard({ job, onToggle, onDelete, onRun }: CronJobCardProps
     const hours = Math.floor(minutes / 60);
     const days = Math.floor(hours / 24);
 
-    if (diff < 0) return "overdue";
-    if (days > 0) return `in ${days}d ${hours % 24}h`;
-    if (hours > 0) return `in ${hours}h ${minutes % 60}m`;
-    if (minutes > 0) return `in ${minutes}m`;
-    return "now";
+    if (diff < 0) return "atrasado";
+    if (days > 0) return `em ${days}d ${hours % 24}h`;
+    if (hours > 0) return `em ${hours}h ${minutes % 60}m`;
+    if (minutes > 0) return `em ${minutes}m`;
+    return "agora";
   };
 
   const agentEmoji = AGENT_EMOJI[job.agentId] || "🤖";
 
   const formatHistoryDate = (dateStr: string | null) => {
     if (!dateStr) return "—";
-    return new Date(dateStr).toLocaleString("es-ES", {
+    return new Date(dateStr).toLocaleString("pt-BR", {
       month: "short",
       day: "numeric",
       hour: "2-digit",
@@ -196,7 +196,7 @@ export function CronJobCard({ job, onToggle, onDelete, onRun }: CronJobCardProps
                   color: job.enabled ? 'var(--success)' : 'var(--text-secondary)'
                 }}
               >
-                {job.enabled ? "Active" : "Paused"}
+                {job.enabled ? "Ativo" : "Pausado"}
               </span>
             </div>
             <p className="text-xs md:text-sm mt-0.5 md:mt-1 line-clamp-2" style={{ color: 'var(--text-secondary)' }}>
@@ -208,7 +208,7 @@ export function CronJobCard({ job, onToggle, onDelete, onRun }: CronJobCardProps
           <button
             onClick={handleToggle}
             disabled={isToggling}
-            title={job.enabled ? "Pause job" : "Enable job"}
+            title={job.enabled ? "Pausar tarefa" : "Ativar tarefa"}
             className="p-1.5 md:p-2 rounded-lg flex-shrink-0"
             style={{
               border: 'none',
@@ -253,7 +253,7 @@ export function CronJobCard({ job, onToggle, onDelete, onRun }: CronJobCardProps
         {job.enabled && job.nextRun && (
           <div className="flex flex-wrap items-center gap-1 md:gap-2 text-xs md:text-sm mb-2 md:mb-4">
             <Calendar className="w-3.5 h-3.5 md:w-4 md:h-4" style={{ color: 'var(--type-cron)' }} />
-            <span style={{ color: 'var(--text-secondary)' }}>Next:</span>
+            <span style={{ color: 'var(--text-secondary)' }}>Próxima:</span>
             <span style={{ color: 'var(--text-primary)' }}>{formatDate(job.nextRun)}</span>
             <span style={{ color: 'var(--type-cron)' }}>({getRelativeTime(job.nextRun)})</span>
           </div>
@@ -274,12 +274,12 @@ export function CronJobCard({ job, onToggle, onDelete, onRun }: CronJobCardProps
           {expanded ? (
             <>
               <ChevronUp className="w-3.5 h-3.5 md:w-4 md:h-4" />
-              <span>Hide details</span>
+              <span>Ocultar detalhes</span>
             </>
           ) : (
             <>
               <ChevronDown className="w-3.5 h-3.5 md:w-4 md:h-4" />
-              <span>Show details</span>
+              <span>Ver detalhes</span>
             </>
           )}
         </button>
@@ -292,17 +292,17 @@ export function CronJobCard({ job, onToggle, onDelete, onRun }: CronJobCardProps
               <code style={{ color: 'var(--text-secondary)', fontSize: '0.7rem' }}>{job.id}</code>
             </div>
             <div>
-              <span style={{ color: 'var(--text-muted)' }}>Agent: </span>
+              <span style={{ color: 'var(--text-muted)' }}>Agente: </span>
               <span style={{ color: 'var(--text-secondary)' }}>{agentEmoji} {job.agentId}</span>
             </div>
             {job.lastRun && (
               <div>
-                <span style={{ color: 'var(--text-muted)' }}>Last run: </span>
+                <span style={{ color: 'var(--text-muted)' }}>Última execução: </span>
                 <span style={{ color: 'var(--text-secondary)' }}>{formatDate(job.lastRun)}</span>
               </div>
             )}
             <div>
-              <span style={{ color: 'var(--text-muted)' }}>Timezone: </span>
+              <span style={{ color: 'var(--text-muted)' }}>Fuso horário: </span>
               <span style={{ color: 'var(--text-secondary)' }}>{job.timezone}</span>
             </div>
           </div>
@@ -322,7 +322,7 @@ export function CronJobCard({ job, onToggle, onDelete, onRun }: CronJobCardProps
             }}
           >
             <Trash2 className="w-3.5 h-3.5 md:w-4 md:h-4" />
-            <span className="hidden sm:inline">Delete</span>
+            <span className="hidden sm:inline">Excluir</span>
           </button>
 
           {/* History button */}
@@ -336,10 +336,10 @@ export function CronJobCard({ job, onToggle, onDelete, onRun }: CronJobCardProps
               cursor: 'pointer',
               transition: 'all 0.2s'
             }}
-            title="Run history"
+            title="Histórico de execuções"
           >
             <History className="w-3.5 h-3.5 md:w-4 md:h-4" />
-            <span className="hidden sm:inline">History</span>
+            <span className="hidden sm:inline">Histórico</span>
           </button>
 
           <div className="flex-1" />
@@ -349,7 +349,7 @@ export function CronJobCard({ job, onToggle, onDelete, onRun }: CronJobCardProps
             <button
               onClick={handleRun}
               disabled={isRunning}
-              title="Trigger this job now"
+              title="Disparar esta tarefa agora"
               className="flex items-center gap-1 md:gap-2 px-2 md:px-3 py-1.5 md:py-2 text-xs md:text-sm rounded-lg"
               style={{
                 backgroundColor: runResult === "success"
@@ -379,7 +379,7 @@ export function CronJobCard({ job, onToggle, onDelete, onRun }: CronJobCardProps
                 <Zap className="w-3.5 h-3.5 md:w-4 md:h-4" />
               )}
               <span className="hidden sm:inline">
-                {isRunning ? "Running…" : runResult === "success" ? "Triggered!" : runResult === "error" ? "Failed" : "Run Now"}
+                {isRunning ? "Executando…" : runResult === "success" ? "Disparado!" : runResult === "error" ? "Falhou" : "Executar"}
               </span>
             </button>
           )}
@@ -409,13 +409,13 @@ export function CronJobCard({ job, onToggle, onDelete, onRun }: CronJobCardProps
               }}
             >
               <History className="w-3.5 h-3.5" />
-              Recent Runs
+              Execuções Recentes
               {loadingHistory && <Loader2 className="w-3 h-3 animate-spin ml-auto" />}
             </div>
 
             {!loadingHistory && runHistory.length === 0 && (
               <div style={{ padding: '0.75rem', fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'center' }}>
-                No run history available
+                Sem histórico de execuções
               </div>
             )}
 

@@ -32,24 +32,24 @@ import {
 import { getAgentDisplayName } from "@/config/branding";
 
 const navItems = [
-  { href: "/", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/agents", label: "Agents", icon: Users },
-  { href: "/office", label: "🎮 Office", icon: Gamepad2, highlight: true },
-  { href: "/actions", label: "Quick Actions", icon: Zap },
-  { href: "/system", label: "System", icon: Server },
-  { href: "/logs", label: "Live Logs", icon: Terminal },
+  { href: "/", label: "Painel", icon: LayoutDashboard },
+  { href: "/agents", label: "Agentes", icon: Users },
+  { href: "/office", label: "🎮 Escritório", icon: Gamepad2, highlight: true },
+  { href: "/actions", label: "Ações Rápidas", icon: Zap },
+  { href: "/system", label: "Sistema", icon: Server },
+  { href: "/logs", label: "Logs ao Vivo", icon: Terminal },
   { href: "/terminal", label: "Terminal", icon: SquareTerminal },
   { href: "/git", label: "Git", icon: GitFork },
-  { href: "/workflows", label: "Workflows", icon: Workflow },
-  { href: "/activity", label: "Activity", icon: Activity },
-  { href: "/memory", label: "Memory", icon: Brain },
-  { href: "/files", label: "Files", icon: FolderOpen },
-  { href: "/cron", label: "Cron Jobs", icon: Timer },
-  { href: "/sessions", label: "Sessions", icon: History },
-  { href: "/search", label: "Search", icon: Search },
-  { href: "/analytics", label: "Analytics", icon: BarChart3 },
-  { href: "/reports", label: "Reports", icon: FileBarChart },
-  { href: "/skills", label: "Skills", icon: Puzzle },
+  { href: "/workflows", label: "Fluxos de Trabalho", icon: Workflow },
+  { href: "/activity", label: "Atividade", icon: Activity },
+  { href: "/memory", label: "Memória", icon: Brain },
+  { href: "/files", label: "Arquivos", icon: FolderOpen },
+  { href: "/cron", label: "Tarefas Agendadas", icon: Timer },
+  { href: "/sessions", label: "Sessões", icon: History },
+  { href: "/search", label: "Busca", icon: Search },
+  { href: "/analytics", label: "Análises", icon: BarChart3 },
+  { href: "/reports", label: "Relatórios", icon: FileBarChart },
+  { href: "/skills", label: "Habilidades", icon: Puzzle },
   { href: "/about", label: getAgentDisplayName(), icon: User },
 ];
 
@@ -107,7 +107,7 @@ export function Sidebar() {
       <button
         onClick={toggleSidebar}
         className="mobile-menu-button"
-        aria-label="Toggle menu"
+        aria-label="Abrir menu"
         style={{
           position: "fixed",
           top: "1rem",
@@ -167,7 +167,7 @@ export function Sidebar() {
         {isMobile && (
           <button
             onClick={closeSidebar}
-            aria-label="Close menu"
+            aria-label="Fechar menu"
             style={{
               position: "absolute",
               top: "1rem",
@@ -281,7 +281,7 @@ export function Sidebar() {
               className="w-5 h-5"
               style={pathname !== "/settings" ? { color: "var(--text-muted)" } : undefined}
             />
-            Settings
+            Configurações
           </Link>
 
           <div
@@ -305,7 +305,7 @@ export function Sidebar() {
             }}
           >
             <LogOut className="w-4 h-4" />
-            <span className="text-sm">Cerrar sesión</span>
+            <span className="text-sm">Sair</span>
           </button>
         </div>
       </aside>

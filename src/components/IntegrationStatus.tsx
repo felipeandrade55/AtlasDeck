@@ -27,28 +27,28 @@ const statusConfig = {
     color: "text-emerald-400",
     bg: "bg-emerald-500/10",
     border: "border-emerald-500/30",
-    label: "Connected",
+    label: "Conectado",
   },
   disconnected: {
     icon: XCircle,
     color: "text-red-400",
     bg: "bg-red-500/10",
     border: "border-red-500/30",
-    label: "Disconnected",
+    label: "Desconectado",
   },
   configured: {
     icon: CheckCircle,
     color: "text-blue-400",
     bg: "bg-blue-500/10",
     border: "border-blue-500/30",
-    label: "Configured",
+    label: "Configurado",
   },
   not_configured: {
     icon: AlertCircle,
     color: "text-yellow-400",
     bg: "bg-yellow-500/10",
     border: "border-yellow-500/30",
-    label: "Not Configured",
+    label: "Não Configurado",
   },
 };
 
@@ -70,7 +70,7 @@ export function IntegrationStatus({ integrations }: IntegrationStatusProps) {
     <div className="bg-gray-900 rounded-xl p-6">
       <h2 className="text-xl font-semibold text-white mb-6 flex items-center gap-2">
         <MessageCircle className="w-5 h-5 text-emerald-400" />
-        Integrations
+        Integrações
       </h2>
 
       <div className="space-y-3">
@@ -92,7 +92,7 @@ export function IntegrationStatus({ integrations }: IntegrationStatusProps) {
                   <div className="font-medium text-white">{integration.name}</div>
                   {integration.lastActivity && (
                     <div className="text-xs text-gray-400">
-                      Last activity:{" "}
+                      Última atividade:{" "}
                       {formatDistanceToNow(new Date(integration.lastActivity), {
                         addSuffix: true,
                       })}
