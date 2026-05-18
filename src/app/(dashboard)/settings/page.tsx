@@ -5,6 +5,7 @@ import { Settings, RefreshCw } from "lucide-react";
 import { SystemInfo } from "@/components/SystemInfo";
 import { IntegrationStatus } from "@/components/IntegrationStatus";
 import { QuickActions } from "@/components/QuickActions";
+import { RecoveryPanel } from "@/components/RecoveryPanel";
 
 interface SystemData {
   agent: {
@@ -109,6 +110,11 @@ export default function SettingsPage() {
         {/* System Info - Full width on first row */}
         <div className="lg:col-span-2">
           <SystemInfo data={systemData} />
+        </div>
+
+        {/* Recovery Panel - Full width, prominent */}
+        <div className="lg:col-span-2">
+          <RecoveryPanel />
         </div>
 
         {/* Integration Status */}

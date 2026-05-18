@@ -9,6 +9,7 @@ import {
   Loader2,
   CheckCircle,
   AlertCircle,
+  X,
 } from "lucide-react";
 import { ChangePasswordModal } from "./ChangePasswordModal";
 
@@ -22,12 +23,12 @@ interface ActionButton {
   icon: React.ComponentType<{ className?: string }>;
   color: "emerald" | "blue" | "yellow" | "red";
   action: () => Promise<void> | void;
-  placeholder?: boolean;
 }
 
 export function QuickActions({ onActionComplete }: QuickActionsProps) {
   const [loadingAction, setLoadingAction] = useState<string | null>(null);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [logsModal, setLogsModal] = useState<string | null>(null);
   const [notification, setNotification] = useState<{
     type: "success" | "error";
     message: string;
@@ -39,8 +40,25 @@ export function QuickActions({ onActionComplete }: QuickActionsProps) {
   };
 
   const handleRestartGateway = async () => {
-    // Placeholder - would call openclaw gateway restart
-    showNotification("success", "Comando de reinicialização enviado (placeholder)");
+    setLoadingAction("restart");
+    try {
+      const res = await fetch("/api/recovery/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "gateway-restart" }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showNotification("success", "Gateway reiniciado com sucesso");
+        onActionComplete?.();
+      } else {
+        showNotification("error", `Falha ao reiniciar: ${data.error || "erro desconhecido"}`);
+      }
+    } catch (e) {
+      showNotification("error", `Erro: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLoadingAction(null);
+    }
   };
 
   const handleClearActivityLog = async () => {
@@ -64,8 +82,24 @@ export function QuickActions({ onActionComplete }: QuickActionsProps) {
   };
 
   const handleViewLogs = async () => {
-    // Placeholder - would open gateway logs
-    showNotification("success", "Abrindo logs do gateway... (placeholder)");
+    setLoadingAction("view_logs");
+    try {
+      const res = await fetch("/api/recovery/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "gateway-logs" }),
+      });
+      const data = await res.json();
+      if (data.output) {
+        setLogsModal(data.output);
+      } else {
+        showNotification("error", data.error || "Sem logs disponíveis");
+      }
+    } catch (e) {
+      showNotification("error", `Erro: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLoadingAction(null);
+    }
   };
 
   const actions: ActionButton[] = [
@@ -75,7 +109,6 @@ export function QuickActions({ onActionComplete }: QuickActionsProps) {
       icon: RefreshCw,
       color: "blue",
       action: handleRestartGateway,
-      placeholder: true,
     },
     {
       id: "clear_log",
@@ -90,7 +123,6 @@ export function QuickActions({ onActionComplete }: QuickActionsProps) {
       icon: FileText,
       color: "emerald",
       action: handleViewLogs,
-      placeholder: true,
     },
     {
       id: "change_password",
@@ -156,9 +188,6 @@ export function QuickActions({ onActionComplete }: QuickActionsProps) {
                   <Icon className="w-4 h-4" />
                 )}
                 <span className="font-medium">{action.label}</span>
-                {action.placeholder && (
-                  <span className="text-xs opacity-50">(placeholder)</span>
-                )}
               </button>
             );
           })}
@@ -173,6 +202,36 @@ export function QuickActions({ onActionComplete }: QuickActionsProps) {
           setShowPasswordModal(false);
         }}
       />
+
+      {logsModal !== null && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ backgroundColor: "rgba(0,0,0,0.7)" }}
+          onClick={() => setLogsModal(null)}
+        >
+          <div
+            className="bg-gray-900 rounded-xl w-full max-w-3xl max-h-[80vh] flex flex-col"
+            style={{ border: "1px solid var(--border)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between p-4 border-b border-gray-800">
+              <h3 className="font-semibold text-white flex items-center gap-2">
+                <FileText className="w-4 h-4 text-emerald-400" />
+                Logs do Gateway (openclaw-gateway)
+              </h3>
+              <button
+                onClick={() => setLogsModal(null)}
+                className="text-gray-400 hover:text-white p-1 rounded"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <pre className="p-4 text-xs font-mono whitespace-pre-wrap overflow-auto flex-1 text-gray-200">
+              {logsModal}
+            </pre>
+          </div>
+        </div>
+      )}
     </>
   );
 }

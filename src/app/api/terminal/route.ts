@@ -25,6 +25,7 @@ const ALLOWED_BASE_COMMANDS = new Set([
   'echo', 'printf', 'which', 'type', 'file',
   'sort', 'uniq', 'awk', 'sed', 'tr', 'cut', 'xargs',
   'locate',
+  'openclaw',
 ]);
 
 // Explicitly blocked patterns
