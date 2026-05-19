@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { formatDistanceToNow } from "date-fns";
 import {
   FileText,
@@ -68,12 +69,54 @@ interface ActivityFeedProps {
 
 export function ActivityFeed({ limit = 10 }: ActivityFeedProps) {
   const [activities, setActivities] = useState<Activity[] | null>(null);
+  const router = useRouter();
+  const connectionRef = useRef<EventSource | ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
+    // Initial load via REST
     fetch(`/api/activities?limit=${limit}&sort=newest`)
       .then((res) => res.json())
       .then((data: ActivitiesResponse) => setActivities(data.activities))
       .catch(() => setActivities([]));
+
+    // Real-time updates via SSE
+    const es = new EventSource('/api/activities/stream');
+    connectionRef.current = es;
+
+    es.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'batch') {
+          setActivities(prev => prev === null ? msg.activities.slice(0, limit) : prev);
+        } else if (msg.type === 'new') {
+          setActivities(prev => {
+            const base = prev ?? [];
+            return [msg.activity, ...base].slice(0, limit);
+          });
+        }
+      } catch {}
+    };
+
+    es.onerror = () => {
+      es.close();
+      const id = setInterval(() => {
+        fetch(`/api/activities?limit=${limit}&sort=newest`)
+          .then(r => r.json())
+          .then((data: ActivitiesResponse) => setActivities(data.activities))
+          .catch(() => {});
+      }, 30_000);
+      connectionRef.current = id;
+    };
+
+    return () => {
+      const ref = connectionRef.current;
+      if (ref instanceof EventSource) {
+        ref.close();
+      } else if (ref !== null) {
+        clearInterval(ref as ReturnType<typeof setInterval>);
+      }
+      connectionRef.current = null;
+    };
   }, [limit]);
 
   if (!activities) {
@@ -110,9 +153,10 @@ export function ActivityFeed({ limit = 10 }: ActivityFeedProps) {
           <div
             key={activity.id}
             className="flex items-center gap-2 md:gap-3 px-3 md:px-4 py-2 md:py-3 transition-colors cursor-pointer"
-            style={{ 
+            style={{
               borderRadius: '8px',
             }}
+            onClick={() => router.push('/activity')}
             onMouseEnter={(e) => {
               e.currentTarget.style.backgroundColor = 'var(--card-elevated)';
             }}

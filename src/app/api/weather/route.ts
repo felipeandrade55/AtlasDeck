@@ -33,15 +33,22 @@ const WMO_CODES: Record<number, { label: string; emoji: string }> = {
   99: { label: "Thunderstorm with heavy hail", emoji: "⛈️" },
 };
 
-export async function GET() {
-  // Return cache if valid
-  if (cache && Date.now() - cache.ts < CACHE_DURATION) {
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const rawLat = searchParams.get('lat');
+  const rawLon = searchParams.get('lon');
+  const hasCustomCoords = rawLat !== null && rawLon !== null;
+  const lat  = hasCustomCoords ? parseFloat(rawLat!)  : 40.4168;
+  const lon  = hasCustomCoords ? parseFloat(rawLon!)  : -3.7038;
+  const city = hasCustomCoords ? 'Local'              : 'Madrid';
+
+  // Return cache if valid (only for default Madrid endpoint)
+  if (!hasCustomCoords && cache && Date.now() - cache.ts < CACHE_DURATION) {
     return NextResponse.json(cache.data);
   }
 
   try {
-    // Madrid coordinates: 40.4168° N, 3.7038° W
-    const url = 'https://api.open-meteo.com/v1/forecast?latitude=40.4168&longitude=-3.7038&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,precipitation&daily=temperature_2m_max,temperature_2m_min,weather_code&timezone=Europe%2FMadrid&forecast_days=3';
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,precipitation&daily=temperature_2m_max,temperature_2m_min,weather_code&timezone=auto&forecast_days=3`;
 
     const res = await fetch(url, { next: { revalidate: 600 } });
     const json = await res.json();
@@ -52,7 +59,7 @@ export async function GET() {
     const wmo = WMO_CODES[current.weather_code] || { label: "Unknown", emoji: "🌡️" };
 
     const data = {
-      city: "Madrid",
+      city,
       temp: Math.round(current.temperature_2m),
       feels_like: Math.round(current.apparent_temperature),
       humidity: current.relative_humidity_2m,
@@ -69,7 +76,7 @@ export async function GET() {
       updated: new Date().toISOString(),
     };
 
-    cache = { data, ts: Date.now() };
+    if (!hasCustomCoords) cache = { data, ts: Date.now() };
     return NextResponse.json(data);
   } catch (error) {
     console.error('[weather] Error:', error);

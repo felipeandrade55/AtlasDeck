@@ -30,10 +30,25 @@ export function WeatherWidget() {
   const [now, setNow] = useState(new Date());
 
   useEffect(() => {
-    fetch("/api/weather")
-      .then((r) => r.json())
-      .then((d) => { setWeather(d); setLoading(false); })
-      .catch(() => setLoading(false));
+    const fetchWeather = (lat?: number, lon?: number) => {
+      const url = lat != null && lon != null
+        ? `/api/weather?lat=${lat}&lon=${lon}`
+        : '/api/weather';
+      fetch(url)
+        .then((r) => r.json())
+        .then((d) => { setWeather(d); setLoading(false); })
+        .catch(() => setLoading(false));
+    };
+
+    if (typeof navigator !== 'undefined' && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => fetchWeather(pos.coords.latitude, pos.coords.longitude),
+        ()    => fetchWeather(),
+        { timeout: 5000 }
+      );
+    } else {
+      fetchWeather();
+    }
 
     // Update clock every second
     const timer = setInterval(() => setNow(new Date()), 1000);

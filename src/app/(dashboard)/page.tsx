@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { StatsCard } from "@/components/StatsCard";
 import { ActivityFeed } from "@/components/ActivityFeed";
 import { WeatherWidget } from "@/components/WeatherWidget";
+import { CostWidget } from "@/components/CostWidget";
 import { Notepad } from "@/components/Notepad";
 import {
   Activity,
@@ -45,21 +47,31 @@ interface Agent {
 export default function DashboardPage() {
   const [stats, setStats] = useState<Stats>({ total: 0, today: 0, success: 0, error: 0, byType: {} });
   const [agents, setAgents] = useState<Agent[]>([]);
+  const router = useRouter();
 
   useEffect(() => {
-    Promise.all([
-      fetch("/api/activities/stats").then(r => r.json()),
-      fetch("/api/agents").then(r => r.json()),
-    ]).then(([actStats, agentsData]) => {
-      setStats({
-        total: actStats.total || 0,
-        today: actStats.today || 0,
-        success: actStats.byStatus?.success || 0,
-        error: actStats.byStatus?.error || 0,
-        byType: actStats.byType || {},
-      });
-      setAgents(agentsData.agents || []);
-    }).catch(console.error);
+    const fetchData = async () => {
+      try {
+        const [actStats, agentsData] = await Promise.all([
+          fetch("/api/activities/stats").then(r => r.json()),
+          fetch("/api/agents").then(r => r.json()),
+        ]);
+        setStats({
+          total:   actStats.total             || 0,
+          today:   actStats.today             || 0,
+          success: actStats.byStatus?.success || 0,
+          error:   actStats.byStatus?.error   || 0,
+          byType:  actStats.byType            || {},
+        });
+        setAgents(agentsData.agents || []);
+      } catch (err) {
+        console.error(err);
+      }
+    };
+
+    fetchData();
+    const interval = setInterval(fetchData, 30_000);
+    return () => clearInterval(interval);
   }, []);
 
   return (
@@ -117,8 +129,13 @@ export default function DashboardPage() {
         </div>
       </div>
 
+      {/* Cost Summary */}
+      <div className="mb-4 md:mb-6">
+        <CostWidget />
+      </div>
+
       {/* Multi-Agent Status */}
-      <div 
+      <div
         className="mb-6 rounded-xl overflow-hidden"
         style={{
           backgroundColor: 'var(--card)',
@@ -174,6 +191,7 @@ export default function DashboardPage() {
                   border: `2px solid ${agent.color}`,
                   cursor: 'pointer',
                 }}
+                onClick={() => router.push('/agents')}
               >
                 <div className="flex items-center justify-between mb-2">
                   <div className="text-2xl">{agent.emoji}</div>
