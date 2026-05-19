@@ -177,6 +177,19 @@ if [ -d "$VPS_DIR/.git" ]; then
   fi
 
   git fetch origin
+
+  # Se .env agora é rastreado no remoto mas ainda existe como arquivo não-rastreado
+  # localmente (situação de migração), remove-o para que o git reset possa criá-lo
+  # a partir do repositório. O backup garante que credenciais locais não se percam.
+  if git ls-tree --name-only "origin/$BRANCH" .env 2>/dev/null | grep -q '^\.env$'; then
+    if [ -f .env ] && ! git ls-files --error-unmatch .env 2>/dev/null; then
+      ENV_BACKUP=".env.bak.$(date +%Y%m%d_%H%M%S)"
+      cp .env "$ENV_BACKUP"
+      rm .env
+      warn ".env local não-rastreado encontrado — backup em $ENV_BACKUP, usando versão do repositório"
+    fi
+  fi
+
   git reset --hard "origin/$BRANCH"
   ok "Código atualizado (branch: $BRANCH)"
 else
