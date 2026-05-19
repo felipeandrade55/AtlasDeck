@@ -9,6 +9,17 @@
 
 set -eo pipefail
 
+# ─── AUTO-PRESERVAÇÃO ─────────────────────────────────────────────────────────
+# Copia o script para /tmp e re-executa de lá. Assim, o git reset --hard
+# pode sobrescrever scripts/deploy.sh no repositório sem interromper a execução.
+if [[ "${_DEPLOY_SAFE:-}" != "1" ]]; then
+  _TMP=$(mktemp /tmp/deploy.XXXXXX.sh)
+  cp "$0" "$_TMP"
+  chmod +x "$_TMP"
+  _DEPLOY_SAFE=1 exec "$_TMP" "$@"
+fi
+# ─────────────────────────────────────────────────────────────────────────────
+
 # ─── CONFIGURAÇÃO ─────────────────────────────────────────────────────────────
 VPS_DIR="${HOME}/.openclaw/workspace/mission-control"
 BRANCH="main"
@@ -176,6 +187,14 @@ if [ -d "$VPS_DIR/.git" ]; then
     info "Repositório encontrado — baixando atualizações..."
   fi
 
+  # Garante que origin aponta para o repositório correto (auto-corrige se necessário)
+  _CURRENT_ORIGIN=$(git remote get-url origin 2>/dev/null || echo "")
+  if [[ "$_CURRENT_ORIGIN" != "$REPO_URL" ]]; then
+    warn "Remote 'origin' incorreto ($_CURRENT_ORIGIN) — corrigindo..."
+    git remote set-url origin "$REPO_URL" 2>/dev/null || git remote add origin "$REPO_URL"
+    ok "Remote 'origin' corrigido para $REPO_URL"
+  fi
+
   git fetch origin
 
   # Se .env agora é rastreado no remoto mas ainda existe como arquivo não-rastreado
@@ -234,8 +253,13 @@ elif git diff HEAD@{1} HEAD --name-only 2>/dev/null | grep -qE "package.*json"; 
 fi
 
 if $NEEDS_INSTALL; then
-  npm ci
-  ok "npm ci concluído"
+  if npm ci 2>/dev/null; then
+    ok "npm ci concluído"
+  else
+    warn "npm ci falhou (lock file desatualizado?) — usando npm install..."
+    npm install
+    ok "npm install concluído"
+  fi
   record "npm install" "ok" "$(elapsed $T)"
 else
   ok "Sem novas dependências"
