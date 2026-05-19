@@ -1,7 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Cpu, HardDrive, MemoryStick, Activity, Network, Server, ShieldCheck, RotateCw, Wifi, Monitor, Play, Square, X, Loader2, Terminal, ArrowDown, ArrowUp } from "lucide-react";
+import { Cpu, HardDrive, MemoryStick, Network, Server, ShieldCheck, RotateCw, Wifi, Monitor, Play, Square, X, Loader2, Terminal, ArrowDown, ArrowUp } from "lucide-react";
+import { OpenClawConfigPanel } from "@/components/OpenClawConfigPanel";
+
+type SystemTab = "hardware" | "services" | "openclaw";
 
 interface SystemdService {
   name: string;
@@ -66,7 +69,7 @@ export default function SystemMonitorPage() {
   const [systemData, setSystemData] = useState<SystemData | null>(null);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const [selectedTab, setSelectedTab] = useState<"hardware" | "services">("hardware");
+  const [selectedTab, setSelectedTab] = useState<SystemTab>("hardware");
   const [actionLoading, setActionLoading] = useState<Record<string, boolean>>({});
   const [logsModal, setLogsModal] = useState<LogsModal | null>(null);
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
@@ -205,13 +208,17 @@ export default function SystemMonitorPage() {
 
       {/* Tabs */}
       <div className="flex gap-2 border-b" style={{ borderColor: "var(--border)" }}>
-        {[{ id: "hardware", label: "Hardware", icon: Cpu }, { id: "services", label: "Serviços", icon: Server }].map((tab) => {
+        {[
+          { id: "hardware", label: "Hardware", icon: Cpu },
+          { id: "services", label: "Serviços", icon: Server },
+          { id: "openclaw", label: "OpenClaw", icon: Terminal },
+        ].map((tab) => {
           const Icon = tab.icon;
           const isActive = selectedTab === tab.id;
           return (
             <button
               key={tab.id}
-              onClick={() => setSelectedTab(tab.id as "hardware" | "services")}
+              onClick={() => setSelectedTab(tab.id as SystemTab)}
               className="flex items-center gap-2 px-4 py-2 font-medium transition-all"
               style={{ color: isActive ? "var(--accent)" : "var(--text-secondary)", borderBottom: isActive ? "2px solid var(--accent)" : "2px solid transparent" }}
             >
@@ -330,6 +337,10 @@ export default function SystemMonitorPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {selectedTab === "openclaw" && (
+        <OpenClawConfigPanel />
       )}
 
       {/* Services Tab */}

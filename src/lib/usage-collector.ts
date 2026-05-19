@@ -12,6 +12,7 @@ import { calculateCost, normalizeModelId } from "./pricing";
 import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
+import { readOpenClawConfig } from "./openclaw-config";
 
 const execFileAsync = promisify(execFile);
 const OPENCLAW_TIMEOUT_MS = 10_000;
@@ -106,10 +107,16 @@ function isRunDuplicate(key: string): boolean {
 }
 
 async function runOpenClaw(args: string[]): Promise<unknown> {
-  const { stdout } = await execFileAsync("openclaw", args, {
+  const config = readOpenClawConfig();
+  const { stdout } = await execFileAsync(config.openclawBin, args, {
     timeout: OPENCLAW_TIMEOUT_MS,
     windowsHide: true,
     maxBuffer: OPENCLAW_MAX_BUFFER,
+    env: {
+      ...process.env,
+      OPENCLAW_DIR: config.openclawDir,
+      OPENCLAW_WORKSPACE: config.openclawWorkspace,
+    },
   });
 
   return JSON.parse(stdout);

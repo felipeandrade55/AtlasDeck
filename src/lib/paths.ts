@@ -1,12 +1,15 @@
 import path from 'path';
+import { readOpenClawConfig } from './openclaw-config';
+
+const OPENCLAW = readOpenClawConfig();
 
 /**
  * Centralized path configuration.
  * In production (VPS), these default to /root/.openclaw paths.
  * For local development, override via environment variables.
  */
-export const OPENCLAW_DIR = process.env.OPENCLAW_DIR || '/root/.openclaw';
-export const OPENCLAW_WORKSPACE = process.env.OPENCLAW_WORKSPACE || path.join(OPENCLAW_DIR, 'workspace', 'mission-control');
+export const OPENCLAW_DIR = OPENCLAW.openclawDir;
+export const OPENCLAW_WORKSPACE = OPENCLAW.openclawWorkspace;
 export const OPENCLAW_CONFIG = path.join(OPENCLAW_DIR, 'openclaw.json');
 export const OPENCLAW_MEDIA = path.join(OPENCLAW_DIR, 'media');
 

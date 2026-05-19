@@ -2,9 +2,10 @@ import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 
 import { OPENCLAW_WORKSPACE, WORKSPACE_IDENTITY } from '@/lib/paths';
+import { readOpenClawConfig } from '@/lib/openclaw-config';
 
 const WORKSPACE_PATH = OPENCLAW_WORKSPACE;
 const IDENTITY_PATH = WORKSPACE_IDENTITY;
@@ -29,9 +30,23 @@ function parseIdentityMd(): { name: string; creature: string; emoji: string } {
 
 function getLastSessionTime(): string | null {
   try {
-    const raw = execSync('openclaw sessions list --json 2>/dev/null', { timeout: 4000 }).toString().trim();
+    const config = readOpenClawConfig();
+    const raw = execFileSync(config.openclawBin, ['sessions', 'list', '--json'], {
+      timeout: 4000,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        OPENCLAW_DIR: config.openclawDir,
+        OPENCLAW_WORKSPACE: config.openclawWorkspace,
+      },
+    }).toString().trim();
     if (!raw) return null;
-    const sessions: Array<{ updatedAt: number }> = JSON.parse(raw);
+    const payload = JSON.parse(raw);
+    const sessions: Array<{ updatedAt: number }> = Array.isArray(payload)
+      ? payload
+      : Array.isArray(payload.sessions)
+        ? payload.sessions
+        : [];
     if (!sessions.length) return null;
     const latest = sessions.reduce((a, b) => (a.updatedAt > b.updatedAt ? a : b));
     return new Date(latest.updatedAt).toISOString();
@@ -48,7 +63,7 @@ function getIntegrationStatus() {
   let telegramEnabled = false;
   let telegramAccounts = 0;
   try {
-    const openclawConfigPath = path.join(os.homedir(), '.openclaw', 'openclaw.json');
+    const openclawConfigPath = path.join(readOpenClawConfig().openclawDir, 'openclaw.json');
     const openclawConfig = JSON.parse(fs.readFileSync(openclawConfigPath, 'utf-8'));
     const telegramConfig = openclawConfig?.channels?.telegram;
     telegramEnabled = !!(telegramConfig?.enabled);
@@ -85,7 +100,7 @@ function getIntegrationStatus() {
   let googleConfigured = false;
   let googleDetail: string | null = null;
   try {
-    const openclawConfigPath = path.join(os.homedir(), '.openclaw', 'openclaw.json');
+    const openclawConfigPath = path.join(readOpenClawConfig().openclawDir, 'openclaw.json');
     const openclawConfig = JSON.parse(fs.readFileSync(openclawConfigPath, 'utf-8'));
     const gogPlugin = openclawConfig?.plugins?.entries?.['google-gemini-cli-auth'];
     googleConfigured = !!(gogPlugin?.enabled);
@@ -184,7 +199,7 @@ export async function POST(request: Request) {
     }
     
     return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
-  } catch (error) {
+  } catch {
     return NextResponse.json({ error: 'Action failed' }, { status: 500 });
   }
 }

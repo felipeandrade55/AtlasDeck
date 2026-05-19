@@ -1,6 +1,6 @@
 "use client";
 
-import { MessageCircle, Twitter, Mail, CheckCircle, XCircle, AlertCircle } from "lucide-react";
+import { MessageCircle, Twitter, Mail, CheckCircle, XCircle, AlertCircle, type LucideIcon } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
 interface Integration {
@@ -15,7 +15,7 @@ interface IntegrationStatusProps {
   integrations: Integration[] | null;
 }
 
-const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
+const iconMap: Record<string, LucideIcon> = {
   MessageCircle,
   Twitter,
   Mail,
