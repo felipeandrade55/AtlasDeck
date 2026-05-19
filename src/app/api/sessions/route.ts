@@ -164,6 +164,19 @@ function errorMessage(error: unknown): string {
   return String(error);
 }
 
+function isCliUnavailableError(error: unknown): boolean {
+  const msg = errorMessage(error).toLowerCase();
+  return (
+    msg.includes("command not found") ||
+    msg.includes("enoent") ||
+    msg.includes("too many arguments") ||
+    msg.includes("not recognized as an internal or external command") ||
+    msg.includes("no such file or directory") ||
+    msg.includes("spawn") && msg.includes("error") ||
+    msg.includes("invalid json output from openclaw")
+  );
+}
+
 function safeSessionId(value: string): boolean {
   return /^[A-Za-z0-9._-]{8,160}$/.test(value) && !value.includes("..");
 }
@@ -623,7 +636,10 @@ function scanSessionsFromFiles(diagnostics: string[]): ParsedSession[] {
   const openclawDir = readOpenClawConfig().openclawDir;
   const agentsDir = path.join(openclawDir, "agents");
   if (!existsSync(agentsDir)) {
-    diagnostics.push(`Diretorio de agentes nao encontrado: ${agentsDir}`);
+    // Silently skip when the OpenClaw directory doesn't exist (e.g., local dev without CLI)
+    if (existsSync(openclawDir)) {
+      diagnostics.push(`Diretorio de agentes nao encontrado: ${agentsDir}`);
+    }
     return [];
   }
 
@@ -700,7 +716,9 @@ async function readOpenClawSessions(diagnostics: string[]) {
     if (sessions.length > 0) return { source: "sessions-list" as const, sessions };
     diagnostics.push("openclaw sessions list nao retornou sessoes.");
   } catch (error) {
-    diagnostics.push(`openclaw sessions list falhou: ${errorMessage(error)}`);
+    if (!isCliUnavailableError(error)) {
+      diagnostics.push(`openclaw sessions list falhou: ${errorMessage(error)}`);
+    }
   }
 
   try {
@@ -712,7 +730,9 @@ async function readOpenClawSessions(diagnostics: string[]) {
     if (sessions.length > 0) return { source: "status" as const, sessions };
     diagnostics.push("openclaw status nao retornou sessoes recentes.");
   } catch (error) {
-    diagnostics.push(`openclaw status falhou: ${errorMessage(error)}`);
+    if (!isCliUnavailableError(error)) {
+      diagnostics.push(`openclaw status falhou: ${errorMessage(error)}`);
+    }
   }
 
   return { source: null, sessions: [] };

@@ -38,10 +38,6 @@ function corePct(prev: CpuCoreStat, curr: CpuCoreStat): number {
 // Services monitored per backend
 const SYSTEMD_SERVICES = ["mission-control"];
 const PM2_SERVICES = ["classvault", "content-vault", "postiz-simple", "brain"];
-// creatoros not deployed yet — shown as "not_deployed"
-const PLACEHOLDER_SERVICES = [
-  { name: "creatoros", description: "Creatoros Platform", status: "not_deployed" },
-];
 
 interface ServiceEntry {
   name: string;
@@ -257,11 +253,6 @@ export async function GET() {
       }
     }
 
-    // 3. Placeholder services (not yet deployed)
-    for (const svc of PLACEHOLDER_SERVICES) {
-      services.push({ ...svc, backend: "none" });
-    }
-
     // ── Tailscale VPN ─────────────────────────────────────────────────────────
     let tailscaleActive = false;
     let tailscaleIp = "";
@@ -294,12 +285,7 @@ export async function GET() {
     // ── Firewall (UFW) ────────────────────────────────────────────────────────
     let firewallActive = false;
     const firewallRulesList: FirewallRule[] = [];
-    const staticFirewallRules: FirewallRule[] = [
-      { port: "80/tcp", action: "ALLOW", from: "Anywhere", comment: "Public HTTP" },
-      { port: "443/tcp", action: "ALLOW", from: "Anywhere", comment: "Public HTTPS" },
-      { port: "3000", action: "ALLOW", from: "Tailscale (100.64.0.0/10)", comment: "Mission Control via Tailscale" },
-      { port: "22", action: "ALLOW", from: "Tailscale (100.64.0.0/10)", comment: "SSH via Tailscale only" },
-    ];
+
     try {
       const { stdout: ufwStatus } = await execAsync("ufw status numbered 2>/dev/null || true");
       if (ufwStatus.includes("Status: active")) {
@@ -348,8 +334,8 @@ export async function GET() {
       },
       firewall: {
         active: firewallActive,
-        rules: firewallRulesList.length > 0 ? firewallRulesList : staticFirewallRules,
-        ruleCount: firewallRulesList.length > 0 ? firewallRulesList.length : staticFirewallRules.length,
+        rules: firewallRulesList,
+        ruleCount: firewallRulesList.length,
       },
       timestamp: new Date().toISOString(),
     });
