@@ -128,12 +128,13 @@ function shortModel(model: string): string {
     .replace("claude-", "");
   const parts = normalized.split("-").filter(Boolean);
 
+  let result = normalized;
   if (parts.length >= 2) {
     const name = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
-    return `${name} ${parts.slice(1).join(".")}`;
+    result = `${name} ${parts.slice(1).join(".")}`;
   }
 
-  return normalized;
+  return result.replace("Gpt", "GPT");
 }
 
 function formatRelative(timestamp: number): string {

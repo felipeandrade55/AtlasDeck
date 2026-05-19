@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { readFileSync } from "fs";
+import { readFileSync, statSync } from "fs";
 import { join } from "path";
 
 export const dynamic = "force-dynamic";
@@ -82,7 +82,7 @@ export async function GET() {
       try {
         const today = new Date().toISOString().split("T")[0];
         const memoryFile = join(memoryPath, `${today}.md`);
-        const stat = require("fs").statSync(memoryFile);
+        const stat = statSync(memoryFile);
         lastActivity = stat.mtime.toISOString();
         // Consider online if activity within last 5 minutes
         status =
@@ -125,7 +125,7 @@ export async function GET() {
         emoji: agentInfo.emoji,
         color: agentInfo.color,
         model:
-          agent.model?.primary || config.agents.defaults?.model?.primary || "claude-3-5-sonnet",
+          agent.model?.primary || config.agents.defaults?.model?.primary || "openai/gpt-5.4-codex",
         workspace: agent.workspace,
         dmPolicy:
           telegramAccount?.dmPolicy ||

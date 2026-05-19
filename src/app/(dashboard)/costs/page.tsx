@@ -100,11 +100,12 @@ function changePercent(current: number, previous: number): number | null {
 }
 
 function shortModel(model: string): string {
-  const clean = model.replace("anthropic/", "").replace("google/", "").replace("claude-", "");
+  const clean = model.replace("openai/", "").replace("anthropic/", "").replace("google/", "").replace("claude-", "");
   return clean
     .split("-")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
+    .join(" ")
+    .replace("Gpt", "GPT");
 }
 
 function shortSession(key: string): string {

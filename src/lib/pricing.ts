@@ -14,64 +14,47 @@ export interface ModelPricing {
 }
 
 export const MODEL_PRICING: ModelPricing[] = [
-  // Anthropic models
+  // OpenAI GPT-5 Series
   {
-    id: "anthropic/claude-opus-4-6",
-    name: "Opus 4.6",
-    alias: "opus",
-    inputPricePerMillion: 15.00,
-    outputPricePerMillion: 75.00,
-    contextWindow: 200000,
-  },
-  {
-    id: "anthropic/claude-sonnet-4-5",
-    name: "Sonnet 4.5",
-    alias: "sonnet",
-    inputPricePerMillion: 3.00,
-    outputPricePerMillion: 15.00,
-    contextWindow: 200000,
-  },
-  {
-    id: "anthropic/claude-haiku-3-5",
-    name: "Haiku 3.5",
-    alias: "haiku",
-    inputPricePerMillion: 0.80,
-    outputPricePerMillion: 4.00,
-    contextWindow: 200000,
-  },
-  // Google Gemini models
-  {
-    id: "google/gemini-2.5-flash",
-    name: "Gemini Flash",
-    alias: "gemini-flash",
-    inputPricePerMillion: 0.15,
-    outputPricePerMillion: 0.60,
-    contextWindow: 1000000,
-  },
-  {
-    id: "google/gemini-2.5-pro",
-    name: "Gemini Pro",
-    alias: "gemini-pro",
-    inputPricePerMillion: 1.25,
-    outputPricePerMillion: 5.00,
-    contextWindow: 2000000,
-  },
-  // X.AI Grok
-  {
-    id: "x-ai/grok-4-1-fast",
-    name: "Grok 4.1 Fast",
-    inputPricePerMillion: 2.00,
-    outputPricePerMillion: 10.00,
+    id: "openai/gpt-5.4-codex",
+    name: "GPT-5.4 Codex",
+    alias: "gpt-5.4-codex",
+    inputPricePerMillion: 10.00,
+    outputPricePerMillion: 30.00,
     contextWindow: 128000,
   },
-  // MiniMax
   {
-    id: "minimax/minimax-m2.5",
-    name: "MiniMax M2.5",
-    alias: "minimax",
-    inputPricePerMillion: 0.30,
-    outputPricePerMillion: 1.10,
-    contextWindow: 1000000,
+    id: "openai/gpt-5.4",
+    name: "GPT-5.4",
+    alias: "gpt-5.4",
+    inputPricePerMillion: 5.00,
+    outputPricePerMillion: 15.00,
+    contextWindow: 128000,
+  },
+  {
+    id: "openai/gpt-5.4-mini",
+    name: "GPT-5.4 Mini",
+    alias: "gpt-5.4-mini",
+    inputPricePerMillion: 0.50,
+    outputPricePerMillion: 1.50,
+    contextWindow: 128000,
+  },
+  // Legacy GPT-4 models (just in case of old data)
+  {
+    id: "openai/gpt-4-turbo",
+    name: "GPT-4 Turbo",
+    alias: "gpt-4-turbo",
+    inputPricePerMillion: 10.00,
+    outputPricePerMillion: 30.00,
+    contextWindow: 128000,
+  },
+  {
+    id: "openai/gpt-4o",
+    name: "GPT-4o",
+    alias: "gpt-4o",
+    inputPricePerMillion: 5.00,
+    outputPricePerMillion: 15.00,
+    contextWindow: 128000,
   },
 ];
 
@@ -89,9 +72,9 @@ export function calculateCost(
 
   if (!pricing) {
     console.warn(`Unknown model: ${modelId}, using default pricing`);
-    // Default to Sonnet pricing if unknown
+    // Default to GPT-5.4 pricing if unknown
     return (
-      (inputTokens / 1_000_000) * 3.0 + (outputTokens / 1_000_000) * 15.0
+      (inputTokens / 1_000_000) * 5.0 + (outputTokens / 1_000_000) * 15.0
     );
   }
 
@@ -115,23 +98,12 @@ export function getModelName(modelId: string): string {
  * Normalize model ID (handle aliases and different formats)
  */
 export function normalizeModelId(modelId: string): string {
-  // Handle short aliases and OpenClaw format (without provider prefix)
   const aliasMap: Record<string, string> = {
-    // Short aliases
-    opus: "anthropic/claude-opus-4-6",
-    sonnet: "anthropic/claude-sonnet-4-5",
-    haiku: "anthropic/claude-haiku-3-5",
-    "gemini-flash": "google/gemini-2.5-flash",
-    "gemini-pro": "google/gemini-2.5-pro",
-    // OpenClaw format (without provider/)
-    "claude-opus-4-6": "anthropic/claude-opus-4-6",
-    "claude-sonnet-4-5": "anthropic/claude-sonnet-4-5",
-    "claude-haiku-3-5": "anthropic/claude-haiku-3-5",
-    "gemini-2.5-flash": "google/gemini-2.5-flash",
-    "gemini-2.5-pro": "google/gemini-2.5-pro",
-    // MiniMax
-    minimax: "minimax/minimax-m2.5",
-    "minimax-m2.5": "minimax/minimax-m2.5",
+    "gpt-5.4-codex": "openai/gpt-5.4-codex",
+    "gpt-5.4": "openai/gpt-5.4",
+    "gpt-5.4-mini": "openai/gpt-5.4-mini",
+    "gpt-4-turbo": "openai/gpt-4-turbo",
+    "gpt-4o": "openai/gpt-4o",
   };
 
   return aliasMap[modelId] || modelId;

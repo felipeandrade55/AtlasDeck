@@ -129,7 +129,7 @@ export async function GET() {
   const identity = parseIdentityMd();
   const uptime = process.uptime();
   const nodeVersion = process.version;
-  const model = process.env.OPENCLAW_MODEL || process.env.DEFAULT_MODEL || 'anthropic/claude-sonnet-4';
+  const model = process.env.OPENCLAW_MODEL || process.env.DEFAULT_MODEL || 'openai/gpt-5.4-codex';
   
   const systemInfo = {
     agent: {

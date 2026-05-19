@@ -38,11 +38,14 @@ export async function GET(request: Request) {
   const rawLat = searchParams.get('lat');
   const rawLon = searchParams.get('lon');
   const hasCustomCoords = rawLat !== null && rawLon !== null;
-  const lat  = hasCustomCoords ? parseFloat(rawLat!)  : 40.4168;
-  const lon  = hasCustomCoords ? parseFloat(rawLon!)  : -3.7038;
-  const city = hasCustomCoords ? 'Local'              : 'Madrid';
+  const defaultLat  = process.env.WEATHER_DEFAULT_LAT  ? parseFloat(process.env.WEATHER_DEFAULT_LAT)  : 40.4168;
+  const defaultLon  = process.env.WEATHER_DEFAULT_LON  ? parseFloat(process.env.WEATHER_DEFAULT_LON)  : -3.7038;
+  const defaultCity = process.env.WEATHER_DEFAULT_CITY || 'Madrid';
+  const lat  = hasCustomCoords ? parseFloat(rawLat!)  : defaultLat;
+  const lon  = hasCustomCoords ? parseFloat(rawLon!)  : defaultLon;
+  const city = hasCustomCoords ? 'Local'              : defaultCity;
 
-  // Return cache if valid (only for default Madrid endpoint)
+  // Return cache if valid (only for default location endpoint)
   if (!hasCustomCoords && cache && Date.now() - cache.ts < CACHE_DURATION) {
     return NextResponse.json(cache.data);
   }
