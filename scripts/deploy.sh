@@ -356,34 +356,47 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FASE 8 — HEALTH CHECK: OPENCLAW CLI
+# FASE 8 — OPENCLAW GATEWAY
 # ══════════════════════════════════════════════════════════════════════════════
-step "Health check — OpenClaw..."
+step "OpenClaw Gateway..."
 T=$(now)
 
-# Gateway via systemd
 GATEWAY_STATUS=$(systemctl is-active openclaw-gateway 2>/dev/null || echo "unknown")
+
 if [[ "$GATEWAY_STATUS" == "active" ]]; then
-  ok "openclaw-gateway: active (systemd)"
+  ok "openclaw-gateway: active"
   record "OpenClaw Gateway" "ok" "$(elapsed $T)"
 else
-  warn "openclaw-gateway: $GATEWAY_STATUS"
-  record "OpenClaw Gateway" "fail" "$(elapsed $T)"
+  warn "openclaw-gateway: $GATEWAY_STATUS — tentando iniciar..."
+
+  if systemctl start openclaw-gateway 2>/dev/null; then
+    sleep 3
+    GATEWAY_STATUS=$(systemctl is-active openclaw-gateway 2>/dev/null || echo "unknown")
+
+    if [[ "$GATEWAY_STATUS" == "active" ]]; then
+      ok "openclaw-gateway iniciado com sucesso"
+      record "OpenClaw Gateway" "ok" "$(elapsed $T)"
+    else
+      err "openclaw-gateway não subiu após start (status: $GATEWAY_STATUS)"
+      info "Verifique: journalctl -u openclaw-gateway -n 30 --no-pager"
+      record "OpenClaw Gateway" "fail" "$(elapsed $T)"
+    fi
+  else
+    err "Falha ao executar 'systemctl start openclaw-gateway'"
+    info "Verifique: journalctl -u openclaw-gateway -n 30 --no-pager"
+    record "OpenClaw Gateway" "fail" "$(elapsed $T)"
+  fi
 fi
 
 # OpenClaw CLI status
 if command -v openclaw &>/dev/null; then
-  OPENCLAW_OUT=$(openclaw status 2>/dev/null | head -5 || echo "")
+  OPENCLAW_OUT=$(openclaw status 2>/dev/null | grep -v '^$' | head -8 || echo "")
   if [[ -n "$OPENCLAW_OUT" ]]; then
-    ok "openclaw status:"
+    info "openclaw status:"
     echo "$OPENCLAW_OUT" | while IFS= read -r line; do
       echo -e "    ${DIM}$line${NC}"
     done
-  else
-    warn "openclaw status não retornou saída"
   fi
-else
-  warn "CLI 'openclaw' não encontrada no PATH"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
