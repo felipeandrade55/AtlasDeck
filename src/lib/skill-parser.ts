@@ -220,8 +220,49 @@ function buildAgentSkillMap(): Map<string, string[]> {
 }
 
 /**
- * Scan all skills: auto-discovers from systemPath and workspacePath,
- * then adds any configured skills with custom paths (marking missing ones).
+ * Collect all workspace `skills/` directories by reading openclaw.json
+ * or falling back to scanning workspace-* dirs in OPENCLAW_DIR.
+ */
+function getAllWorkspaceSkillsDirs(openclawDir: string, configOverride?: string): string[] {
+  if (configOverride) return [configOverride];
+
+  const dirs: string[] = [];
+
+  // Primary: read agent workspace paths from openclaw.json
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(openclawDir, 'openclaw.json'), 'utf-8'));
+    const agentList: Array<{ workspace?: string }> = cfg?.agents?.list || [];
+    for (const agent of agentList) {
+      if (agent.workspace) {
+        const sd = path.join(agent.workspace, 'skills');
+        if (!dirs.includes(sd)) dirs.push(sd);
+      }
+    }
+  } catch {}
+
+  // Fallback: scan every workspace-* and workspace dir
+  if (dirs.length === 0) {
+    try {
+      const entries = fs.readdirSync(openclawDir, { withFileTypes: true });
+      for (const e of entries) {
+        if (e.isDirectory() && (e.name === 'workspace' || e.name.startsWith('workspace-'))) {
+          const sd = path.join(openclawDir, e.name, 'skills');
+          if (!dirs.includes(sd)) dirs.push(sd);
+        }
+      }
+    } catch {}
+  }
+
+  // Always ensure workspace-infra/skills is included (standard install location)
+  const infra = path.join(openclawDir, 'workspace-infra', 'skills');
+  if (!dirs.includes(infra)) dirs.push(infra);
+
+  return dirs;
+}
+
+/**
+ * Scan all skills: auto-discovers from ALL workspace-*/skills dirs + system path,
+ * then marks configured skills that are missing on disk.
  */
 export function scanAllSkills(): SkillInfo[] {
   const skills: SkillInfo[] = [];
@@ -234,8 +275,8 @@ export function scanAllSkills(): SkillInfo[] {
     // Config is optional — proceed with auto-discovery only
   }
 
+  const openclawDir = process.env.OPENCLAW_DIR || '/root/.openclaw';
   const systemPath = config.systemSkillsPath || DEFAULT_SYSTEM_PATH;
-  const workspacePath = config.workspaceSkillsPath || DEFAULT_WORKSPACE_PATH;
   const agentSkillMap = buildAgentSkillMap();
 
   function discoverInDir(basePath: string, source: 'workspace' | 'system') {
@@ -254,11 +295,16 @@ export function scanAllSkills(): SkillInfo[] {
     } catch {}
   }
 
-  // Auto-discover from both standard paths
+  // 1. Auto-discover system skills
   discoverInDir(systemPath, 'system');
-  discoverInDir(workspacePath, 'workspace');
 
-  // Add configured skills that weren't auto-discovered (custom paths or explicit entries)
+  // 2. Auto-discover workspace skills from ALL workspace-*/skills directories
+  const workspaceSkillsDirs = getAllWorkspaceSkillsDirs(openclawDir, config.workspaceSkillsPath);
+  for (const wsDir of workspaceSkillsDirs) {
+    discoverInDir(wsDir, 'workspace');
+  }
+
+  // 3. Add configured skills that weren't auto-discovered (custom absolute paths)
   for (const { name, location } of config.skills) {
     let skillPath: string;
     let configSource: 'workspace' | 'system';
@@ -267,10 +313,9 @@ export function scanAllSkills(): SkillInfo[] {
       skillPath = path.join(systemPath, name);
       configSource = 'system';
     } else if (location === 'workspace') {
-      skillPath = path.join(workspacePath, name);
+      skillPath = path.join(openclawDir, 'workspace-infra', 'skills', name);
       configSource = 'workspace';
     } else {
-      // Full custom path
       skillPath = location;
       const norm = (p: string) => p.replace(/\\/g, '/');
       configSource = norm(location).includes('workspace') ? 'workspace' : 'system';
@@ -280,7 +325,6 @@ export function scanAllSkills(): SkillInfo[] {
     seenPaths.add(skillPath);
 
     if (!fs.existsSync(skillPath)) {
-      // Configured but not present on disk
       skills.push({
         id: name,
         name,
@@ -301,7 +345,7 @@ export function scanAllSkills(): SkillInfo[] {
     if (skill) skills.push(skill);
   }
 
-  // Sort: workspace first, then alphabetical; missing skills at the end
+  // Sort: workspace first, alphabetical; missing at the end
   skills.sort((a, b) => {
     if (!!a.missing !== !!b.missing) return a.missing ? 1 : -1;
     if (a.source !== b.source) return a.source === 'workspace' ? -1 : 1;
@@ -309,4 +353,34 @@ export function scanAllSkills(): SkillInfo[] {
   });
 
   return skills;
+}
+
+/**
+ * Returns diagnostic info about what paths are being scanned.
+ * Useful for debugging missing skills.
+ */
+export function getSkillsScanInfo(): {
+  openclawDir: string;
+  systemPath: string;
+  workspaceSkillsDirs: string[];
+  configPath: string;
+  configLoaded: boolean;
+  configuredSkills: string[];
+} {
+  const openclawDir = process.env.OPENCLAW_DIR || '/root/.openclaw';
+  let config: SkillsConfig = { skills: [] };
+  let configLoaded = false;
+  try {
+    config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+    configLoaded = true;
+  } catch {}
+
+  return {
+    openclawDir,
+    systemPath: config.systemSkillsPath || DEFAULT_SYSTEM_PATH,
+    workspaceSkillsDirs: getAllWorkspaceSkillsDirs(openclawDir, config.workspaceSkillsPath),
+    configPath: CONFIG_PATH,
+    configLoaded,
+    configuredSkills: config.skills.map((s) => s.name),
+  };
 }
