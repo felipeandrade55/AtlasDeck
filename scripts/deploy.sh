@@ -466,14 +466,14 @@ EOF
       sudo systemctl restart fail2ban
     fi
     ok "Fail2Ban instalado e Jail SSH ativa"
-    record "Fail2Ban Setup" "ok" "\$(elapsed \$T)"
+    record "Fail2Ban Setup" "ok" "$(elapsed $T)"
   else
     warn "Instalação do Fail2Ban ignorada."
-    record "Fail2Ban Setup" "skip" "\$(elapsed \$T)"
+    record "Fail2Ban Setup" "skip" "$(elapsed $T)"
   fi
 else
   ok "Fail2Ban já está instalado e ativo"
-  record "Fail2Ban Setup" "ok" "\$(elapsed \$T)"
+  record "Fail2Ban Setup" "ok" "$(elapsed $T)"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -484,11 +484,11 @@ T=$(now)
 
 if ! command -v ufw &>/dev/null; then
   warn "UFW (Firewall) não encontrado no sistema."
-  record "Firewall UFW" "skip" "\$(elapsed \$T)"
+  record "Firewall UFW" "skip" "$(elapsed $T)"
 else
   if sudo ufw status | grep -qi "Status: active"; then
     ok "Firewall UFW já está ativo"
-    record "Firewall UFW" "ok" "\$(elapsed \$T)"
+    record "Firewall UFW" "ok" "$(elapsed $T)"
   else
     echo ""
     read -rp "  Deseja ativar o Firewall (UFW) com portas padrão (SSH, 80, 443, 3000)? (y/N): " ENABLE_UFW
@@ -500,10 +500,10 @@ else
       sudo ufw allow 3000/tcp > /dev/null
       sudo ufw --force enable > /dev/null
       ok "Firewall ativado com segurança padrão"
-      record "Firewall UFW" "ok" "\$(elapsed \$T)"
+      record "Firewall UFW" "ok" "$(elapsed $T)"
     else
       warn "Ativação do Firewall ignorada."
-      record "Firewall UFW" "skip" "\$(elapsed \$T)"
+      record "Firewall UFW" "skip" "$(elapsed $T)"
     fi
   fi
 fi

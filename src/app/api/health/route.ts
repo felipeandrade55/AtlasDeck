@@ -57,37 +57,24 @@ export async function GET() {
   const checks: ServiceCheck[] = [];
 
   // Internal services
-  const [missionControl, gateway] = await Promise.all([
-    checkSystemdService('mission-control'),
+  const [atlasdeck, gateway] = await Promise.all([
+    checkPm2Service('atlasdeck'),
     checkSystemdService('openclaw-gateway'),
   ]);
-  checks.push({ ...missionControl, name: 'Mission Control' });
+  checks.push({ ...atlasdeck, name: 'Mission Control' });
   checks.push({ ...gateway, name: 'OpenClaw Gateway' });
 
-  // PM2 services
-  const pm2Services = ['classvault', 'content-vault', 'brain'];
-  const pm2Checks = await Promise.all(pm2Services.map(checkPm2Service));
-  checks.push(...pm2Checks);
-
   // External URLs
-  const urlChecks = await Promise.all([
-    checkUrl('https://tenacitas.cazaustre.dev'),
+  const [anthropic] = await Promise.all([
     checkUrl('https://api.anthropic.com', 3000),
   ]);
 
   checks.push({
-    name: 'tenacitas.cazaustre.dev',
-    status: urlChecks[0].status,
-    latency: urlChecks[0].latency,
-    url: 'https://tenacitas.cazaustre.dev',
-  });
-
-  checks.push({
     name: 'Anthropic API',
-    status: urlChecks[1].status === 'up' || (urlChecks[1] as { httpCode?: number }).httpCode === 401 ? 'up' : urlChecks[1].status,
-    latency: urlChecks[1].latency,
+    status: anthropic.status === 'up' || (anthropic as { httpCode?: number }).httpCode === 401 ? 'up' : anthropic.status,
+    latency: anthropic.latency,
     url: 'https://api.anthropic.com',
-    details: urlChecks[1].status === 'up' || (urlChecks[1] as { httpCode?: number }).httpCode === 401 ? 'reachable' : 'unreachable',
+    details: anthropic.status === 'up' || (anthropic as { httpCode?: number }).httpCode === 401 ? 'reachable' : 'unreachable',
   });
 
   // Overall status

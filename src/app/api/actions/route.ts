@@ -82,11 +82,11 @@ async function runAction(action: string): Promise<ActionResult> {
 
       case 'heartbeat': {
         // Check all critical services
-        const services = ['mission-control'];
-        const pm2services = ['classvault', 'content-vault', 'brain'];
+        const systemdServices = ['openclaw-gateway'];
+        const pm2services = ['atlasdeck'];
         const results: string[] = [];
 
-        for (const svc of services) {
+        for (const svc of systemdServices) {
           const { stdout } = await execAsync(`systemctl is-active ${svc} 2>/dev/null || echo "inactive"`);
           const status = stdout.trim();
           results.push(`${status === 'active' ? '✅' : '❌'} ${svc}: ${status}`);
@@ -104,12 +104,12 @@ async function runAction(action: string): Promise<ActionResult> {
           results.push('⚠️ PM2: could not connect');
         }
 
-        // Ping the main site
+        // Ping the dashboard itself
         try {
-          const { stdout: ping } = await execAsync('curl -s -o /dev/null -w "%{http_code}" --max-time 5 https://tenacitas.cazaustre.dev');
-          results.push(`\n🌐 tenacitas.cazaustre.dev: HTTP ${ping.trim()}`);
+          const { stdout: ping } = await execAsync('curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://localhost:3000');
+          results.push(`\n🌐 localhost:3000: HTTP ${ping.trim()}`);
         } catch {
-          results.push('\n🌐 tenacitas.cazaustre.dev: unreachable');
+          results.push('\n🌐 localhost:3000: unreachable');
         }
 
         output = results.join('\n');
