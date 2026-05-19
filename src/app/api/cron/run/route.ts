@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { execSync } from "child_process";
+import { insertCronRun } from "@/lib/cron-runs-db";
 
 async function createNotification(title: string, message: string, type: "info" | "success" | "warning" | "error" = "info") {
   try {
@@ -16,6 +17,7 @@ async function createNotification(title: string, message: string, type: "info" |
 // POST: Trigger a cron job immediately
 export async function POST(request: NextRequest) {
   let id: string | undefined;
+  const startedAt = new Date().toISOString();
   try {
     const body = await request.json();
     id = body.id;
@@ -34,6 +36,20 @@ export async function POST(request: NextRequest) {
       encoding: "utf-8",
     });
 
+    const completedAt = new Date().toISOString();
+    const durationMs = new Date(completedAt).getTime() - new Date(startedAt).getTime();
+
+    // Persist success to local SQLite
+    insertCronRun({
+      job_id: id,
+      started_at: startedAt,
+      completed_at: completedAt,
+      status: "success",
+      duration_ms: durationMs,
+      error: null,
+      trigger_type: "manual",
+    });
+
     // Create success notification
     await createNotification(
       "Cron Job Triggered",
@@ -47,8 +63,21 @@ export async function POST(request: NextRequest) {
       message: output.trim() || "Job triggered successfully",
     });
   } catch (error) {
+    const completedAt = new Date().toISOString();
+    const durationMs = new Date(completedAt).getTime() - new Date(startedAt).getTime();
     const message = error instanceof Error ? error.message : "Failed to trigger job";
     console.error("Error triggering cron job:", error);
+
+    // Persist error to local SQLite
+    insertCronRun({
+      job_id: id || "unknown",
+      started_at: startedAt,
+      completed_at: completedAt,
+      status: "error",
+      duration_ms: durationMs,
+      error: message,
+      trigger_type: "manual",
+    });
     
     // Create error notification using the id from the original body
     await createNotification(

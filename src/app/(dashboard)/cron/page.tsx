@@ -15,9 +15,21 @@ import {
   ChevronRight,
   Plus,
   Filter,
+  Shield,
+  HardDrive,
+  Play,
+  FileArchive,
+  Settings,
+  CheckCircle2,
+  XCircle,
+  Loader2,
+  BarChart3,
+  Activity,
+  Timer,
 } from "lucide-react";
 import { CronJobCard, type CronJob } from "@/components/CronJobCard";
 import { CronWeeklyTimeline } from "@/components/CronWeeklyTimeline";
+import { BackupConfigModal } from "@/components/BackupConfigModal";
 
 type ViewMode = "cards" | "timeline";
 type StatusFilter = "all" | "active" | "paused";
@@ -45,6 +57,24 @@ export default function CronJobsPage() {
   const [groupByAgent, setGroupByAgent] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
 
+  // Backup states
+  const [backupModalOpen, setBackupModalOpen] = useState(false);
+  const [backupStats, setBackupStats] = useState<{
+    totalBackups: number;
+    totalSizeHuman: string;
+    lastSuccess?: { startedAt: string; sizeHuman: string };
+    config?: { enabled: boolean; schedule: string; retentionDays: number };
+  } | null>(null);
+  const [backupLoading, setBackupLoading] = useState(false);
+  const [backupActionLoading, setBackupActionLoading] = useState(false);
+  const [backupHistoryOpen, setBackupHistoryOpen] = useState(false);
+
+  // Cron run stats
+  const [cronStats, setCronStats] = useState<{
+    last24h: { totalRuns: number; successRate: number; avgDurationMs: number };
+    last7d: { totalRuns: number; successRate: number; avgDurationMs: number };
+  } | null>(null);
+
   const fetchJobs = useCallback(async () => {
     try {
       setError(null);
@@ -60,12 +90,61 @@ export default function CronJobsPage() {
     }
   }, []);
 
+  const fetchBackupStats = useCallback(async () => {
+    try {
+      const res = await fetch("/api/backup");
+      if (!res.ok) return;
+      const data = await res.json();
+      setBackupStats({
+        totalBackups: data.totalBackups || 0,
+        totalSizeHuman: data.totalSizeHuman || "0 B",
+        lastSuccess: data.lastSuccess
+          ? {
+              startedAt: data.lastSuccess.startedAt,
+              sizeHuman: data.lastSuccess.sizeHuman,
+            }
+          : undefined,
+        config: data.config
+          ? {
+              enabled: data.config.enabled,
+              schedule: data.config.schedule,
+              retentionDays: data.config.retentionDays,
+            }
+          : undefined,
+      });
+    } catch {
+      // silently ignore backup fetch errors
+    }
+  }, []);
+
+  const fetchCronStats = useCallback(async () => {
+    try {
+      const res = await fetch("/api/cron/stats");
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.global) {
+        setCronStats({
+          last24h: data.global.last24h,
+          last7d: data.global.last7d,
+        });
+      }
+    } catch {
+      // silently ignore
+    }
+  }, []);
+
   // Initial fetch + auto-refresh every 10s
   useEffect(() => {
     fetchJobs();
-    const interval = setInterval(fetchJobs, 10000);
+    fetchBackupStats();
+    fetchCronStats();
+    const interval = setInterval(() => {
+      fetchJobs();
+      fetchBackupStats();
+      fetchCronStats();
+    }, 10000);
     return () => clearInterval(interval);
-  }, [fetchJobs]);
+  }, [fetchJobs, fetchBackupStats, fetchCronStats]);
 
   const handleToggle = async (id: string, enabled: boolean) => {
     try {
@@ -118,6 +197,33 @@ export default function CronJobsPage() {
 
     setRunToast({ id, status: "success", name: job?.name || id });
     setTimeout(() => setRunToast(null), 4000);
+  };
+
+  const handleRunBackup = async () => {
+    setBackupActionLoading(true);
+    try {
+      const res = await fetch("/api/backup", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Backup failed");
+      }
+      setRunToast({
+        id: "backup",
+        status: "success",
+        name: "Backup do Sistema",
+      });
+      setTimeout(() => setRunToast(null), 4000);
+      fetchBackupStats();
+    } catch (err) {
+      setRunToast({
+        id: "backup",
+        status: "error",
+        name: "Backup do Sistema",
+      });
+      setTimeout(() => setRunToast(null), 4000);
+    } finally {
+      setBackupActionLoading(false);
+    }
   };
 
   // Filter + sort logic
@@ -435,6 +541,264 @@ export default function CronJobsPage() {
             >
               Pausados
             </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Run Stats */}
+      {cronStats && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4 mb-4 md:mb-6">
+          <div
+            style={{
+              backgroundColor: "color-mix(in srgb, var(--card) 50%, transparent)",
+              border: "1px solid var(--border)",
+              borderRadius: "0.75rem",
+              padding: "1rem",
+              display: "flex",
+              alignItems: "center",
+              gap: "1rem",
+            }}
+          >
+            <div
+              style={{
+                padding: "0.75rem",
+                backgroundColor:
+                  "color-mix(in srgb, var(--accent) 20%, transparent)",
+                borderRadius: "0.5rem",
+              }}
+            >
+              <Activity className="w-6 h-6" style={{ color: "var(--accent)" }} />
+            </div>
+            <div>
+              <p
+                style={{
+                  fontSize: "1.5rem",
+                  fontWeight: 700,
+                  color: "var(--text-primary)",
+                }}
+              >
+                {cronStats.last24h.totalRuns}
+              </p>
+              <p
+                style={{ fontSize: "0.875rem", color: "var(--text-secondary)" }}
+              >
+                Execuções 24h
+              </p>
+            </div>
+          </div>
+          <div
+            style={{
+              backgroundColor: "color-mix(in srgb, var(--card) 50%, transparent)",
+              border: "1px solid var(--border)",
+              borderRadius: "0.75rem",
+              padding: "1rem",
+              display: "flex",
+              alignItems: "center",
+              gap: "1rem",
+            }}
+          >
+            <div
+              style={{
+                padding: "0.75rem",
+                backgroundColor:
+                  cronStats.last24h.successRate >= 90
+                    ? "color-mix(in srgb, var(--success) 20%, transparent)"
+                    : cronStats.last24h.successRate >= 70
+                    ? "color-mix(in srgb, var(--warning) 20%, transparent)"
+                    : "color-mix(in srgb, var(--error) 20%, transparent)",
+                borderRadius: "0.5rem",
+              }}
+            >
+              <BarChart3
+                className="w-6 h-6"
+                style={{
+                  color:
+                    cronStats.last24h.successRate >= 90
+                      ? "var(--success)"
+                      : cronStats.last24h.successRate >= 70
+                      ? "var(--warning)"
+                      : "var(--error)",
+                }}
+              />
+            </div>
+            <div>
+              <p
+                style={{
+                  fontSize: "1.5rem",
+                  fontWeight: 700,
+                  color: "var(--text-primary)",
+                }}
+              >
+                {cronStats.last24h.successRate}%
+              </p>
+              <p
+                style={{ fontSize: "0.875rem", color: "var(--text-secondary)" }}
+              >
+                Sucesso 24h
+              </p>
+            </div>
+          </div>
+          <div
+            style={{
+              backgroundColor: "color-mix(in srgb, var(--card) 50%, transparent)",
+              border: "1px solid var(--border)",
+              borderRadius: "0.75rem",
+              padding: "1rem",
+              display: "flex",
+              alignItems: "center",
+              gap: "1rem",
+            }}
+          >
+            <div
+              style={{
+                padding: "0.75rem",
+                backgroundColor:
+                  "color-mix(in srgb, var(--info) 20%, transparent)",
+                borderRadius: "0.5rem",
+              }}
+            >
+              <Timer className="w-6 h-6" style={{ color: "var(--info)" }} />
+            </div>
+            <div>
+              <p
+                style={{
+                  fontSize: "1.5rem",
+                  fontWeight: 700,
+                  color: "var(--text-primary)",
+                }}
+              >
+                {cronStats.last7d.successRate}%
+              </p>
+              <p
+                style={{ fontSize: "0.875rem", color: "var(--text-secondary)" }}
+              >
+                Sucesso 7d
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Backup Card */}
+      <div
+        className="mb-4 md:mb-6"
+        style={{
+          backgroundColor: "color-mix(in srgb, var(--card) 50%, transparent)",
+          border: "1px solid var(--border)",
+          borderRadius: "0.75rem",
+          padding: "1rem",
+          display: "flex",
+          flexDirection: "column",
+          gap: "0.75rem",
+        }}
+      >
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div
+              style={{
+                padding: "0.75rem",
+                backgroundColor:
+                  backupStats?.lastSuccess
+                    ? "color-mix(in srgb, var(--success) 20%, transparent)"
+                    : "color-mix(in srgb, var(--warning) 20%, transparent)",
+                borderRadius: "0.5rem",
+              }}
+            >
+              <Shield
+                className="w-6 h-6"
+                style={{
+                  color: backupStats?.lastSuccess
+                    ? "var(--success)"
+                    : "var(--warning)",
+                }}
+              />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2
+                  className="text-sm font-semibold"
+                  style={{
+                    color: "var(--text-primary)",
+                    fontFamily: "var(--font-heading)",
+                  }}
+                >
+                  Backup do Sistema
+                </h2>
+                {backupStats?.config?.enabled ? (
+                  <span
+                    className="text-[10px] px-1.5 py-0.5 rounded-full font-bold"
+                    style={{
+                      backgroundColor:
+                        "color-mix(in srgb, var(--success) 20%, transparent)",
+                      color: "var(--success)",
+                    }}
+                  >
+                    Ativo
+                  </span>
+                ) : (
+                  <span
+                    className="text-[10px] px-1.5 py-0.5 rounded-full font-bold"
+                    style={{
+                      backgroundColor: "rgba(42, 42, 42, 0.5)",
+                      color: "var(--text-secondary)",
+                    }}
+                  >
+                    Não configurado
+                  </span>
+                )}
+              </div>
+              <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
+                {backupStats?.lastSuccess
+                  ? `Último: ${new Date(
+                      backupStats.lastSuccess.startedAt
+                    ).toLocaleString("pt-BR", {
+                      day: "2-digit",
+                      month: "short",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })} · ${backupStats.lastSuccess.sizeHuman}`
+                  : backupStats?.totalBackups
+                  ? `${backupStats.totalBackups} backup(s) · ${backupStats.totalSizeHuman}`
+                  : "Nenhum backup realizado ainda"}
+                {backupStats?.config?.enabled &&
+                  ` · Próximo: ${backupStats.config.schedule}`}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setBackupModalOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg"
+              style={{
+                backgroundColor: "var(--card-elevated)",
+                color: "var(--text-secondary)",
+                border: "1px solid var(--border)",
+                cursor: "pointer",
+              }}
+            >
+              <Settings className="w-3.5 h-3.5" />
+              Configurar
+            </button>
+            <button
+              onClick={handleRunBackup}
+              disabled={backupActionLoading}
+              className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg"
+              style={{
+                backgroundColor: "color-mix(in srgb, var(--accent) 15%, transparent)",
+                color: "var(--accent)",
+                border: "1px solid color-mix(in srgb, var(--accent) 30%, transparent)",
+                cursor: backupActionLoading ? "not-allowed" : "pointer",
+                opacity: backupActionLoading ? 0.7 : 1,
+              }}
+            >
+              {backupActionLoading ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Play className="w-3.5 h-3.5" />
+              )}
+              Backup Agora
+            </button>
           </div>
         </div>
       </div>
@@ -902,6 +1266,15 @@ export default function CronJobsPage() {
           }
         }
       `}</style>
+
+      <BackupConfigModal
+        isOpen={backupModalOpen}
+        onClose={() => setBackupModalOpen(false)}
+        onSaved={() => {
+          fetchBackupStats();
+          setBackupModalOpen(false);
+        }}
+      />
     </div>
   );
 }

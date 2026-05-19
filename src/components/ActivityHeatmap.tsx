@@ -173,6 +173,37 @@ export function ActivityHeatmap() {
         </div>
       )}
 
+      {/* Recent Trend (Last 7 Days) */}
+      {stats.trend && stats.trend.length > 0 && (
+        <div style={{ marginTop: "1.5rem", paddingTop: "1.25rem", borderTop: "1px solid var(--border)" }}>
+          <h4 style={{ fontSize: "0.875rem", fontWeight: 600, color: "var(--text-primary)", marginBottom: "0.75rem" }}>Tendência (Últimos 7 dias)</h4>
+          <div style={{ display: "flex", alignItems: "flex-end", gap: "0.5rem", height: "60px" }}>
+            {stats.trend.slice().reverse().map((t, i) => {
+              const maxTrend = Math.max(...stats.trend.map(x => x.count), 1);
+              const height = `${(t.count / maxTrend) * 100}%`;
+              const successHeight = t.count > 0 ? `${(t.success / t.count) * 100}%` : "0%";
+              const errHeight = t.count > 0 ? `${(t.errors / t.count) * 100}%` : "0%";
+              
+              return (
+                <div key={i} style={{ flex: 1, height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", gap: "0.25rem", cursor: "pointer" }}
+                  onMouseEnter={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setTooltip({ day: t.day, count: t.count, x: rect.left + rect.width / 2, y: rect.top });
+                  }}
+                  onMouseLeave={() => setTooltip(null)}
+                >
+                  <div style={{ width: "100%", height, backgroundColor: "var(--card-elevated)", borderRadius: "4px", display: "flex", flexDirection: "column", justifyContent: "flex-end", overflow: "hidden" }}>
+                    {t.errors > 0 && <div style={{ width: "100%", height: errHeight, backgroundColor: "var(--error)" }} />}
+                    {t.success > 0 && <div style={{ width: "100%", height: successHeight, backgroundColor: "var(--success)", opacity: 0.8 }} />}
+                  </div>
+                  <span style={{ fontSize: "0.65rem", color: "var(--text-muted)" }}>{format(new Date(t.day + "T00:00:00"), "EE")}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Tooltip */}
       {tooltip && (
         <div style={{

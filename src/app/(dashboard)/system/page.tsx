@@ -173,7 +173,7 @@ export default function SystemMonitorPage() {
     }
   };
 
-  const handleFirewallAction = async (action: 'enable' | 'disable' | 'add' | 'delete', id?: string) => {
+  const handleFirewallAction = async (action: 'enable' | 'disable' | 'add' | 'delete' | 'lockdown', id?: string) => {
     setActionLoading(prev => ({ ...prev, firewall: true }));
     try {
       let res;

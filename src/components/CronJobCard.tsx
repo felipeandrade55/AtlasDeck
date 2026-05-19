@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import {
   Clock,
   Calendar,
@@ -70,6 +70,30 @@ export function CronJobCard({ job, onToggle, onDelete, onRun }: CronJobCardProps
   const [showHistory, setShowHistory] = useState(false);
   const [runHistory, setRunHistory] = useState<RunHistoryEntry[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+
+  // Job stats
+  const [jobStats, setJobStats] = useState<{
+    totalRuns: number;
+    successRate: number;
+    avgDurationMs: number;
+    lastStatus: string | null;
+  } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/cron/stats?jobId=${job.id}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled) return;
+        if (data.stats) {
+          setJobStats(data.stats);
+        }
+      })
+      .catch(() => {
+        // ignore
+      });
+    return () => { cancelled = true; };
+  }, [job.id]);
 
   const handleToggle = async () => {
     setIsToggling(true);
@@ -217,6 +241,28 @@ export function CronJobCard({ job, onToggle, onDelete, onRun }: CronJobCardProps
               >
                 {job.enabled ? "Ativo" : "Pausado"}
               </span>
+              {jobStats && jobStats.totalRuns > 0 && (
+                <span
+                  className="text-[10px] md:text-xs px-1.5 md:px-2 py-0.5 rounded-full whitespace-nowrap"
+                  style={{
+                    backgroundColor:
+                      jobStats.successRate >= 90
+                        ? 'color-mix(in srgb, var(--success) 20%, transparent)'
+                        : jobStats.successRate >= 70
+                        ? 'color-mix(in srgb, var(--warning) 20%, transparent)'
+                        : 'color-mix(in srgb, var(--error) 20%, transparent)',
+                    color:
+                      jobStats.successRate >= 90
+                        ? 'var(--success)'
+                        : jobStats.successRate >= 70
+                        ? 'var(--warning)'
+                        : 'var(--error)',
+                  }}
+                  title={`${jobStats.totalRuns} execuções · média ${(jobStats.avgDurationMs / 1000).toFixed(1)}s`}
+                >
+                  {jobStats.successRate}% OK
+                </span>
+              )}
             </div>
             <p className="text-xs md:text-sm mt-0.5 md:mt-1 line-clamp-2" style={{ color: 'var(--text-secondary)' }}>
               {job.description}
