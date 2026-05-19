@@ -15,7 +15,9 @@ import {
   XCircle,
   History,
   Loader2,
+  AlertTriangle,
 } from "lucide-react";
+import { getNextRuns, isValidCron } from "@/lib/cron-parser";
 
 export interface CronJob {
   id: string;
@@ -146,6 +148,23 @@ export function CronJobCard({ job, onToggle, onDelete, onRun }: CronJobCardProps
 
   const agentEmoji = AGENT_EMOJI[job.agentId] || "🤖";
 
+  const isOverdue = job.enabled && job.nextRun
+    ? new Date(job.nextRun).getTime() < Date.now()
+    : false;
+
+  // Preview next runs for cron schedules
+  const scheduleExpr =
+    typeof job.schedule === "object" && job.schedule && job.schedule.kind === "cron"
+      ? (job.schedule.expr as string)
+      : typeof job.schedule === "string"
+      ? job.schedule
+      : null;
+
+  const nextRunsPreview =
+    scheduleExpr && isValidCron(scheduleExpr)
+      ? getNextRuns(scheduleExpr, 3, new Date(), job.timezone)
+      : [];
+
   const formatHistoryDate = (dateStr: string | null) => {
     if (!dateStr) return "—";
     return new Date(dateStr).toLocaleString("pt-BR", {
@@ -249,13 +268,28 @@ export function CronJobCard({ job, onToggle, onDelete, onRun }: CronJobCardProps
           </div>
         </div>
 
-        {/* Next Run */}
+        {/* Next Run + Overdue */}
         {job.enabled && job.nextRun && (
           <div className="flex flex-wrap items-center gap-1 md:gap-2 text-xs md:text-sm mb-2 md:mb-4">
-            <Calendar className="w-3.5 h-3.5 md:w-4 md:h-4" style={{ color: 'var(--type-cron)' }} />
+            <Calendar className="w-3.5 h-3.5 md:w-4 md:h-4" style={{ color: isOverdue ? 'var(--error)' : 'var(--type-cron)' }} />
             <span style={{ color: 'var(--text-secondary)' }}>Próxima:</span>
-            <span style={{ color: 'var(--text-primary)' }}>{formatDate(job.nextRun)}</span>
-            <span style={{ color: 'var(--type-cron)' }}>({getRelativeTime(job.nextRun)})</span>
+            <span style={{ color: isOverdue ? 'var(--error)' : 'var(--text-primary)', fontWeight: isOverdue ? 700 : 400 }}>
+              {formatDate(job.nextRun)}
+            </span>
+            {isOverdue ? (
+              <span
+                className="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold"
+                style={{
+                  backgroundColor: 'color-mix(in srgb, var(--error) 15%, transparent)',
+                  color: 'var(--error)',
+                }}
+              >
+                <AlertTriangle className="w-3 h-3" />
+                Atrasado
+              </span>
+            ) : (
+              <span style={{ color: 'var(--type-cron)' }}>({getRelativeTime(job.nextRun)})</span>
+            )}
           </div>
         )}
 
@@ -305,6 +339,35 @@ export function CronJobCard({ job, onToggle, onDelete, onRun }: CronJobCardProps
               <span style={{ color: 'var(--text-muted)' }}>Fuso horário: </span>
               <span style={{ color: 'var(--text-secondary)' }}>{job.timezone}</span>
             </div>
+
+            {/* Next runs preview */}
+            {nextRunsPreview.length > 0 && (
+              <div className="mt-1">
+                <span style={{ color: 'var(--text-muted)' }}>Próximas execuções: </span>
+                <div className="flex flex-wrap gap-1.5 mt-1">
+                  {nextRunsPreview.map((run, i) => (
+                    <span
+                      key={i}
+                      className="text-[10px] md:text-xs px-1.5 py-0.5 rounded"
+                      style={{
+                        backgroundColor: 'var(--card-elevated)',
+                        color: 'var(--text-secondary)',
+                        border: '1px solid var(--border)',
+                      }}
+                    >
+                      {run.toLocaleString('pt-BR', {
+                        weekday: 'short',
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        hour12: false,
+                      })}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

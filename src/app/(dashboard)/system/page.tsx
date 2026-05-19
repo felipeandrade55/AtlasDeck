@@ -204,6 +204,35 @@ export default function SystemMonitorPage() {
     }
   };
 
+  const [tailscaleAuthUrl, setTailscaleAuthUrl] = useState<string | null>(null);
+
+  const handleTailscaleAction = async (action: 'install' | 'up') => {
+    setActionLoading(prev => ({ ...prev, tailscale: true }));
+    setTailscaleAuthUrl(null);
+    try {
+      const res = await fetch("/api/system/tailscale", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Ação do Tailscale falhou");
+
+      if (data.authUrl) {
+        setTailscaleAuthUrl(data.authUrl);
+        showToast("⚠️ Autenticação do Tailscale necessária no navegador", "warning" as any);
+      } else {
+        showToast(`✅ Tailscale: ${data.message}`);
+        setTimeout(fetchSystemData, 2000);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Ação falhou";
+      showToast(`❌ Tailscale: ${msg}`, "error");
+    } finally {
+      setActionLoading(prev => ({ ...prev, tailscale: false }));
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
@@ -613,6 +642,40 @@ export default function SystemMonitorPage() {
                   ))}
                 </div>
               )}
+
+              {!systemData.tailscale.active && (
+                <div className="mt-4 pt-4 space-y-3" style={{ borderTop: "1px solid var(--border)" }}>
+                  <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
+                    O Tailscale não está ativo neste servidor. Para criar uma rede segura privada (VPN zero-config), instale ou inicie o serviço:
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleTailscaleAction('install')}
+                      disabled={actionLoading.tailscale}
+                      className="flex-1 py-1.5 rounded text-xs font-semibold transition-opacity hover:opacity-90 disabled:opacity-50"
+                      style={{ backgroundColor: "var(--card-elevated)", color: "var(--text-primary)", border: "1px solid var(--border)" }}
+                    >
+                      {actionLoading.tailscale ? <Loader2 className="w-3 h-3 animate-spin mx-auto" /> : "Instalar Tailscale"}
+                    </button>
+                    <button
+                      onClick={() => handleTailscaleAction('up')}
+                      disabled={actionLoading.tailscale}
+                      className="flex-1 py-1.5 rounded text-xs font-bold transition-opacity hover:opacity-90 disabled:opacity-50"
+                      style={{ backgroundColor: "var(--info, #3b82f6)", color: "white" }}
+                    >
+                      {actionLoading.tailscale ? <Loader2 className="w-3 h-3 animate-spin mx-auto" /> : "Iniciar (Login)"}
+                    </button>
+                  </div>
+                  {tailscaleAuthUrl && (
+                    <div className="p-3 rounded bg-blue-500/10 border border-blue-500/20 text-center">
+                      <p className="text-xs text-blue-400 mb-2">Clique no link abaixo para autenticar seu servidor no Tailscale:</p>
+                      <a href={tailscaleAuthUrl} target="_blank" rel="noreferrer" className="text-xs font-mono font-bold text-blue-300 hover:underline break-all">
+                        {tailscaleAuthUrl}
+                      </a>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Firewall */}
@@ -647,6 +710,23 @@ export default function SystemMonitorPage() {
                   {showAddRule ? <X className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
                 </button>
               </div>
+
+              {systemData.tailscale.active && systemData.firewall.active && (
+                <div className="mb-4 p-3 rounded-lg" style={{ backgroundColor: "rgba(59,130,246,0.1)", border: "1px solid rgba(59,130,246,0.2)" }}>
+                  <p className="text-xs mb-2" style={{ color: "#93c5fd" }}>
+                    <strong>Tailscale Ativo!</strong> Você pode remover o acesso público das portas (3000, 22, 18789) e permitir tráfego apenas pela VPN privada com um clique.
+                  </p>
+                  <button
+                    onClick={() => handleFirewallAction('lockdown')}
+                    disabled={actionLoading.firewall}
+                    className="w-full py-1.5 rounded text-xs font-bold transition-opacity hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
+                    style={{ backgroundColor: "#3b82f6", color: "white" }}
+                  >
+                    {actionLoading.firewall ? <Loader2 className="w-3 h-3 animate-spin" /> : <ShieldCheck className="w-3 h-3" />}
+                    Ativar Lockdown (Apenas VPN)
+                  </button>
+                </div>
+              )}
 
               {showAddRule && (
                 <div className="mb-4 p-3 rounded-lg space-y-3" style={{ backgroundColor: "var(--card-elevated)", border: "1px solid var(--border)" }}>

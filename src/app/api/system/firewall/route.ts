@@ -27,6 +27,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, message: `Regra adicionada: ${allowStr} ${port}${proto}` });
     }
 
+    if (action === 'allow_tailscale') {
+      await execAsync('ufw allow in on tailscale0');
+      return NextResponse.json({ success: true, message: 'Tráfego do Tailscale liberado no firewall' });
+    }
+
+    if (action === 'lockdown') {
+      // Allow tailscale first
+      await execAsync('ufw allow in on tailscale0');
+      // Delete allow rules for sensitive ports to block public internet
+      // It's safe to run delete even if the rule doesn't exist, we ignore errors
+      await execAsync('ufw delete allow 3000/tcp || true');
+      await execAsync('ufw delete allow 18789/tcp || true');
+      await execAsync('ufw delete allow 22/tcp || true');
+      await execAsync('ufw delete allow ssh || true');
+      return NextResponse.json({ success: true, message: 'Portas públicas fechadas. Acesso restrito ao Tailscale.' });
+    }
+
     return NextResponse.json({ error: 'Ação inválida' }, { status: 400 });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
