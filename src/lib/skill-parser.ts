@@ -261,7 +261,7 @@ function getAllWorkspaceSkillsDirs(openclawDir: string, configOverride?: string)
 }
 
 /**
- * Scan all skills: auto-discovers from ALL workspace-*/skills dirs + system path,
+ * Scan all skills: auto-discovers from all workspace skills dirs + system path,
  * then marks configured skills that are missing on disk.
  */
 export function scanAllSkills(): SkillInfo[] {
