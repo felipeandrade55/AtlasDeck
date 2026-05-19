@@ -2,13 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { logActivity } from '@/lib/activities-db';
-
-const OPENCLAW_DIR = process.env.OPENCLAW_DIR || '/root/.openclaw';
-
-const WORKSPACE_MAP: Record<string, string> = {
-  workspace: path.join(OPENCLAW_DIR, 'workspace'),
-  'mission-control': path.join(OPENCLAW_DIR, 'workspace', 'mission-control'),
-};
+import { resolveWorkspacePath } from '@/lib/workspace-resolver';
 
 // Protected paths - never allow deletion
 const PROTECTED = [
@@ -25,7 +19,7 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Missing path' }, { status: 400 });
     }
 
-    const base = WORKSPACE_MAP[workspace || 'workspace'];
+    const base = resolveWorkspacePath(workspace || 'workspace');
     if (!base) {
       return NextResponse.json({ error: 'Unknown workspace' }, { status: 400 });
     }

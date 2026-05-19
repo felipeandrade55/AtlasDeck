@@ -204,7 +204,7 @@ export async function GET() {
           status: d.state === 'running' ? 'active' : d.state === 'exited' ? 'inactive' : 'failed',
           description: d.image,
           backend: "docker",
-          uptime: d.startedAt ? Date.now() - new Date(d.startedAt * 1000).getTime() : null,
+          uptime: d.startedAt ? Date.now() - new Date(Number(d.startedAt) * 1000).getTime() : null,
           restarts: 0,
         });
       }

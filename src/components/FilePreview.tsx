@@ -46,6 +46,10 @@ function isImageFile(ext: string): boolean {
   return ["png", "jpg", "jpeg", "gif", "webp", "svg", "ico"].includes(ext);
 }
 
+function isPdfFile(ext: string): boolean {
+  return ext === "pdf";
+}
+
 function isMarkdown(ext: string): boolean {
   return ext === "md" || ext === "mdx";
 }
@@ -133,6 +137,7 @@ export function FilePreview({ workspace, path, name, onClose }: FilePreviewProps
 
   const ext = getFileExtension(name);
   const isImage = isImageFile(ext);
+  const isPdf = isPdfFile(ext);
   const isMd = isMarkdown(ext);
   const isCode = isCodeFile(ext);
 
@@ -303,6 +308,17 @@ export function FilePreview({ workspace, path, name, onClose }: FilePreviewProps
                 alt={name}
                 className="max-w-full max-h-full object-contain rounded-lg"
                 onError={() => setError("Failed to load image")}
+              />
+            </div>
+          )}
+
+          {!loading && !error && isPdf && (
+            <div className="flex items-center justify-center h-full">
+              <iframe
+                src={`/api/browse?workspace=${encodeURIComponent(workspace)}&path=${encodeURIComponent(path)}&raw=true`}
+                title={name}
+                className="w-full h-full rounded-lg"
+                style={{ border: "none", minHeight: "60vh" }}
               />
             </div>
           )}

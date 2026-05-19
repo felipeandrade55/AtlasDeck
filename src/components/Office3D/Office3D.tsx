@@ -2,8 +2,8 @@
 
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Sky, Environment } from '@react-three/drei';
-import { Suspense, useState } from 'react';
-import { Vector3 } from 'three';
+import { Suspense, useState, useEffect } from 'react';
+import { Vector3, PCFShadowMap } from 'three';
 import { AGENTS } from './agentsConfig';
 import type { AgentState } from './agentsConfig';
 import AgentDesk from './AgentDesk';
@@ -25,15 +25,47 @@ export default function Office3D() {
   const [controlMode, setControlMode] = useState<'orbit' | 'fps'>('orbit');
   const [avatarPositions, setAvatarPositions] = useState<Map<string, any>>(new Map());
   
-  // Mock data - TODO: Replace with real API data
-  const [agentStates] = useState<Record<string, AgentState>>({
-    main: { id: 'main', status: 'working', currentTask: 'Procesando emails', model: 'opus', tokensPerHour: 15000, tasksInQueue: 3, uptime: 12 },
-    'agent-2': { id: 'agent-2', status: 'idle', model: 'sonnet', tokensPerHour: 0, tasksInQueue: 0, uptime: 8 },
-    'agent-3': { id: 'agent-3', status: 'thinking', currentTask: 'Generando guión YouTube', model: 'opus', tokensPerHour: 8000, tasksInQueue: 1, uptime: 5 },
-    'agent-4': { id: 'agent-4', status: 'working', currentTask: 'Redactando post', model: 'sonnet', tokensPerHour: 5000, tasksInQueue: 2, uptime: 10 },
-    'agent-5': { id: 'agent-5', status: 'idle', model: 'sonnet', tokensPerHour: 0, tasksInQueue: 0, uptime: 7 },
-    'agent-6': { id: 'agent-6', status: 'error', currentTask: 'Failed deployment', model: 'haiku', tokensPerHour: 1000, tasksInQueue: 0, uptime: 15 },
-  });
+  const [agentStates, setAgentStates] = useState<Record<string, AgentState>>({});
+
+  useEffect(() => {
+    const fetchAgents = async () => {
+      try {
+        const res = await fetch('/api/office');
+        if (res.ok) {
+          const data = await res.json();
+          const newStates: Record<string, AgentState> = {};
+          
+          if (data.agents && Array.isArray(data.agents)) {
+            data.agents.forEach((agent: any) => {
+              // Parse status from currentTask prefix if available
+              let status: 'working' | 'idle' | 'thinking' | 'error' = agent.isActive ? 'working' : 'idle';
+              if (agent.currentTask && typeof agent.currentTask === 'string') {
+                if (agent.currentTask.includes('ERROR')) status = 'error';
+                else if (agent.currentTask.includes('THINKING')) status = 'thinking';
+              }
+              
+              newStates[agent.id] = {
+                id: agent.id,
+                status,
+                currentTask: agent.currentTask || 'Idle',
+                model: agent.model || 'opus',
+                tokensPerHour: agent.tokensPerHour || 0,
+                tasksInQueue: agent.tasksInQueue || 0,
+                uptime: agent.uptime || 0,
+              };
+            });
+            setAgentStates(newStates);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch agents:', err);
+      }
+    };
+
+    fetchAgents();
+    const interval = setInterval(fetchAgents, 5000);
+    return () => clearInterval(interval);
+  }, []);
 
   const handleDeskClick = (agentId: string) => {
     setSelectedAgent(agentId);
@@ -87,7 +119,7 @@ export default function Office3D() {
     <div className="fixed inset-0 bg-gray-900" style={{ height: '100vh', width: '100vw' }}>
       <Canvas
         camera={{ position: [0, 8, 12], fov: 60 }}
-        shadows
+        shadows={{ type: PCFShadowMap }}
         gl={{ antialias: true, alpha: false }}
         style={{ width: '100%', height: '100%' }}
       >
@@ -101,7 +133,7 @@ export default function Office3D() {
           <Lights />
 
           {/* Cielo y ambiente */}
-          <Sky sunPosition={[100, 20, 100]} />
+          <Sky sunPosition={[10, 2, 10]} />
           <Environment preset="sunset" />
 
           {/* Suelo */}
