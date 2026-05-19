@@ -112,6 +112,7 @@ async function runOpenClaw(args: string[]): Promise<unknown> {
     timeout: OPENCLAW_TIMEOUT_MS,
     windowsHide: true,
     maxBuffer: OPENCLAW_MAX_BUFFER,
+    encoding: "utf8",
     env: {
       ...process.env,
       OPENCLAW_DIR: config.openclawDir,
@@ -119,21 +120,26 @@ async function runOpenClaw(args: string[]): Promise<unknown> {
     },
   });
 
-  return JSON.parse(stdout);
+  try {
+    return JSON.parse(String(stdout));
+  } catch (err) {
+    const raw = String(stdout).trim();
+    throw new Error(`Invalid JSON output from OpenClaw (Length: ${raw.length}):\n${raw.slice(0, 500)}`);
+  }
 }
 
 /**
  * Get current OpenClaw status with session data.
  */
 export async function getOpenClawStatus(): Promise<unknown> {
-  return runOpenClaw(["status", "--json"]);
+  return runOpenClaw(["status"]);
 }
 
 /**
  * Get current OpenClaw sessions list.
  */
 export async function getOpenClawSessionsList(): Promise<unknown> {
-  return runOpenClaw(["sessions", "list", "--json"]);
+  return runOpenClaw(["sessions", "list"]);
 }
 
 /**

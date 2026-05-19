@@ -182,7 +182,12 @@ async function runOpenClaw(args: string[]): Promise<unknown> {
     },
   });
 
-  return JSON.parse(String(stdout));
+  try {
+    return JSON.parse(String(stdout));
+  } catch (err) {
+    const raw = String(stdout).trim();
+    throw new Error(`Invalid JSON output from OpenClaw (Length: ${raw.length}):\n${raw.slice(0, 500)}`);
+  }
 }
 
 function extractSessionsList(data: unknown): RawSession[] {
@@ -687,7 +692,7 @@ function mergeSessions(sessions: ParsedSession[]): ParsedSession[] {
 
 async function readOpenClawSessions(diagnostics: string[]) {
   try {
-    const data = await runOpenClaw(["sessions", "list", "--json"]);
+    const data = await runOpenClaw(["sessions", "list"]);
     const sessions = extractSessionsList(data)
       .map((raw) => buildSession(raw, "sessions-list"))
       .filter((session): session is ParsedSession => !!session);
@@ -699,7 +704,7 @@ async function readOpenClawSessions(diagnostics: string[]) {
   }
 
   try {
-    const data = await runOpenClaw(["status", "--json"]);
+    const data = await runOpenClaw(["status"]);
     const sessions = extractStatusSessions(data)
       .map((raw) => buildSession(raw, "status"))
       .filter((session): session is ParsedSession => !!session);
