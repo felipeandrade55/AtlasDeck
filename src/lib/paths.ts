@@ -6,7 +6,7 @@ import path from 'path';
  * For local development, override via environment variables.
  */
 export const OPENCLAW_DIR = process.env.OPENCLAW_DIR || '/root/.openclaw';
-export const OPENCLAW_WORKSPACE = process.env.OPENCLAW_WORKSPACE || path.join(OPENCLAW_DIR, 'workspace');
+export const OPENCLAW_WORKSPACE = process.env.OPENCLAW_WORKSPACE || path.join(OPENCLAW_DIR, 'workspace', 'mission-control');
 export const OPENCLAW_CONFIG = path.join(OPENCLAW_DIR, 'openclaw.json');
 export const OPENCLAW_MEDIA = path.join(OPENCLAW_DIR, 'media');
 

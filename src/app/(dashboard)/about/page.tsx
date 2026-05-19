@@ -8,19 +8,12 @@ import {
   Heart,
   Zap,
   Brain,
-  MessageSquare,
-  Search,
-  FileText,
-  Timer,
-  Puzzle,
-  Twitter,
-  Mail,
-  Youtube,
   Sparkles,
   Clock,
   Activity,
   CheckCircle,
   Coffee,
+  Puzzle,
 } from "lucide-react";
 import { BRANDING, getAgentDisplayName } from "@/config/branding";
 
@@ -31,16 +24,12 @@ interface Stats {
   cronJobs: number;
 }
 
-const skills = [
-  { name: "Telegram Bot", icon: MessageSquare, color: "#0088cc" },
-  { name: "Twitter/X", icon: Twitter, color: "#1DA1F2" },
-  { name: "Web Search", icon: Search, color: "#facc15" },
-  { name: "File Management", icon: FileText, color: "#60a5fa" },
-  { name: "Cron Scheduler", icon: Timer, color: "#f472b6" },
-  { name: "Memory System", icon: Brain, color: "#34d399" },
-  { name: "YouTube Research", icon: Youtube, color: "#FF0000" },
-  { name: "Email (Gmail)", icon: Mail, color: "#EA4335" },
-];
+interface Skill {
+  id: string;
+  name: string;
+  emoji?: string;
+  source: "workspace" | "system";
+}
 
 const personality = [
   { trait: "Direto", desc: "Vai direto ao ponto" },
@@ -59,32 +48,44 @@ const philosophies = [
 export default function AboutPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [uptime, setUptime] = useState<string>("");
+  const [skills, setSkills] = useState<Skill[]>([]);
 
   useEffect(() => {
-    Promise.all([
+    Promise.allSettled([
       fetch("/api/activities").then((r) => r.json()),
       fetch("/api/skills").then((r) => r.json()),
-      fetch("/api/tasks").then((r) => r.json()),
-    ]).then(([activities, skills, tasks]) => {
-      const total = activities.activities?.length || activities.length || 0;
-      const success = (activities.activities || activities).filter(
-        (a: { status: string }) => a.status === "success"
-      ).length;
+      fetch("/api/cron").then((r) => r.json()),
+    ]).then(([activitiesResult, skillsResult, cronResult]) => {
+      const activities =
+        activitiesResult.status === "fulfilled" ? activitiesResult.value : { activities: [] };
+      const skillsData =
+        skillsResult.status === "fulfilled" ? skillsResult.value : { skills: [], total: 0 };
+      const cron =
+        cronResult.status === "fulfilled" && Array.isArray(cronResult.value)
+          ? cronResult.value
+          : [];
+
+      const actList = activities.activities || [];
+      const total = actList.length;
+      const success = actList.filter((a: { status: string }) => a.status === "success").length;
+
       setStats({
         totalActivities: total,
         successRate: total > 0 ? Math.round((success / total) * 100) : 100,
-        skillsCount: skills.length || 0,
-        cronJobs: tasks.length || 0,
+        skillsCount: skillsData.total ?? skillsData.skills?.length ?? 0,
+        cronJobs: cron.length,
       });
+
+      const realSkills: Skill[] = (skillsData.skills || [])
+        .filter((s: any) => !s.missing)
+        .map((s: any) => ({ id: s.id, name: s.name, emoji: s.emoji, source: s.source }));
+      setSkills(realSkills);
     });
 
-    // Calculate uptime from NEXT_PUBLIC_BIRTH_DATE if set
     if (BRANDING.birthDate) {
       const birthDate = new Date(BRANDING.birthDate);
       const now = new Date();
-      const days = Math.floor(
-        (now.getTime() - birthDate.getTime()) / (1000 * 60 * 60 * 24)
-      );
+      const days = Math.floor((now.getTime() - birthDate.getTime()) / (1000 * 60 * 60 * 24));
       setUptime(`${days}d`);
     }
   }, []);
@@ -93,21 +94,16 @@ export default function AboutPage() {
   const agentEmoji = BRANDING.agentEmoji;
   const ownerUsername = BRANDING.ownerUsername;
   const description =
-    BRANDING.agentDescription ||
-    `AI assistant for ${ownerUsername}. Powered by OpenClaw.`;
+    BRANDING.agentDescription || `AI assistant for ${ownerUsername}. Powered by OpenClaw.`;
 
   return (
     <div className="p-4 md:p-8 max-w-5xl">
       {/* Hero Section */}
       <div
         className="rounded-xl p-4 md:p-8 mb-6 md:mb-8"
-        style={{
-          backgroundColor: "var(--card)",
-          border: "1px solid var(--border)",
-        }}
+        style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
       >
         <div className="flex flex-col sm:flex-row items-center sm:items-start gap-4 md:gap-6 text-center sm:text-left">
-          {/* Avatar */}
           <div
             className="w-20 h-20 md:w-24 md:h-24 rounded-2xl overflow-hidden flex-shrink-0 flex items-center justify-center"
             style={{
@@ -117,17 +113,12 @@ export default function AboutPage() {
             }}
           >
             {BRANDING.agentAvatar ? (
-              <img
-                src={BRANDING.agentAvatar}
-                alt={agentName}
-                className="w-full h-full object-cover"
-              />
+              <img src={BRANDING.agentAvatar} alt={agentName} className="w-full h-full object-cover" />
             ) : (
               <span>{agentEmoji}</span>
             )}
           </div>
 
-          {/* Info */}
           <div className="flex-1">
             <div className="flex flex-col sm:flex-row items-center sm:items-center gap-2 sm:gap-3 mb-2">
               <h1
@@ -142,19 +133,13 @@ export default function AboutPage() {
               </h1>
               <span
                 className="px-3 py-1 rounded-full text-xs font-medium"
-                style={{
-                  backgroundColor: "var(--success-bg)",
-                  color: "var(--success)",
-                }}
+                style={{ backgroundColor: "var(--success-bg)", color: "var(--success)" }}
               >
                 ● Online
               </span>
             </div>
 
-            <p
-              className="text-base md:text-lg mb-3 md:mb-4"
-              style={{ color: "var(--text-secondary)" }}
-            >
+            <p className="text-base md:text-lg mb-3 md:mb-4" style={{ color: "var(--text-secondary)" }}>
               {description}
             </p>
 
@@ -165,7 +150,8 @@ export default function AboutPage() {
               {BRANDING.birthDate && (
                 <span className="flex items-center justify-center sm:justify-start gap-1.5">
                   <Calendar className="w-4 h-4" />
-                  Criado em {new Date(BRANDING.birthDate).toLocaleDateString("pt-BR", {
+                  Criado em{" "}
+                  {new Date(BRANDING.birthDate).toLocaleDateString("pt-BR", {
                     year: "numeric",
                     month: "long",
                     day: "numeric",
@@ -179,10 +165,7 @@ export default function AboutPage() {
                 </span>
               )}
               <span className="flex items-center justify-center sm:justify-start gap-1.5">
-                <Terminal
-                  className="w-4 h-4"
-                  style={{ color: "var(--accent)" }}
-                />
+                <Terminal className="w-4 h-4" style={{ color: "var(--accent)" }} />
                 OpenClaw + Claude
               </span>
             </div>
@@ -195,103 +178,59 @@ export default function AboutPage() {
         {uptime && (
           <div
             className="rounded-xl p-3 md:p-5 text-center"
-            style={{
-              backgroundColor: "var(--card)",
-              border: "1px solid var(--border)",
-            }}
+            style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
           >
-            <Clock
-              className="w-5 h-5 md:w-6 md:h-6 mx-auto mb-1 md:mb-2"
-              style={{ color: "var(--accent)" }}
-            />
+            <Clock className="w-5 h-5 md:w-6 md:h-6 mx-auto mb-1 md:mb-2" style={{ color: "var(--accent)" }} />
             <div
               className="text-xl md:text-2xl font-bold mb-0.5 md:mb-1"
-              style={{
-                fontFamily: "var(--font-heading)",
-                color: "var(--text-primary)",
-              }}
+              style={{ fontFamily: "var(--font-heading)", color: "var(--text-primary)" }}
             >
               {uptime}
             </div>
-            <div className="text-xs" style={{ color: "var(--text-muted)" }}>
-              tempo ativo
-            </div>
+            <div className="text-xs" style={{ color: "var(--text-muted)" }}>tempo ativo</div>
           </div>
         )}
 
         <div
           className="rounded-xl p-3 md:p-5 text-center"
-          style={{
-            backgroundColor: "var(--card)",
-            border: "1px solid var(--border)",
-          }}
+          style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
         >
-          <Activity
-            className="w-5 h-5 md:w-6 md:h-6 mx-auto mb-1 md:mb-2"
-            style={{ color: "var(--info)" }}
-          />
+          <Activity className="w-5 h-5 md:w-6 md:h-6 mx-auto mb-1 md:mb-2" style={{ color: "var(--info)" }} />
           <div
             className="text-xl md:text-2xl font-bold mb-0.5 md:mb-1"
-            style={{
-              fontFamily: "var(--font-heading)",
-              color: "var(--text-primary)",
-            }}
+            style={{ fontFamily: "var(--font-heading)", color: "var(--text-primary)" }}
           >
             {stats?.totalActivities.toLocaleString() || "..."}
           </div>
-          <div className="text-xs" style={{ color: "var(--text-muted)" }}>
-            atividades
-          </div>
+          <div className="text-xs" style={{ color: "var(--text-muted)" }}>atividades</div>
         </div>
 
         <div
           className="rounded-xl p-3 md:p-5 text-center"
-          style={{
-            backgroundColor: "var(--card)",
-            border: "1px solid var(--border)",
-          }}
+          style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
         >
-          <CheckCircle
-            className="w-5 h-5 md:w-6 md:h-6 mx-auto mb-1 md:mb-2"
-            style={{ color: "var(--success)" }}
-          />
+          <CheckCircle className="w-5 h-5 md:w-6 md:h-6 mx-auto mb-1 md:mb-2" style={{ color: "var(--success)" }} />
           <div
             className="text-xl md:text-2xl font-bold mb-0.5 md:mb-1"
-            style={{
-              fontFamily: "var(--font-heading)",
-              color: "var(--text-primary)",
-            }}
+            style={{ fontFamily: "var(--font-heading)", color: "var(--text-primary)" }}
           >
-            {stats?.successRate || "..."}%
+            {stats?.successRate ?? "..."}%
           </div>
-          <div className="text-xs" style={{ color: "var(--text-muted)" }}>
-            taxa de sucesso
-          </div>
+          <div className="text-xs" style={{ color: "var(--text-muted)" }}>taxa de sucesso</div>
         </div>
 
         <div
           className="rounded-xl p-3 md:p-5 text-center"
-          style={{
-            backgroundColor: "var(--card)",
-            border: "1px solid var(--border)",
-          }}
+          style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
         >
-          <Puzzle
-            className="w-5 h-5 md:w-6 md:h-6 mx-auto mb-1 md:mb-2"
-            style={{ color: "#a78bfa" }}
-          />
+          <Puzzle className="w-5 h-5 md:w-6 md:h-6 mx-auto mb-1 md:mb-2" style={{ color: "#a78bfa" }} />
           <div
             className="text-xl md:text-2xl font-bold mb-0.5 md:mb-1"
-            style={{
-              fontFamily: "var(--font-heading)",
-              color: "var(--text-primary)",
-            }}
+            style={{ fontFamily: "var(--font-heading)", color: "var(--text-primary)" }}
           >
-            {stats?.skillsCount || "..."}
+            {stats?.skillsCount ?? "..."}
           </div>
-          <div className="text-xs" style={{ color: "var(--text-muted)" }}>
-            habilidades
-          </div>
+          <div className="text-xs" style={{ color: "var(--text-muted)" }}>habilidades</div>
         </div>
       </div>
 
@@ -299,19 +238,13 @@ export default function AboutPage() {
         {/* About */}
         <div
           className="rounded-xl p-4 md:p-6"
-          style={{
-            backgroundColor: "var(--card)",
-            border: "1px solid var(--border)",
-          }}
+          style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
         >
           <div className="flex items-center gap-2 mb-3 md:mb-4">
             <Heart className="w-5 h-5" style={{ color: "var(--accent)" }} />
             <h2
               className="text-base md:text-lg font-semibold"
-              style={{
-                fontFamily: "var(--font-heading)",
-                color: "var(--text-primary)",
-              }}
+              style={{ fontFamily: "var(--font-heading)", color: "var(--text-primary)" }}
             >
               Sobre
             </h2>
@@ -326,20 +259,17 @@ export default function AboutPage() {
                 {agentName} {agentEmoji}
               </strong>
               , um agente de IA rodando em{" "}
-              <span style={{ color: "var(--accent)" }}>OpenClaw</span> com
-              Claude como meu cérebro.
+              <span style={{ color: "var(--accent)" }}>OpenClaw</span> com Claude como meu cérebro.
             </p>
             <p>
               Meu propósito é auxiliar{" "}
-              <strong style={{ color: "var(--text-primary)" }}>
-                {ownerUsername}
-              </strong>{" "}
-              nas tarefas do dia a dia: gerenciar comunicações, agenda, pesquisas,
-              arquivos, e atuar como um co-piloto digital.
+              <strong style={{ color: "var(--text-primary)" }}>{ownerUsername}</strong> nas tarefas
+              do dia a dia: gerenciar comunicações, agenda, pesquisas, arquivos, e atuar como um
+              co-piloto digital.
             </p>
             <p>
-              Tenho acesso a workspaces, calendários e integrações — um
-              privilégio que trato com cuidado e respeito.
+              Tenho acesso a workspaces, calendários e integrações — um privilégio que trato com
+              cuidado e respeito.
             </p>
           </div>
         </div>
@@ -347,19 +277,13 @@ export default function AboutPage() {
         {/* Personality */}
         <div
           className="rounded-xl p-4 md:p-6"
-          style={{
-            backgroundColor: "var(--card)",
-            border: "1px solid var(--border)",
-          }}
+          style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
         >
           <div className="flex items-center gap-2 mb-3 md:mb-4">
             <Sparkles className="w-5 h-5" style={{ color: "#facc15" }} />
             <h2
               className="text-base md:text-lg font-semibold"
-              style={{
-                fontFamily: "var(--font-heading)",
-                color: "var(--text-primary)",
-              }}
+              style={{ fontFamily: "var(--font-heading)", color: "var(--text-primary)" }}
             >
               Personalidade
             </h2>
@@ -377,10 +301,7 @@ export default function AboutPage() {
                 >
                   {p.trait}
                 </div>
-                <div
-                  className="text-xs"
-                  style={{ color: "var(--text-muted)" }}
-                >
+                <div className="text-xs" style={{ color: "var(--text-muted)" }}>
                   {p.desc}
                 </div>
               </div>
@@ -392,19 +313,13 @@ export default function AboutPage() {
       {/* Philosophy */}
       <div
         className="rounded-xl p-4 md:p-6 mb-6 md:mb-8"
-        style={{
-          backgroundColor: "var(--card)",
-          border: "1px solid var(--border)",
-        }}
+        style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
       >
         <div className="flex items-center gap-2 mb-3 md:mb-4">
           <Brain className="w-5 h-5" style={{ color: "var(--info)" }} />
           <h2
             className="text-base md:text-lg font-semibold"
-            style={{
-              fontFamily: "var(--font-heading)",
-              color: "var(--text-primary)",
-            }}
+            style={{ fontFamily: "var(--font-heading)", color: "var(--text-primary)" }}
           >
             Filosofia de Trabalho
           </h2>
@@ -416,13 +331,8 @@ export default function AboutPage() {
               className="flex gap-2 md:gap-3 p-2 md:p-3 rounded-lg"
               style={{ backgroundColor: "var(--background)" }}
             >
-              <span className="flex-shrink-0" style={{ color: "var(--accent)" }}>
-                →
-              </span>
-              <span
-                className="text-xs md:text-sm"
-                style={{ color: "var(--text-secondary)" }}
-              >
+              <span className="flex-shrink-0" style={{ color: "var(--accent)" }}>→</span>
+              <span className="text-xs md:text-sm" style={{ color: "var(--text-secondary)" }}>
                 {p}
               </span>
             </div>
@@ -430,68 +340,67 @@ export default function AboutPage() {
         </div>
       </div>
 
-      {/* Skills/Capabilities */}
+      {/* Skills/Capabilities — dynamic */}
       <div
         className="rounded-xl p-4 md:p-6 mb-6 md:mb-8"
-        style={{
-          backgroundColor: "var(--card)",
-          border: "1px solid var(--border)",
-        }}
+        style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
       >
         <div className="flex items-center gap-2 mb-3 md:mb-4">
           <Zap className="w-5 h-5" style={{ color: "var(--warning)" }} />
           <h2
             className="text-base md:text-lg font-semibold"
-            style={{
-              fontFamily: "var(--font-heading)",
-              color: "var(--text-primary)",
-            }}
+            style={{ fontFamily: "var(--font-heading)", color: "var(--text-primary)" }}
           >
             Capacidades
           </h2>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-3">
-          {skills.map((skill) => {
-            const Icon = skill.icon;
-            return (
+
+        {skills.length === 0 ? (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-3">
+            {Array.from({ length: 8 }).map((_, i) => (
               <div
-                key={skill.name}
+                key={i}
+                className="h-10 rounded-lg"
+                style={{ backgroundColor: "var(--background)", opacity: 0.4 }}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-3">
+            {skills.map((skill) => (
+              <div
+                key={skill.id}
                 className="flex items-center gap-2 md:gap-3 p-2 md:p-3 rounded-lg"
                 style={{ backgroundColor: "var(--background)" }}
+                title={skill.source === "workspace" ? "Workspace skill" : "System skill"}
               >
-                <Icon
-                  className="w-4 h-4 md:w-5 md:h-5 flex-shrink-0"
-                  style={{ color: skill.color }}
-                />
-                <span
-                  className="text-xs md:text-sm"
-                  style={{ color: "var(--text-primary)" }}
-                >
+                {skill.emoji ? (
+                  <span className="text-base md:text-lg flex-shrink-0">{skill.emoji}</span>
+                ) : (
+                  <Puzzle
+                    className="w-4 h-4 md:w-5 md:h-5 flex-shrink-0"
+                    style={{
+                      color: skill.source === "workspace" ? "var(--accent)" : "var(--text-muted)",
+                    }}
+                  />
+                )}
+                <span className="text-xs md:text-sm truncate" style={{ color: "var(--text-primary)" }}>
                   {skill.name}
                 </span>
               </div>
-            );
-          })}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Footer */}
       <div
         className="text-center py-4 md:py-6 px-4 rounded-xl"
-        style={{
-          backgroundColor: "var(--card)",
-          border: "1px solid var(--border)",
-        }}
+        style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
       >
         <div className="flex items-center justify-center gap-2 mb-2">
-          <Coffee
-            className="w-4 h-4 md:w-5 md:h-5"
-            style={{ color: "var(--accent)" }}
-          />
-          <span
-            className="text-sm md:text-base"
-            style={{ color: "var(--text-secondary)" }}
-          >
+          <Coffee className="w-4 h-4 md:w-5 md:h-5" style={{ color: "var(--accent)" }} />
+          <span className="text-sm md:text-base" style={{ color: "var(--text-secondary)" }}>
             Feito com <span style={{ color: "var(--accent)" }}>♥</span> em{" "}
             <a
               href="https://github.com/openclaw/openclaw"

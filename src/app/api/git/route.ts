@@ -8,9 +8,10 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { promises as fs } from 'fs';
 import path from 'path';
+import { OPENCLAW_WORKSPACE } from '@/lib/paths';
 
 const execAsync = promisify(exec);
-const WORKSPACE = process.env.OPENCLAW_DIR ? `${process.env.OPENCLAW_DIR}/workspace` : '/root/.openclaw/workspace';
+const WORKSPACE = OPENCLAW_WORKSPACE;
 
 interface RepoStatus {
   name: string;
