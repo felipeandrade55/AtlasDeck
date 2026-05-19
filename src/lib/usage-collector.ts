@@ -219,11 +219,16 @@ async function getOpenClawUsageSessions(): Promise<{
 }> {
   try {
     const data = await getOpenClawSessionsList();
-    return { sessions: extractSessionsListData(data), source: "sessions-list" };
+    const sessions = extractSessionsListData(data);
+    if (sessions.length > 0) {
+      return { sessions, source: "sessions-list" };
+    }
+    throw new Error("openclaw sessions list returned empty array");
   } catch (sessionsError) {
     try {
       const status = await getOpenClawStatus();
-      return { sessions: extractSessionData(status), source: "status" };
+      const sessions = extractSessionData(status);
+      return { sessions, source: "status" };
     } catch (statusError) {
       const message = [
         sessionsError instanceof Error ? sessionsError.message : String(sessionsError),
