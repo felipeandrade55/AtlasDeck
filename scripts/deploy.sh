@@ -437,6 +437,78 @@ if command -v openclaw &>/dev/null; then
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
+# FASE 9 — SEGURANÇA: FAIL2BAN
+# ══════════════════════════════════════════════════════════════════════════════
+step "Verificando Fail2Ban (Proteção contra Brute Force)..."
+T=$(now)
+
+if ! command -v fail2ban-client &>/dev/null; then
+  echo ""
+  read -rp "  Deseja instalar e configurar o Fail2Ban para proteger contra brute force? (y/N): " INSTALL_F2B
+  if [[ "$INSTALL_F2B" =~ ^[Yy]$ ]]; then
+    info "Instalando fail2ban..."
+    sudo apt-get update -qq && sudo apt-get install -y fail2ban
+    
+    if [ ! -f /etc/fail2ban/jail.local ]; then
+      cat <<EOF | sudo tee /etc/fail2ban/jail.local > /dev/null
+[DEFAULT]
+bantime = 1h
+findtime = 10m
+maxretry = 5
+
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 3
+EOF
+      sudo systemctl restart fail2ban
+    fi
+    ok "Fail2Ban instalado e Jail SSH ativa"
+    record "Fail2Ban Setup" "ok" "\$(elapsed \$T)"
+  else
+    warn "Instalação do Fail2Ban ignorada."
+    record "Fail2Ban Setup" "skip" "\$(elapsed \$T)"
+  fi
+else
+  ok "Fail2Ban já está instalado e ativo"
+  record "Fail2Ban Setup" "ok" "\$(elapsed \$T)"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FASE 10 — FIREWALL UFW
+# ══════════════════════════════════════════════════════════════════════════════
+step "Verificando Firewall (UFW)..."
+T=$(now)
+
+if ! command -v ufw &>/dev/null; then
+  warn "UFW (Firewall) não encontrado no sistema."
+  record "Firewall UFW" "skip" "\$(elapsed \$T)"
+else
+  if sudo ufw status | grep -qi "Status: active"; then
+    ok "Firewall UFW já está ativo"
+    record "Firewall UFW" "ok" "\$(elapsed \$T)"
+  else
+    echo ""
+    read -rp "  Deseja ativar o Firewall (UFW) com portas padrão (SSH, 80, 443, 3000)? (y/N): " ENABLE_UFW
+    if [[ "$ENABLE_UFW" =~ ^[Yy]$ ]]; then
+      info "Configurando regras padrão..."
+      sudo ufw allow ssh > /dev/null
+      sudo ufw allow http > /dev/null
+      sudo ufw allow https > /dev/null
+      sudo ufw allow 3000/tcp > /dev/null
+      sudo ufw --force enable > /dev/null
+      ok "Firewall ativado com segurança padrão"
+      record "Firewall UFW" "ok" "\$(elapsed \$T)"
+    else
+      warn "Ativação do Firewall ignorada."
+      record "Firewall UFW" "skip" "\$(elapsed \$T)"
+    fi
+  fi
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
 # RELATÓRIO FINAL
 # ══════════════════════════════════════════════════════════════════════════════
 echo ""

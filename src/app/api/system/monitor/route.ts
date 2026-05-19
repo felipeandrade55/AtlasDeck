@@ -1,39 +1,10 @@
 import { NextResponse } from "next/server";
 import { exec } from "child_process";
 import { promisify } from "util";
-import { readFileSync } from "fs";
 import os from "os";
+import si from "systeminformation";
 
 const execAsync = promisify(exec);
-
-// ── Per-core CPU from /proc/stat ─────────────────────────────────────────────
-interface CpuCoreStat {
-  user: number; nice: number; system: number; idle: number;
-  iowait: number; irq: number; softirq: number; steal: number;
-}
-interface CpuSnapshot { ts: number; cores: CpuCoreStat[] }
-
-function parseProcStat(): CpuSnapshot {
-  try {
-    const content = readFileSync('/proc/stat', 'utf-8');
-    const lines = content.split('\n').filter((l) => /^cpu\d/.test(l));
-    const cores: CpuCoreStat[] = lines.map((line) => {
-      const parts = line.trim().split(/\s+/).slice(1).map(Number);
-      return { user: parts[0]||0, nice: parts[1]||0, system: parts[2]||0, idle: parts[3]||0, iowait: parts[4]||0, irq: parts[5]||0, softirq: parts[6]||0, steal: parts[7]||0 };
-    });
-    return { ts: Date.now(), cores };
-  } catch {
-    return { ts: Date.now(), cores: os.cpus().map(() => ({ user:0, nice:0, system:0, idle:0, iowait:0, irq:0, softirq:0, steal:0 })) };
-  }
-}
-
-function corePct(prev: CpuCoreStat, curr: CpuCoreStat): number {
-  const pT = prev.user+prev.nice+prev.system+prev.idle+prev.iowait+prev.irq+prev.softirq+prev.steal;
-  const cT = curr.user+curr.nice+curr.system+curr.idle+curr.iowait+curr.irq+curr.softirq+curr.steal;
-  const dT = cT - pT;
-  if (dT <= 0) return 0;
-  return Math.round(Math.max(0, Math.min(100, ((dT - (curr.idle - prev.idle)) / dT) * 100)));
-}
 
 // Services monitored per backend
 const SYSTEMD_SERVICES = ["mission-control"];
@@ -59,10 +30,16 @@ interface TailscaleDevice {
 }
 
 interface FirewallRule {
+  id: string;
   port: string;
   action: string;
   from: string;
   comment: string;
+}
+
+interface Fail2BanData {
+  active: boolean;
+  bannedIps: string[];
 }
 
 // Normalize PM2 status to a common set
@@ -96,76 +73,53 @@ const SERVICE_DESCRIPTIONS: Record<string, string> = {
 
 export async function GET() {
   try {
-    // ── CPU ──────────────────────────────────────────────────────────────────
-    const cpuCount = os.cpus().length;
-    const loadAvg = os.loadavg();
-    const cpuUsage = Math.min(Math.round((loadAvg[0] / cpuCount) * 100), 100);
+    const [cpuLoad, memInfo, fsInfo, netInfo, dockerInfo, tempInfo] = await Promise.all([
+      si.currentLoad(),
+      si.mem(),
+      si.fsSize(),
+      si.networkStats(),
+      si.dockerContainers().catch(() => []),
+      si.cpuTemperature().catch(() => ({ main: 0 }))
+    ]);
 
-    // Per-core % using /proc/stat delta (same pattern as network)
-    const currCpu = parseProcStat();
-    let corePercents: number[] = currCpu.cores.map(() => 0);
-    const prevCpu = (global as Record<string, unknown>).__cpuPrev as CpuSnapshot | undefined;
-    if (prevCpu && prevCpu.cores.length === currCpu.cores.length) {
-      corePercents = currCpu.cores.map((c, i) => corePct(prevCpu.cores[i], c));
-    }
-    (global as Record<string, unknown>).__cpuPrev = currCpu;
+    // ── CPU ──────────────────────────────────────────────────────────────────
+    const cpuUsage = Math.round(cpuLoad.currentLoad);
+    const corePercents = cpuLoad.cpus.map(c => Math.round(c.load));
+    const loadAvg = os.loadavg();
 
     // ── RAM ──────────────────────────────────────────────────────────────────
-    const totalMem = os.totalmem();
-    const freeMem = os.freemem();
-    const usedMem = totalMem - freeMem;
+    const totalMem = memInfo.total;
+    const usedMem = memInfo.active;
+    const freeMem = memInfo.free;
 
     // ── Disk ─────────────────────────────────────────────────────────────────
-    let diskTotal = 100;
+    let diskTotal = 0;
     let diskUsed = 0;
-    let diskFree = 100;
-    try {
-      const { stdout } = await execAsync("df -BG / | tail -1");
-      const parts = stdout.trim().split(/\s+/);
-      diskTotal = parseInt(parts[1].replace("G", ""));
-      diskUsed = parseInt(parts[2].replace("G", ""));
-      diskFree = parseInt(parts[3].replace("G", ""));
-    } catch (error) {
-      console.error("Failed to get disk stats:", error);
+    // We only sum up actual physical drives to avoid duplication
+    for (const fs of fsInfo) {
+      if (fs.type !== 'squashfs' && fs.type !== 'tmpfs' && fs.type !== 'devtmpfs') {
+        diskTotal += fs.size;
+        diskUsed += fs.used;
+      }
     }
-    const diskPercent = (diskUsed / diskTotal) * 100;
+    const diskTotalGB = diskTotal / 1024 / 1024 / 1024;
+    const diskUsedGB = diskUsed / 1024 / 1024 / 1024;
+    const diskFreeGB = (diskTotal - diskUsed) / 1024 / 1024 / 1024;
+    const diskPercent = diskTotal > 0 ? (diskUsed / diskTotal) * 100 : 0;
 
-    // ── Network (real stats from /proc/net/dev) ───────────────────────────────
-    let network = { rx: 0, tx: 0 };
-    try {
-      const { readFileSync } = await import('fs');
-      
-      function readNetStats(): { rx: number; tx: number; ts: number } {
-        const netDev = readFileSync('/proc/net/dev', 'utf-8');
-        const lines = netDev.trim().split('\n').slice(2);
-        let rx = 0, tx = 0;
-        for (const line of lines) {
-          const parts = line.trim().split(/\s+/);
-          const iface = parts[0].replace(':', '');
-          if (iface === 'lo') continue;
-          rx += parseInt(parts[1]) || 0;
-          tx += parseInt(parts[9]) || 0;
-        }
-        return { rx, tx, ts: Date.now() };
+    // ── Network ──────────────────────────────────────────────────────────────
+    let rx = 0;
+    let tx = 0;
+    for (const net of netInfo) {
+      if (net.iface !== 'lo') {
+        rx += net.rx_sec || 0;
+        tx += net.tx_sec || 0;
       }
-      
-      const current = readNetStats();
-      
-      // Use module-level cache for previous reading
-      if ((global as Record<string, unknown>).__netPrev) {
-        const prev = (global as Record<string, unknown>).__netPrev as { rx: number; tx: number; ts: number };
-        const dtSec = (current.ts - prev.ts) / 1000;
-        if (dtSec > 0) {
-          network = {
-            rx: parseFloat(Math.max(0, (current.rx - prev.rx) / 1024 / 1024 / dtSec).toFixed(3)),
-            tx: parseFloat(Math.max(0, (current.tx - prev.tx) / 1024 / 1024 / dtSec).toFixed(3)),
-          };
-        }
-      }
-      (global as Record<string, unknown>).__netPrev = current;
-    } catch (error) {
-      console.error("Failed to get network stats:", error);
     }
+    const network = {
+      rx: rx / 1024 / 1024,
+      tx: tx / 1024 / 1024,
+    };
 
     // ── Services ─────────────────────────────────────────────────────────────
     const services: ServiceEntry[] = [];
@@ -174,7 +128,7 @@ export async function GET() {
     for (const name of SYSTEMD_SERVICES) {
       try {
         const { stdout } = await execAsync(`systemctl is-active ${name} 2>/dev/null || true`);
-        const rawStatus = stdout.trim(); // "active" | "inactive" | "failed" | ...
+        const rawStatus = stdout.trim();
         services.push({
           name,
           status: rawStatus,
@@ -191,21 +145,11 @@ export async function GET() {
       }
     }
 
-    // 2. PM2 services — single call, parse JSON
+    // 2. PM2 services
     try {
       const { stdout: pm2Json } = await execAsync("pm2 jlist 2>/dev/null");
-      const pm2List = JSON.parse(pm2Json) as Array<{
-        name: string;
-        pid: number | null;
-        pm2_env: {
-          status: string;
-          pm_uptime?: number;
-          restart_time?: number;
-          monit?: { cpu: number; memory: number };
-        };
-      }>;
-
-      const pm2Map: Record<string, (typeof pm2List)[0]> = {};
+      const pm2List = JSON.parse(pm2Json);
+      const pm2Map: Record<string, any> = {};
       for (const proc of pm2List) {
         pm2Map[proc.name] = proc;
       }
@@ -242,13 +186,26 @@ export async function GET() {
       }
     } catch (err) {
       console.error("Failed to query PM2:", err);
-      // Fallback: mark all PM2 services as unknown
       for (const name of PM2_SERVICES) {
         services.push({
           name,
           status: "unknown",
           description: SERVICE_DESCRIPTIONS[name] ?? name,
           backend: "pm2",
+        });
+      }
+    }
+
+    // 3. Docker services
+    if (Array.isArray(dockerInfo)) {
+      for (const d of dockerInfo) {
+        services.push({
+          name: d.name,
+          status: d.state === 'running' ? 'active' : d.state === 'exited' ? 'inactive' : 'failed',
+          description: d.image,
+          backend: "docker",
+          uptime: d.startedAt ? Date.now() - new Date(d.startedAt * 1000).getTime() : null,
+          restarts: 0,
         });
       }
     }
@@ -292,13 +249,14 @@ export async function GET() {
         firewallActive = true;
         const lines = ufwStatus.split("\n");
         for (const line of lines) {
-          const match = line.match(/\[\s*\d+\]\s+([\w/:]+)\s+(\w+)\s+(\S+)\s*(#?.*)$/);
+          const match = line.match(/\[\s*(\d+)\]\s+([\w/:]+)\s+(\w+)\s+(\S+)\s*(#?.*)$/);
           if (match) {
             firewallRulesList.push({
-              port: match[1].trim(),
-              action: match[2].trim(),
-              from: match[3].trim(),
-              comment: match[4].replace("#", "").trim(),
+              id: match[1],
+              port: match[2].trim(),
+              action: match[3].trim(),
+              from: match[4].trim(),
+              comment: match[5].replace("#", "").trim(),
             });
           }
         }
@@ -307,26 +265,55 @@ export async function GET() {
       console.error("Failed to get firewall status:", error);
     }
 
+    // ── Fail2Ban ──────────────────────────────────────────────────────────────
+    let fail2banActive = false;
+    let fail2banBanned: string[] = [];
+    try {
+      const { stdout: f2bPing } = await execAsync("fail2ban-client ping 2>/dev/null || true");
+      if (f2bPing.includes("pong")) {
+        fail2banActive = true;
+        
+        // Get list of jails
+        const { stdout: f2bStatus } = await execAsync("fail2ban-client status 2>/dev/null || true");
+        const jailsMatch = f2bStatus.match(/Jail list:\s+(.*)/);
+        if (jailsMatch && jailsMatch[1]) {
+          const jails = jailsMatch[1].split(',').map(j => j.trim()).filter(Boolean);
+          
+          for (const jail of jails) {
+            const { stdout: jailStatus } = await execAsync(`fail2ban-client status ${jail} 2>/dev/null || true`);
+            const bannedMatch = jailStatus.match(/Banned IP list:\s+(.*)/);
+            if (bannedMatch && bannedMatch[1]) {
+              const ips = bannedMatch[1].split(' ').map(ip => ip.trim()).filter(Boolean);
+              fail2banBanned.push(...ips);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Failed to get Fail2Ban status:", error);
+    }
+
     return NextResponse.json({
       cpu: {
         usage: cpuUsage,
         cores: corePercents,
         loadAvg,
+        temperature: tempInfo?.main || 0
       },
       ram: {
-        total: parseFloat((totalMem / 1024 / 1024 / 1024).toFixed(2)),
-        used: parseFloat((usedMem / 1024 / 1024 / 1024).toFixed(2)),
-        free: parseFloat((freeMem / 1024 / 1024 / 1024).toFixed(2)),
+        total: parseFloat(totalMem ? (totalMem / 1024 / 1024 / 1024).toFixed(2) : "0"),
+        used: parseFloat(usedMem ? (usedMem / 1024 / 1024 / 1024).toFixed(2) : "0"),
+        free: parseFloat(freeMem ? (freeMem / 1024 / 1024 / 1024).toFixed(2) : "0"),
         cached: 0,
       },
       disk: {
-        total: diskTotal,
-        used: diskUsed,
-        free: diskFree,
-        percent: diskPercent,
+        total: parseFloat(diskTotalGB.toFixed(2)) || 100,
+        used: parseFloat(diskUsedGB.toFixed(2)) || 0,
+        free: parseFloat(diskFreeGB.toFixed(2)) || 100,
+        percent: parseFloat(diskPercent.toFixed(2)) || 0,
       },
       network,
-      systemd: services, // kept field name for backwards compat with page.tsx
+      systemd: services,
       tailscale: {
         active: tailscaleActive,
         ip: tailscaleIp,
@@ -336,6 +323,10 @@ export async function GET() {
         active: firewallActive,
         rules: firewallRulesList,
         ruleCount: firewallRulesList.length,
+      },
+      fail2ban: {
+        active: fail2banActive,
+        bannedIps: [...new Set(fail2banBanned)], // Deduplicate IPs
       },
       timestamp: new Date().toISOString(),
     });

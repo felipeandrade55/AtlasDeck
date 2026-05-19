@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Cpu, HardDrive, MemoryStick, Network, Server, ShieldCheck, RotateCw, Wifi, Monitor, Play, Square, X, Loader2, Terminal, ArrowDown, ArrowUp } from "lucide-react";
+import { useEffect, useState, useRef } from "react";
+import { Cpu, HardDrive, MemoryStick, Network, Server, ShieldCheck, RotateCw, Wifi, Monitor, Play, Square, X, Loader2, Terminal, ArrowDown, ArrowUp, Thermometer, Pause, RefreshCw, Trash2, Plus } from "lucide-react";
 import { OpenClawConfigPanel } from "@/components/OpenClawConfigPanel";
 
 type SystemTab = "hardware" | "services" | "openclaw";
@@ -26,6 +26,7 @@ interface TailscaleDevice {
 }
 
 interface FirewallRule {
+  id: string;
   port: string;
   action: string;
   from: string;
@@ -33,13 +34,14 @@ interface FirewallRule {
 }
 
 interface SystemData {
-  cpu: { usage: number; cores: number[]; loadAvg: number[] };
+  cpu: { usage: number; cores: number[]; loadAvg: number[]; temperature: number };
   ram: { total: number; used: number; free: number; cached: number };
   disk: { total: number; used: number; free: number; percent: number };
   network: { rx: number; tx: number };
   systemd: SystemdService[];
   tailscale: { active: boolean; ip: string; devices: TailscaleDevice[] };
   firewall: { active: boolean; rules: FirewallRule[]; ruleCount: number };
+  fail2ban: { active: boolean; bannedIps: string[] };
 }
 
 interface LogsModal {
@@ -73,27 +75,69 @@ export default function SystemMonitorPage() {
   const [actionLoading, setActionLoading] = useState<Record<string, boolean>>({});
   const [logsModal, setLogsModal] = useState<LogsModal | null>(null);
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [showAddRule, setShowAddRule] = useState(false);
+  const [newRulePort, setNewRulePort] = useState("");
+  const [newRuleProtocol, setNewRuleProtocol] = useState("any");
+  const [newRuleType, setNewRuleType] = useState("allow");
+  const logsEndRef = useRef<HTMLDivElement>(null);
+
+  const fetchSystemData = async () => {
+    try {
+      const res = await fetch("/api/system/monitor");
+      if (res.ok) {
+        const data = await res.json();
+        setSystemData(data);
+        setLastUpdated(new Date());
+      }
+    } catch (error) {
+      console.error("Failed to fetch system data:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchSystemData = async () => {
+    fetchSystemData();
+  }, []);
+
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const interval = setInterval(fetchSystemData, 5000);
+    return () => clearInterval(interval);
+  }, [autoRefresh]);
+
+  // Handle Logs SSE Connection
+  useEffect(() => {
+    if (!logsModal?.name) return;
+    
+    const es = new EventSource(`/api/system/logs?name=${encodeURIComponent(logsModal.name)}&backend=${encodeURIComponent(logsModal.backend)}`);
+    
+    es.onmessage = (event) => {
       try {
-        const res = await fetch("/api/system/monitor");
-        if (res.ok) {
-          const data = await res.json();
-          setSystemData(data);
-          setLastUpdated(new Date());
-        }
-      } catch (error) {
-        console.error("Failed to fetch system data:", error);
-      } finally {
-        setLoading(false);
+        const text = JSON.parse(event.data);
+        setLogsModal(prev => prev ? { ...prev, content: prev.content + text, loading: false } : null);
+      } catch (e) {
+        // ignore parse error
       }
     };
 
-    fetchSystemData();
-    const interval = setInterval(fetchSystemData, 5000);
-    return () => clearInterval(interval);
-  }, []);
+    es.onerror = () => {
+      setLogsModal(prev => prev ? { ...prev, content: prev.content + "\n[Stream fechado ou erro de conexão]\n", loading: false } : null);
+      es.close();
+    };
+
+    return () => {
+      es.close();
+    };
+  }, [logsModal?.name, logsModal?.backend]);
+
+  // Auto-scroll logs
+  useEffect(() => {
+    if (logsEndRef.current) {
+      logsEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [logsModal?.content]);
 
   const showToast = (msg: string, type: "success" | "error" = "success") => {
     setToast({ msg, type });
@@ -101,14 +145,15 @@ export default function SystemMonitorPage() {
   };
 
   const handleServiceAction = async (svc: SystemdService, action: "restart" | "stop" | "start" | "logs") => {
+    if (action === "logs") {
+      setLogsModal({ name: svc.name, backend: svc.backend || "pm2", content: "Conectando ao stream de logs...\n", loading: true });
+      return;
+    }
+
     const key = `${svc.name}-${action}`;
     setActionLoading((prev) => ({ ...prev, [key]: true }));
 
     try {
-      if (action === "logs") {
-        setLogsModal({ name: svc.name, backend: svc.backend || "pm2", content: "", loading: true });
-      }
-
       const res = await fetch("/api/system/services", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -116,28 +161,46 @@ export default function SystemMonitorPage() {
       });
 
       const data = await res.json();
-
       if (!res.ok) throw new Error(data.error || "Action failed");
 
-      if (action === "logs") {
-        setLogsModal({ name: svc.name, backend: svc.backend || "pm2", content: data.output, loading: false });
-      } else {
-        showToast(`✅ ${svc.name}: ${action} successful`);
-        // Refresh data after action
-        setTimeout(async () => {
-          const r = await fetch("/api/system/monitor");
-          if (r.ok) setSystemData(await r.json());
-        }, 2000);
-      }
+      showToast(`✅ ${svc.name}: ${action} successful`);
+      setTimeout(fetchSystemData, 2000);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Action failed";
-      if (action === "logs") {
-        setLogsModal({ name: svc.name, backend: svc.backend || "pm2", content: `Error: ${msg}`, loading: false });
-      } else {
-        showToast(`❌ ${svc.name}: ${msg}`, "error");
-      }
+      showToast(`❌ ${svc.name}: ${msg}`, "error");
     } finally {
       setActionLoading((prev) => ({ ...prev, [key]: false }));
+    }
+  };
+
+  const handleFirewallAction = async (action: 'enable' | 'disable' | 'add' | 'delete', id?: string) => {
+    setActionLoading(prev => ({ ...prev, firewall: true }));
+    try {
+      let res;
+      if (action === 'delete') {
+        res = await fetch(`/api/system/firewall?id=${id}`, { method: "DELETE" });
+      } else {
+        res = await fetch("/api/system/firewall", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action, port: newRulePort, protocol: newRuleProtocol, allowType: newRuleType }),
+        });
+      }
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Ação do firewall falhou");
+
+      showToast(`✅ Firewall: ${data.message}`);
+      if (action === 'add') {
+        setShowAddRule(false);
+        setNewRulePort("");
+      }
+      setTimeout(fetchSystemData, 1000);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Ação do firewall falhou";
+      showToast(`❌ Firewall: ${msg}`, "error");
+    } finally {
+      setActionLoading(prev => ({ ...prev, firewall: false }));
     }
   };
 
@@ -196,12 +259,33 @@ export default function SystemMonitorPage() {
           <p style={{ color: "var(--text-secondary)" }}>Monitoramento em tempo real dos recursos e serviços do servidor</p>
         </div>
         <div className="flex items-center gap-2 mt-1">
-          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium" style={{ backgroundColor: "rgba(34,197,94,0.12)", color: "var(--success)" }}>
-            <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: "var(--success)" }} />
-            Live
-          </span>
+          <button 
+            onClick={() => fetchSystemData()} 
+            className="p-1.5 rounded-md transition-colors hover:bg-white/5" 
+            style={{ backgroundColor: "var(--card-elevated)", color: "var(--text-secondary)", border: "1px solid var(--border)" }}
+            title="Refresh Agora"
+          >
+            <RefreshCw className="w-4 h-4" />
+          </button>
+          
+          <button 
+            onClick={() => setAutoRefresh(!autoRefresh)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium cursor-pointer transition-all hover:opacity-90" 
+            style={{ 
+              backgroundColor: autoRefresh ? "rgba(34,197,94,0.12)" : "var(--card-elevated)", 
+              color: autoRefresh ? "var(--success)" : "var(--text-muted)",
+              border: autoRefresh ? "1px solid transparent" : "1px solid var(--border)"
+            }}
+            title={autoRefresh ? "Pausar Auto-Refresh" : "Ativar Auto-Refresh"}
+          >
+            {autoRefresh ? (
+              <><span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: "var(--success)" }} /> Live</>
+            ) : (
+              <><Pause className="w-3 h-3" /> Pausado</>
+            )}
+          </button>
           {lastUpdated && (
-            <span className="text-xs" style={{ color: "var(--text-muted)" }}>{lastUpdated.toLocaleTimeString()}</span>
+            <span className="text-xs ml-1" style={{ color: "var(--text-muted)" }}>{lastUpdated.toLocaleTimeString()}</span>
           )}
         </div>
       </div>
@@ -244,14 +328,22 @@ export default function SystemMonitorPage() {
                   <p className="text-sm" style={{ color: "var(--text-secondary)" }}>{systemData.cpu.cores.length} cores</p>
                 </div>
               </div>
-              <span className="text-2xl font-bold" style={{ color: cpuColor }}>{systemData.cpu.usage}%</span>
+              <div className="flex flex-col items-end">
+                <span className="text-2xl font-bold" style={{ color: cpuColor }}>{systemData.cpu.usage}%</span>
+                {systemData.cpu.temperature > 0 && (
+                  <div className="flex items-center gap-1 mt-1 text-xs font-medium px-2 py-0.5 rounded" style={{ backgroundColor: systemData.cpu.temperature > 80 ? "var(--error-bg)" : "var(--card-elevated)", color: systemData.cpu.temperature > 80 ? "var(--error)" : "var(--text-secondary)" }}>
+                    <Thermometer className="w-3 h-3" />
+                    {systemData.cpu.temperature}°C
+                  </div>
+                )}
+              </div>
             </div>
             <div className="h-2 rounded-full overflow-hidden mb-3" style={{ backgroundColor: "var(--card-elevated)" }}>
               <div className="h-full transition-all duration-500" style={{ width: `${systemData.cpu.usage}%`, backgroundColor: cpuColor }} />
             </div>
             <div className="flex justify-between text-sm" style={{ color: "var(--text-secondary)" }}>
               <span>Carga Média</span>
-              <span>{systemData.cpu.loadAvg[0].toFixed(2)} / {systemData.cpu.loadAvg[1].toFixed(2)} / {systemData.cpu.loadAvg[2].toFixed(2)}</span>
+              <span>{systemData.cpu.loadAvg[0]?.toFixed(2)} / {systemData.cpu.loadAvg[1]?.toFixed(2)} / {systemData.cpu.loadAvg[2]?.toFixed(2)}</span>
             </div>
           </div>
 
@@ -324,13 +416,13 @@ export default function SystemMonitorPage() {
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: "0.25rem" }}>RX</div>
                   <div className="h-1 rounded-full overflow-hidden" style={{ backgroundColor: "var(--card-elevated)" }}>
-                    <div className="h-full" style={{ width: `${Math.min(systemData.network.rx * 10, 100)}%`, backgroundColor: "var(--success)" }} />
+                    <div className="h-full transition-all duration-1000" style={{ width: `${Math.min(systemData.network.rx * 10, 100)}%`, backgroundColor: "var(--success)" }} />
                   </div>
                 </div>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: "0.25rem" }}>TX</div>
                   <div className="h-1 rounded-full overflow-hidden" style={{ backgroundColor: "var(--card-elevated)" }}>
-                    <div className="h-full" style={{ width: `${Math.min(systemData.network.tx * 10, 100)}%`, backgroundColor: "var(--accent)" }} />
+                    <div className="h-full transition-all duration-1000" style={{ width: `${Math.min(systemData.network.tx * 10, 100)}%`, backgroundColor: "var(--accent)" }} />
                   </div>
                 </div>
               </div>
@@ -346,7 +438,7 @@ export default function SystemMonitorPage() {
       {/* Services Tab */}
       {selectedTab === "services" && (
         <div className="space-y-6">
-          {/* Systemd + PM2 Services */}
+          {/* Systemd + PM2 + Docker Services */}
           <div className="p-6 rounded-xl" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
             <h3 className="text-lg font-semibold mb-4 flex items-center gap-2" style={{ color: "var(--text-primary)" }}>
               <Server className="w-5 h-5" style={{ color: "var(--accent)" }} />
@@ -364,7 +456,7 @@ export default function SystemMonitorPage() {
                 </thead>
                 <tbody>
                   {systemData.systemd.map((svc) => {
-                    const isActionable = svc.backend === "pm2" || svc.backend === "systemd";
+                    const isActionable = svc.backend === "pm2" || svc.backend === "systemd" || svc.backend === "docker";
                     const restartKey = `${svc.name}-restart`;
                     const stopKey = `${svc.name}-stop`;
                     const logsKey = `${svc.name}-logs`;
@@ -376,7 +468,7 @@ export default function SystemMonitorPage() {
                         </td>
                         <td className="py-3 px-3">
                           <div className="flex flex-col gap-0.5">
-                            <span className="text-sm" style={{ color: "var(--text-secondary)" }}>{svc.description || "—"}</span>
+                            <span className="text-sm" style={{ color: "var(--text-secondary)", maxWidth: "300px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={svc.description}>{svc.description || "—"}</span>
                             {svc.uptime != null && svc.status === "active" && (
                               <span className="text-xs" style={{ color: "var(--text-muted)" }}>
                                 up {formatUptime(svc.uptime)}
@@ -415,8 +507,8 @@ export default function SystemMonitorPage() {
                             </span>
                             {svc.backend && svc.backend !== "none" && (
                               <span
-                                className="px-1.5 py-0.5 rounded text-xs"
-                                style={{ backgroundColor: "var(--card-elevated)", color: "var(--text-muted)", fontSize: "10px" }}
+                                className="px-1.5 py-0.5 rounded text-xs uppercase"
+                                style={{ backgroundColor: "var(--card-elevated)", color: "var(--text-muted)", fontSize: "9px", letterSpacing: "0.05em" }}
                               >
                                 {svc.backend}
                               </span>
@@ -431,7 +523,7 @@ export default function SystemMonitorPage() {
                                 <button
                                   onClick={() => handleServiceAction(svc, "restart")}
                                   disabled={actionLoading[restartKey]}
-                                  className="p-1.5 rounded transition-colors"
+                                  className="p-1.5 rounded transition-colors hover:bg-white/5"
                                   title="Restart"
                                   style={{ color: "var(--text-muted)", background: "none", border: "none", cursor: "pointer" }}
                                 >
@@ -446,7 +538,7 @@ export default function SystemMonitorPage() {
                                 <button
                                   onClick={() => handleServiceAction(svc, svc.status === "active" ? "stop" : "start")}
                                   disabled={actionLoading[stopKey] || svc.status === "not_deployed"}
-                                  className="p-1.5 rounded transition-colors"
+                                  className="p-1.5 rounded transition-colors hover:bg-white/5"
                                   title={svc.status === "active" ? "Stop" : "Start"}
                                   style={{ color: svc.status === "active" ? "var(--error)" : "var(--success)", background: "none", border: "none", cursor: "pointer" }}
                                 >
@@ -457,8 +549,8 @@ export default function SystemMonitorPage() {
                                 <button
                                   onClick={() => handleServiceAction(svc, "logs")}
                                   disabled={actionLoading[logsKey]}
-                                  className="p-1.5 rounded transition-colors"
-                                  title="View Logs"
+                                  className="p-1.5 rounded transition-colors hover:bg-white/5"
+                                  title="View Live Logs"
                                   style={{ color: "var(--text-muted)", background: "none", border: "none", cursor: "pointer" }}
                                 >
                                   {actionLoading[logsKey] ? (
@@ -505,7 +597,7 @@ export default function SystemMonitorPage() {
                 </div>
               </div>
               {systemData.tailscale.devices.length > 0 && (
-                <div className="space-y-2 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
+               <div className="space-y-2 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
                   {systemData.tailscale.devices.map((dev, i) => (
                     <div key={i} className="flex items-center justify-between text-xs">
                       <div className="flex items-center gap-2">
@@ -525,39 +617,149 @@ export default function SystemMonitorPage() {
 
             {/* Firewall */}
             <div className="p-6 rounded-xl" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
-              <div className="flex items-center gap-3 mb-4">
-                <div className="p-2 rounded-lg" style={{ backgroundColor: "var(--card-elevated)" }}>
-                  <ShieldCheck className="w-5 h-5" style={{ color: systemData.firewall.active ? "var(--success)" : "var(--error)" }} />
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg" style={{ backgroundColor: "var(--card-elevated)" }}>
+                    <ShieldCheck className="w-5 h-5" style={{ color: systemData.firewall.active ? "var(--success)" : "var(--error)" }} />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold" style={{ color: "var(--text-primary)" }}>Firewall (UFW)</h3>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm" style={{ color: systemData.firewall.active ? "var(--success)" : "var(--error)" }}>
+                        {systemData.firewall.active ? "Ativo" : "Inativo"}
+                      </span>
+                      <button
+                        onClick={() => handleFirewallAction(systemData.firewall.active ? 'disable' : 'enable')}
+                        disabled={actionLoading.firewall}
+                        className="text-xs font-semibold px-2 py-0.5 rounded transition-colors hover:opacity-80 disabled:opacity-50"
+                        style={{ backgroundColor: "var(--card-elevated)", color: "var(--text-primary)" }}
+                      >
+                        {systemData.firewall.active ? "Desativar" : "Ativar"}
+                      </button>
+                    </div>
+                  </div>
                 </div>
-                <div>
-                  <h3 className="font-semibold" style={{ color: "var(--text-primary)" }}>Firewall (UFW)</h3>
-                  <p className="text-sm" style={{ color: systemData.firewall.active ? "var(--success)" : "var(--error)" }}>
-                    {systemData.firewall.active ? "Ativo" : "Inativo"}
-                  </p>
-                </div>
+                <button
+                  onClick={() => setShowAddRule(!showAddRule)}
+                  className="p-1.5 rounded-lg transition-colors hover:bg-white/5"
+                  style={{ backgroundColor: "var(--card-elevated)", color: "var(--accent)", border: "1px solid var(--border)" }}
+                >
+                  {showAddRule ? <X className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+                </button>
               </div>
+
+              {showAddRule && (
+                <div className="mb-4 p-3 rounded-lg space-y-3" style={{ backgroundColor: "var(--card-elevated)", border: "1px solid var(--border)" }}>
+                  <div className="grid grid-cols-3 gap-2">
+                    <input 
+                      placeholder="Porta (ex: 8080)" 
+                      value={newRulePort} 
+                      onChange={e => setNewRulePort(e.target.value)}
+                      className="text-xs px-2 py-1.5 rounded bg-black/20 border border-white/10 outline-none text-white font-mono"
+                    />
+                    <select 
+                      value={newRuleProtocol} 
+                      onChange={e => setNewRuleProtocol(e.target.value)}
+                      className="text-xs px-2 py-1.5 rounded bg-black/20 border border-white/10 outline-none text-white"
+                    >
+                      <option value="any">Qualquer</option>
+                      <option value="tcp">TCP</option>
+                      <option value="udp">UDP</option>
+                    </select>
+                    <select 
+                      value={newRuleType} 
+                      onChange={e => setNewRuleType(e.target.value)}
+                      className="text-xs px-2 py-1.5 rounded bg-black/20 border border-white/10 outline-none text-white"
+                    >
+                      <option value="allow">Allow</option>
+                      <option value="deny">Deny</option>
+                    </select>
+                  </div>
+                  <button 
+                    onClick={() => handleFirewallAction('add')}
+                    disabled={actionLoading.firewall || !newRulePort}
+                    className="w-full py-1.5 rounded text-xs font-bold transition-opacity hover:opacity-90 disabled:opacity-50"
+                    style={{ backgroundColor: "var(--accent)", color: "white" }}
+                  >
+                    Salvar Regra
+                  </button>
+                </div>
+              )}
+
               <div className="space-y-2">
                 {systemData.firewall.rules.map((rule, i) => (
                   <div
                     key={i}
-                    className="flex items-start justify-between text-xs py-1.5"
+                    className="flex items-center justify-between text-xs py-1.5 group"
                     style={{ borderBottom: i < systemData.firewall.rules.length - 1 ? "1px solid var(--border)" : "none" }}
                   >
                     <div className="flex flex-col gap-0.5">
                       <div className="flex items-center gap-2">
                         <span className="font-mono font-semibold" style={{ color: "var(--text-primary)" }}>{rule.port}</span>
-                        <span className="px-1.5 py-0.5 rounded text-xs" style={{ backgroundColor: "var(--success-bg)", color: "var(--success)", fontSize: "9px" }}>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold uppercase" style={{ backgroundColor: rule.action.includes("ALLOW") ? "var(--success-bg)" : "var(--error-bg)", color: rule.action.includes("ALLOW") ? "var(--success)" : "var(--error)" }}>
                           {rule.action}
+                        </span>
+                        <span className="font-mono text-xs" style={{ color: "var(--text-secondary)" }}>
+                          {rule.from}
                         </span>
                       </div>
                       {rule.comment && <span style={{ color: "var(--text-muted)", fontSize: "10px" }}>{rule.comment}</span>}
                     </div>
-                    <span className="font-mono text-right" style={{ color: "var(--text-secondary)", maxWidth: "120px", wordBreak: "break-all" }}>
-                      {rule.from}
-                    </span>
+                    <button
+                      onClick={() => handleFirewallAction('delete', rule.id)}
+                      disabled={actionLoading.firewall}
+                      className="opacity-0 group-hover:opacity-100 p-1 rounded transition-all hover:bg-red-500/20 disabled:opacity-0"
+                      style={{ color: "var(--error)" }}
+                      title="Deletar Regra"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
                   </div>
                 ))}
+                {systemData.firewall.rules.length === 0 && (
+                  <div className="text-xs text-center py-2" style={{ color: "var(--text-muted)" }}>
+                    Nenhuma regra configurada.
+                  </div>
+                )}
               </div>
+            </div>
+
+            {/* Fail2Ban */}
+            <div className="p-6 rounded-xl" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
+              <div className="flex items-center gap-3 mb-4">
+                <div className="p-2 rounded-lg" style={{ backgroundColor: "var(--card-elevated)" }}>
+                  <ShieldCheck className="w-5 h-5" style={{ color: systemData.fail2ban.active ? "var(--success)" : "var(--error)" }} />
+                </div>
+                <div>
+                  <h3 className="font-semibold" style={{ color: "var(--text-primary)" }}>Fail2Ban (Anti-Brute Force)</h3>
+                  <p className="text-sm" style={{ color: systemData.fail2ban.active ? "var(--success)" : "var(--error)" }}>
+                    {systemData.fail2ban.active ? "Ativo e Protegendo" : "Inativo"}
+                  </p>
+                </div>
+              </div>
+              <div className="space-y-2 mb-4">
+                <div className="flex justify-between text-sm">
+                  <span style={{ color: "var(--text-secondary)" }}>IPs Banidos Atualmente</span>
+                  <span className="font-bold" style={{ color: systemData.fail2ban.bannedIps.length > 0 ? "var(--error)" : "var(--success)" }}>
+                    {systemData.fail2ban.bannedIps.length}
+                  </span>
+                </div>
+              </div>
+              {systemData.fail2ban.bannedIps.length > 0 && (
+                <div className="space-y-2 pt-3" style={{ borderTop: "1px solid var(--border)", maxHeight: "150px", overflowY: "auto" }}>
+                  {systemData.fail2ban.bannedIps.map((ip, i) => (
+                    <div key={i} className="flex items-center justify-between text-xs py-1">
+                      <div className="flex items-center gap-2">
+                        <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: "var(--error)" }} />
+                        <span className="font-mono text-xs" style={{ color: "var(--text-primary)" }}>{ip}</span>
+                      </div>
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-bold uppercase" style={{ backgroundColor: "var(--error-bg)", color: "var(--error)" }}>
+                        BANNED
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -577,6 +779,7 @@ export default function SystemMonitorPage() {
             borderRadius: "1rem", border: "1px solid var(--border)",
             display: "flex", flexDirection: "column",
             overflow: "hidden",
+            boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.7)",
           }}>
             {/* Log header */}
             <div style={{
@@ -589,32 +792,34 @@ export default function SystemMonitorPage() {
               <span style={{ color: "#c9d1d9", fontFamily: "monospace", fontSize: "0.9rem" }}>
                 {logsModal.name} logs
               </span>
-              <span style={{ fontSize: "0.75rem", color: "#8b949e", marginLeft: "0.5rem" }}>
+              <span style={{ fontSize: "0.75rem", color: "#8b949e", marginLeft: "0.5rem", textTransform: "uppercase" }}>
                 ({logsModal.backend})
               </span>
-              <button
-                onClick={() => setLogsModal(null)}
-                style={{ marginLeft: "auto", padding: "0.375rem", borderRadius: "0.375rem", background: "none", border: "none", cursor: "pointer", color: "#8b949e" }}
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-2 ml-auto">
+                <span className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-medium uppercase" style={{ backgroundColor: "rgba(34,197,94,0.12)", color: "var(--success)" }}>
+                  <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: "var(--success)" }} />
+                  Live Stream
+                </span>
+                <button
+                  onClick={() => setLogsModal(null)}
+                  className="p-1.5 rounded-md transition-colors hover:bg-white/10"
+                  style={{ background: "none", border: "none", cursor: "pointer", color: "#8b949e" }}
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
             {/* Log content */}
             <div style={{ flex: 1, overflow: "auto", padding: "1rem" }}>
-              {logsModal.loading ? (
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
-                  <Loader2 className="w-8 h-8 animate-spin" style={{ color: "var(--accent)" }} />
-                </div>
-              ) : (
-                <pre style={{
-                  fontFamily: "monospace", fontSize: "0.8rem",
-                  color: "#c9d1d9", whiteSpace: "pre-wrap", wordBreak: "break-all",
-                  lineHeight: 1.6,
-                }}>
-                  {logsModal.content || "Sem saída de log"}
-                </pre>
-              )}
+              <pre style={{
+                fontFamily: "monospace", fontSize: "0.8rem",
+                color: "#c9d1d9", whiteSpace: "pre-wrap", wordBreak: "break-all",
+                lineHeight: 1.6,
+              }}>
+                {logsModal.content || "Aguardando logs..."}
+                <div ref={logsEndRef} />
+              </pre>
             </div>
           </div>
         </div>
