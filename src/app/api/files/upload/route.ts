@@ -31,8 +31,18 @@ export async function POST(request: NextRequest) {
     const results: Array<{ name: string; size: number; path: string }> = [];
 
     for (const file of files) {
+      const relativePath = (file as any).webkitRelativePath as string | undefined;
       const sanitizedName = path.basename(file.name);
-      const targetDir = path.resolve(base, dirPath);
+
+      // If webkitRelativePath is provided (folder upload), use its directory structure
+      let targetDir: string;
+      if (relativePath) {
+        const subDir = path.dirname(relativePath);
+        targetDir = path.resolve(base, dirPath, subDir);
+      } else {
+        targetDir = path.resolve(base, dirPath);
+      }
+
       if (!targetDir.startsWith(base)) {
         continue; // skip unsafe
       }
@@ -43,10 +53,14 @@ export async function POST(request: NextRequest) {
       const buffer = Buffer.from(await file.arrayBuffer());
       await fs.writeFile(targetPath, buffer);
 
+      const resultPath = relativePath
+        ? (dirPath ? `${dirPath}/${relativePath}` : relativePath)
+        : (dirPath ? `${dirPath}/${sanitizedName}` : sanitizedName);
+
       results.push({
         name: sanitizedName,
         size: buffer.length,
-        path: dirPath ? `${dirPath}/${sanitizedName}` : sanitizedName,
+        path: resultPath,
       });
     }
 
