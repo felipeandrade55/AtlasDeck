@@ -28,6 +28,7 @@ export function WeatherWidget() {
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(new Date());
+  const [geoStatus, setGeoStatus] = useState<'ok' | 'denied' | 'unavailable' | 'default'>('default');
 
   useEffect(() => {
     const fetchWeather = (lat?: number, lon?: number) => {
@@ -42,11 +43,18 @@ export function WeatherWidget() {
 
     if (typeof navigator !== 'undefined' && navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
-        (pos) => fetchWeather(pos.coords.latitude, pos.coords.longitude),
-        ()    => fetchWeather(),
+        (pos) => {
+          setGeoStatus('ok');
+          fetchWeather(pos.coords.latitude, pos.coords.longitude);
+        },
+        (err) => {
+          setGeoStatus(err.code === 1 ? 'denied' : 'unavailable');
+          fetchWeather();
+        },
         { timeout: 5000 }
       );
     } else {
+      setGeoStatus('unavailable');
       fetchWeather();
     }
 
@@ -85,8 +93,14 @@ export function WeatherWidget() {
       {/* Header: city + clock */}
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "0.75rem" }}>
         <div>
-          <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "0.125rem" }}>
-            📍 {weather.city}
+          <div
+            style={{ fontSize: "0.75rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "0.125rem" }}
+            title={geoStatus === 'denied' ? 'Geolocalização bloqueada pelo navegador — usando localização padrão' : undefined}
+          >
+            {geoStatus === 'denied' ? '🔒' : '📍'} {weather.city}
+            {(geoStatus === 'denied' || geoStatus === 'unavailable') && (
+              <span style={{ fontSize: "0.65rem", marginLeft: "4px", opacity: 0.7 }}>(padrão)</span>
+            )}
           </div>
           <div style={{ fontSize: "2rem", fontWeight: 800, color: "var(--text-primary)", lineHeight: 1, letterSpacing: "-1px" }}>
             {format(now, "HH:mm")}

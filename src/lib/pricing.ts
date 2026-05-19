@@ -39,21 +39,48 @@ export const MODEL_PRICING: ModelPricing[] = [
     outputPricePerMillion: 1.50,
     contextWindow: 128000,
   },
-  // Legacy GPT-4 models (just in case of old data)
-  {
-    id: "openai/gpt-4-turbo",
-    name: "GPT-4 Turbo",
-    alias: "gpt-4-turbo",
-    inputPricePerMillion: 10.00,
-    outputPricePerMillion: 30.00,
-    contextWindow: 128000,
-  },
+  // OpenAI GPT-4 Series
   {
     id: "openai/gpt-4o",
     name: "GPT-4o",
     alias: "gpt-4o",
     inputPricePerMillion: 5.00,
     outputPricePerMillion: 15.00,
+    contextWindow: 128000,
+  },
+  // Anthropic Claude Series
+  {
+    id: "anthropic/claude-opus-4-6",
+    name: "Opus 4.6",
+    alias: "opus",
+    inputPricePerMillion: 15.00,
+    outputPricePerMillion: 75.00,
+    contextWindow: 200000,
+  },
+  {
+    id: "anthropic/claude-sonnet-4-5",
+    name: "Sonnet 4.5",
+    alias: "sonnet",
+    inputPricePerMillion: 3.00,
+    outputPricePerMillion: 15.00,
+    contextWindow: 200000,
+  },
+  // Google Gemini Series
+  {
+    id: "google/gemini-2.5-pro",
+    name: "Gemini 2.5 Pro",
+    alias: "gemini-pro",
+    inputPricePerMillion: 1.25,
+    outputPricePerMillion: 5.00,
+    contextWindow: 2000000,
+  },
+  // Moonshot Kimi
+  {
+    id: "moonshot/moonshot-v1-auto",
+    name: "Kimi (Moonshot)",
+    alias: "kimi",
+    inputPricePerMillion: 0.80,
+    outputPricePerMillion: 2.40,
     contextWindow: 128000,
   },
 ];
@@ -104,6 +131,12 @@ export function normalizeModelId(modelId: string): string {
     "gpt-5.4-mini": "openai/gpt-5.4-mini",
     "gpt-4-turbo": "openai/gpt-4-turbo",
     "gpt-4o": "openai/gpt-4o",
+    "opus": "anthropic/claude-opus-4-6",
+    "sonnet": "anthropic/claude-sonnet-4-5",
+    "haiku": "anthropic/claude-haiku-3-5",
+    "claude-sonnet-4-5": "anthropic/claude-sonnet-4-5",
+    "gemini-pro": "google/gemini-2.5-pro",
+    "kimi": "moonshot/moonshot-v1-auto",
   };
 
   return aliasMap[modelId] || modelId;

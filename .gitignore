@@ -32,6 +32,7 @@ yarn-error.log*
 
 # env files (contains sensitive credentials)
 .env*
+!.env
 !.env.example
 
 # production data (contains instance-specific operational data)

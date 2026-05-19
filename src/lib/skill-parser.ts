@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 
 export interface SkillInfo {
   id: string;
@@ -176,11 +177,36 @@ export function parseSkill(skillPath: string, skillName: string, agents: string[
 }
 
 /**
+ * Detect the OpenClaw/Codex installation directory.
+ * Tries OPENCLAW_DIR env, then ~/.codex, then ~/.openclaw.
+ */
+function detectOpenclawDir(): string | null {
+  if (process.env.OPENCLAW_DIR && fs.existsSync(process.env.OPENCLAW_DIR)) {
+    return process.env.OPENCLAW_DIR;
+  }
+
+  const home = os.homedir();
+  const candidates = [
+    path.join(home, '.codex'),
+    path.join(home, '.openclaw'),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+/**
  * Build a map of skill-name -> [agentId] by scanning all workspace skill dirs.
  */
 function buildAgentSkillMap(): Map<string, string[]> {
   const map = new Map<string, string[]>();
-  const openclawDir = process.env.OPENCLAW_DIR || '/root/.openclaw';
+  const openclawDir = detectOpenclawDir();
+  if (!openclawDir) return map;
 
   let agentList: Array<{ id: string; workspace: string }> = [];
   try {
@@ -257,16 +283,23 @@ function getAllWorkspaceSkillsDirs(openclawDir: string, configOverride?: string)
   const infra = path.join(openclawDir, 'workspace-infra', 'skills');
   if (!dirs.includes(infra)) dirs.push(infra);
 
+  // Codex-specific: curated skills from vendor imports
+  const codexCurated = path.join(openclawDir, 'vendor_imports', 'skills', 'skills', '.curated');
+  if (fs.existsSync(codexCurated) && !dirs.includes(codexCurated)) {
+    dirs.push(codexCurated);
+  }
+
   return dirs;
 }
 
 /**
- * Scan all skills: auto-discovers from all workspace skills dirs + system path,
+ * Scan all skills: auto-discovers from all workspace skills dirs + system path + Codex paths,
  * then marks configured skills that are missing on disk.
  */
 export function scanAllSkills(): SkillInfo[] {
   const skills: SkillInfo[] = [];
   const seenPaths = new Set<string>();
+  const seenNames = new Set<string>();
 
   let config: SkillsConfig = { skills: [] };
   try {
@@ -275,7 +308,7 @@ export function scanAllSkills(): SkillInfo[] {
     // Config is optional — proceed with auto-discovery only
   }
 
-  const openclawDir = process.env.OPENCLAW_DIR || '/root/.openclaw';
+  const openclawDir = detectOpenclawDir();
   const systemPath = config.systemSkillsPath || DEFAULT_SYSTEM_PATH;
   const agentSkillMap = buildAgentSkillMap();
 
@@ -287,7 +320,9 @@ export function scanAllSkills(): SkillInfo[] {
         if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
         const skillPath = path.join(basePath, entry.name);
         if (seenPaths.has(skillPath)) continue;
+        if (seenNames.has(entry.name)) continue;
         seenPaths.add(skillPath);
+        seenNames.add(entry.name);
         const agents = agentSkillMap.get(entry.name) || [];
         const skill = parseSkillAtPath(skillPath, entry.name, agents, source);
         if (skill) skills.push(skill);
@@ -295,16 +330,51 @@ export function scanAllSkills(): SkillInfo[] {
     } catch {}
   }
 
-  // 1. Auto-discover system skills
+  // 1. Auto-discover system skills from default Linux path
   discoverInDir(systemPath, 'system');
 
-  // 2. Auto-discover workspace skills from ALL workspace-*/skills directories
-  const workspaceSkillsDirs = getAllWorkspaceSkillsDirs(openclawDir, config.workspaceSkillsPath);
+  // 2. Auto-discover Codex system skills (~/.codex/skills/.system)
+  if (openclawDir) {
+    const codexSystem = path.join(openclawDir, 'skills', '.system');
+    discoverInDir(codexSystem, 'system');
+  }
+
+  // 3. Auto-discover workspace skills from ALL workspace-*/skills directories
+  const workspaceSkillsDirs = openclawDir
+    ? getAllWorkspaceSkillsDirs(openclawDir, config.workspaceSkillsPath)
+    : [];
   for (const wsDir of workspaceSkillsDirs) {
     discoverInDir(wsDir, 'workspace');
   }
 
-  // 3. Add configured skills that weren't auto-discovered (custom absolute paths)
+  // 4. Auto-discover Codex plugin skills (~/.codex/.tmp/plugins/*/skills)
+  if (openclawDir) {
+    const pluginsDir = path.join(openclawDir, '.tmp', 'plugins');
+    try {
+      if (fs.existsSync(pluginsDir)) {
+        const pluginEntries = fs.readdirSync(pluginsDir, { withFileTypes: true });
+        for (const pluginEntry of pluginEntries) {
+          if (!pluginEntry.isDirectory()) continue;
+          // Direct plugin skills (e.g. plugins/.agents/skills)
+          const directSkillsDir = path.join(pluginsDir, pluginEntry.name, 'skills');
+          discoverInDir(directSkillsDir, 'workspace');
+
+          // Nested plugin skills (e.g. plugins/plugins/atlassian-rovo/skills)
+          const subPluginsDir = path.join(pluginsDir, pluginEntry.name);
+          if (fs.existsSync(subPluginsDir)) {
+            const subEntries = fs.readdirSync(subPluginsDir, { withFileTypes: true });
+            for (const subEntry of subEntries) {
+              if (!subEntry.isDirectory()) continue;
+              const nestedSkillsDir = path.join(subPluginsDir, subEntry.name, 'skills');
+              discoverInDir(nestedSkillsDir, 'workspace');
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // 5. Add configured skills that weren't auto-discovered (custom absolute paths)
   for (const { name, location } of config.skills) {
     let skillPath: string;
     let configSource: 'workspace' | 'system';
@@ -313,7 +383,9 @@ export function scanAllSkills(): SkillInfo[] {
       skillPath = path.join(systemPath, name);
       configSource = 'system';
     } else if (location === 'workspace') {
-      skillPath = path.join(openclawDir, 'workspace-infra', 'skills', name);
+      skillPath = openclawDir
+        ? path.join(openclawDir, 'workspace-infra', 'skills', name)
+        : path.join(DEFAULT_WORKSPACE_PATH, name);
       configSource = 'workspace';
     } else {
       skillPath = location;
@@ -360,14 +432,14 @@ export function scanAllSkills(): SkillInfo[] {
  * Useful for debugging missing skills.
  */
 export function getSkillsScanInfo(): {
-  openclawDir: string;
+  openclawDir: string | null;
   systemPath: string;
   workspaceSkillsDirs: string[];
   configPath: string;
   configLoaded: boolean;
   configuredSkills: string[];
 } {
-  const openclawDir = process.env.OPENCLAW_DIR || '/root/.openclaw';
+  const openclawDir = detectOpenclawDir();
   let config: SkillsConfig = { skills: [] };
   let configLoaded = false;
   try {
@@ -378,7 +450,7 @@ export function getSkillsScanInfo(): {
   return {
     openclawDir,
     systemPath: config.systemSkillsPath || DEFAULT_SYSTEM_PATH,
-    workspaceSkillsDirs: getAllWorkspaceSkillsDirs(openclawDir, config.workspaceSkillsPath),
+    workspaceSkillsDirs: openclawDir ? getAllWorkspaceSkillsDirs(openclawDir, config.workspaceSkillsPath) : [],
     configPath: CONFIG_PATH,
     configLoaded,
     configuredSkills: config.skills.map((s) => s.name),
