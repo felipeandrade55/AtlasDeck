@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { readFileSync, statSync, readdirSync } from "fs";
 import { join } from "path";
+import { getOpenClawDir } from "@/lib/openclaw-config";
 
 export const dynamic = "force-dynamic";
 
@@ -62,7 +63,7 @@ async function getAgentStatusFromGateway(): Promise<
   Record<string, { isActive: boolean; currentTask: string; lastSeen: number }>
 > {
   try {
-    const configPath = (process.env.OPENCLAW_DIR || "/root/.openclaw") + "/openclaw.json";
+    const configPath = join(getOpenClawDir(), "openclaw.json");
     const config = JSON.parse(readFileSync(configPath, "utf-8"));
     const gatewayToken = config.gateway?.auth?.token;
 
@@ -183,11 +184,15 @@ function getAgentStatusFromFiles(
 
 export async function GET() {
   try {
-    const configPath = (process.env.OPENCLAW_DIR || "/root/.openclaw") + "/openclaw.json";
+    const configPath = join(getOpenClawDir(), "openclaw.json");
     const config = JSON.parse(readFileSync(configPath, "utf-8"));
 
     // Try gateway first, fallback to file-based
     const gatewayStatus = await getAgentStatusFromGateway();
+
+    if (!config.agents?.list) {
+      return NextResponse.json({ agents: [] });
+    }
 
     const agents = config.agents.list.map((agent: any) => {
       const agentInfo = AGENT_CONFIG[agent.id as keyof typeof AGENT_CONFIG] || {
@@ -214,6 +219,10 @@ export async function GET() {
         role: agentInfo.role,
         currentTask: status.currentTask,
         isActive: status.isActive,
+        model: agent.model?.primary || config.agents?.defaults?.model?.primary || "openai/gpt-5.4-codex",
+        tokensPerHour: 0,
+        tasksInQueue: 0,
+        uptime: 0,
       };
     });
 
