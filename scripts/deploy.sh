@@ -16,6 +16,8 @@ REPO_URL="https://github.com/felipeandrade55/AtlasDeck.git"
 APP_PORT="3000"
 APP_NAME="atlasdeck"
 HEALTH_TIMEOUT=90
+GH_GIT_NAME="felipeandrade55"
+GH_GIT_EMAIL="felipeandrade55@gmail.com"
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─── PARSE DE ARGUMENTOS ──────────────────────────────────────────────────────
@@ -110,28 +112,30 @@ APP_URL="http://localhost:${APP_PORT}"
 step "Verificando credenciais do GitHub..."
 T=$(now)
 
+# Identidade git sempre configurada com os valores fixos do projeto
+git config --global credential.helper store
+git config --global user.name  "$GH_GIT_NAME"
+git config --global user.email "$GH_GIT_EMAIL"
+
 HAS_CREDS=$([ -f ~/.git-credentials ] && grep -q 'github.com' ~/.git-credentials 2>/dev/null && echo yes || echo no)
 
 if [[ "$HAS_CREDS" == "yes" ]]; then
-  ok "Credenciais já configuradas"
+  ok "Credenciais já configuradas ($GH_GIT_EMAIL)"
   record "Credenciais GitHub" "ok" "$(elapsed $T)"
 else
-  warn "Credenciais não encontradas — configurando agora"
+  warn "Credenciais não encontradas — informe login e PAT"
   echo ""
-  echo -e "  ${DIM}Gere um PAT em: github.com → Settings → Developer settings → Personal access tokens${NC}"
-  echo -e "  ${DIM}Escopo necessário: 'repo' (read)${NC}"
+  echo -e "  ${DIM}PAT em: github.com → Settings → Developer settings → Personal access tokens${NC}"
+  echo -e "  ${DIM}Escopo necessário: 'repo' (write para --bidirecional, read para pull simples)${NC}"
   echo ""
-  read -rp "  GitHub username : " GH_USER
-  read -rsp "  GitHub PAT      : " GH_TOKEN
+  read -rp "  GitHub login : " GH_USER
+  read -rsp "  GitHub PAT   : " GH_TOKEN
   echo ""
 
-  git config --global credential.helper store
   printf 'https://%s:%s@github.com\n' "$GH_USER" "$GH_TOKEN" > ~/.git-credentials
   chmod 600 ~/.git-credentials
-  git config --global user.name "$GH_USER"
-  git config --global user.email "${GH_USER}@users.noreply.github.com"
 
-  ok "Credenciais salvas em ~/.git-credentials"
+  ok "Credenciais salvas (~/.git-credentials)"
   record "Credenciais GitHub" "ok" "$(elapsed $T)"
 fi
 
@@ -149,12 +153,6 @@ if [ -d "$VPS_DIR/.git" ]; then
 
     if [[ -n "$(git status --porcelain)" ]]; then
       warn "Alterações locais detectadas — enviando para o GitHub antes de puxar"
-
-      # Garante identidade git para o commit automático
-      if [[ -z "$(git config user.email 2>/dev/null)" ]]; then
-        git config user.email "deploy@$(hostname).local"
-        git config user.name "VPS Auto-Sync"
-      fi
 
       git add -A
       git commit -m "auto(vps): sync local changes from $(hostname) [$(date +'%Y-%m-%d %H:%M:%S')]"
