@@ -50,6 +50,10 @@ export default function SkillsPage() {
     setRefreshing(true);
     try {
       const res = await fetch("/api/skills");
+      if (!res.ok) {
+        setData({ skills: [], total: 0, missing: 0 });
+        return;
+      }
       const json = await res.json();
       setData(json);
     } catch {
