@@ -1,5 +1,5 @@
 /**
- * Usage Queries - Read usage data from SQLite
+ * Usage Queries - read usage and cost data from SQLite.
  */
 
 import Database from "better-sqlite3";
@@ -11,6 +11,9 @@ const DEFAULT_DB_PATH = path.join(
   "data",
   "usage-tracking.db"
 );
+
+const DEFAULT_BUDGET = 100;
+const DEFAULT_ALERT_THRESHOLD = 80;
 
 export interface CostSummary {
   today: number;
@@ -40,6 +43,7 @@ export interface ModelCost {
 
 export interface DailyCost {
   date: string; // MM-DD
+  dateIso: string; // YYYY-MM-DD
   cost: number;
   input: number;
   output: number;
@@ -47,7 +51,94 @@ export interface DailyCost {
 
 export interface HourlyCost {
   hour: string; // HH:00
+  timestamp: number;
   cost: number;
+}
+
+export interface SessionCost {
+  sessionKey: string;
+  sessionId: string | null;
+  agent: string;
+  model: string;
+  cost: number;
+  tokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  lastSeenAt: number;
+}
+
+export interface UsageTotals {
+  cost: number;
+  tokens: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface CostSettings {
+  budget: number;
+  alertThreshold: number;
+}
+
+export interface CollectionMetadata {
+  lastCollectedAt: number | null;
+  lastCollectionSource: string | null;
+  lastCollectionError: string | null;
+  lastSessionsSeen: number;
+  lastSnapshotsInserted: number;
+  lastSnapshotAt: number | null;
+  storedSnapshots: number;
+  trackedSessions: number;
+}
+
+function safeNumber(value: unknown, fallback = 0): number {
+  if (value === null || value === undefined || value === "") return fallback;
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function roundMoney(value: number): number {
+  return Number(value.toFixed(6));
+}
+
+function dateString(date: Date): string {
+  return date.toISOString().split("T")[0];
+}
+
+function cutoffDate(days: number): string {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - Math.max(days - 1, 0));
+  return dateString(cutoff);
+}
+
+function eachDay(days: number): string[] {
+  const result: string[] = [];
+  for (let i = Math.max(days - 1, 0); i >= 0; i--) {
+    const date = new Date();
+    date.setDate(date.getDate() - i);
+    result.push(dateString(date));
+  }
+  return result;
+}
+
+function getSetting(db: Database.Database, key: string): string | null {
+  try {
+    const row = db.prepare("SELECT value FROM usage_settings WHERE key = ?").get(key) as
+      | { value: string }
+      | undefined;
+    return row?.value ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function setSetting(db: Database.Database, key: string, value: string): void {
+  db.prepare(`
+    INSERT INTO usage_settings (key, value, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET
+      value = excluded.value,
+      updated_at = excluded.updated_at
+  `).run(key, value, Date.now());
 }
 
 export function getDatabase(dbPath: string = DEFAULT_DB_PATH): Database.Database | null {
@@ -59,171 +150,291 @@ export function getDatabase(dbPath: string = DEFAULT_DB_PATH): Database.Database
 }
 
 /**
- * Get cost summary (today, yesterday, this month, last month)
+ * Get cost summary (today, yesterday, this month, last month).
  */
 export function getCostSummary(db: Database.Database): CostSummary {
   const now = new Date();
-  const today = now.toISOString().split("T")[0];
-  
+  const today = dateString(now);
+
   const yesterday = new Date(now);
   yesterday.setDate(yesterday.getDate() - 1);
-  const yesterdayStr = yesterday.toISOString().split("T")[0];
-  
+  const yesterdayStr = dateString(yesterday);
+
   const thisMonthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
-  
+
   const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
   const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
-  const lastMonthStartStr = lastMonthStart.toISOString().split("T")[0];
-  const lastMonthEndStr = lastMonthEnd.toISOString().split("T")[0];
+  const lastMonthStartStr = dateString(lastMonthStart);
+  const lastMonthEndStr = dateString(lastMonthEnd);
 
-  // Today's cost
   const todayResult = db.prepare(`
     SELECT COALESCE(SUM(cost), 0) as total FROM usage_snapshots WHERE date = ?
   `).get(today) as { total: number };
 
-  // Yesterday's cost
   const yesterdayResult = db.prepare(`
     SELECT COALESCE(SUM(cost), 0) as total FROM usage_snapshots WHERE date = ?
   `).get(yesterdayStr) as { total: number };
 
-  // This month's cost
   const thisMonthResult = db.prepare(`
     SELECT COALESCE(SUM(cost), 0) as total FROM usage_snapshots WHERE date >= ?
   `).get(thisMonthStart) as { total: number };
 
-  // Last month's cost
   const lastMonthResult = db.prepare(`
     SELECT COALESCE(SUM(cost), 0) as total FROM usage_snapshots WHERE date >= ? AND date <= ?
   `).get(lastMonthStartStr, lastMonthEndStr) as { total: number };
 
-  // Calculate projection (based on average daily spend this month)
   const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const daysElapsed = now.getDate();
-  const avgDailySpend = daysElapsed > 0 ? thisMonthResult.total / daysElapsed : 0;
-  const projected = avgDailySpend * daysInMonth;
+  const daysElapsed = Math.max(now.getDate(), 1);
+  const avgDailySpend = thisMonthResult.total / daysElapsed;
 
   return {
-    today: todayResult.total,
-    yesterday: yesterdayResult.total,
-    thisMonth: thisMonthResult.total,
-    lastMonth: lastMonthResult.total,
-    projected,
+    today: roundMoney(todayResult.total),
+    yesterday: roundMoney(yesterdayResult.total),
+    thisMonth: roundMoney(thisMonthResult.total),
+    lastMonth: roundMoney(lastMonthResult.total),
+    projected: roundMoney(avgDailySpend * daysInMonth),
   };
 }
 
 /**
- * Get cost breakdown by agent
+ * Get total cost/tokens for a date range.
+ */
+export function getUsageTotals(db: Database.Database, days: number = 30): UsageTotals {
+  const row = db.prepare(`
+    SELECT
+      COALESCE(SUM(cost), 0) as cost,
+      COALESCE(SUM(total_tokens), 0) as tokens,
+      COALESCE(SUM(input_tokens), 0) as inputTokens,
+      COALESCE(SUM(output_tokens), 0) as outputTokens
+    FROM usage_snapshots
+    WHERE date >= ?
+  `).get(cutoffDate(days)) as UsageTotals;
+
+  return {
+    cost: roundMoney(row.cost),
+    tokens: row.tokens,
+    inputTokens: row.inputTokens,
+    outputTokens: row.outputTokens,
+  };
+}
+
+/**
+ * Get cost breakdown by agent.
  */
 export function getCostByAgent(db: Database.Database, days: number = 30): AgentCost[] {
-  const cutoffDate = new Date();
-  cutoffDate.setDate(cutoffDate.getDate() - days);
-  const cutoffStr = cutoffDate.toISOString().split("T")[0];
-
   const results = db.prepare(`
-    SELECT 
+    SELECT
       agent_id as agent,
-      SUM(cost) as cost,
-      SUM(total_tokens) as tokens,
-      SUM(input_tokens) as inputTokens,
-      SUM(output_tokens) as outputTokens
+      COALESCE(SUM(cost), 0) as cost,
+      COALESCE(SUM(total_tokens), 0) as tokens,
+      COALESCE(SUM(input_tokens), 0) as inputTokens,
+      COALESCE(SUM(output_tokens), 0) as outputTokens
     FROM usage_snapshots
     WHERE date >= ?
     GROUP BY agent_id
     ORDER BY cost DESC
-  `).all(cutoffStr) as AgentCost[];
+  `).all(cutoffDate(days)) as AgentCost[];
 
   const total = results.reduce((sum, r) => sum + r.cost, 0);
 
   return results.map((r) => ({
     ...r,
+    cost: roundMoney(r.cost),
     percentOfTotal: total > 0 ? (r.cost / total) * 100 : 0,
   }));
 }
 
 /**
- * Get cost breakdown by model
+ * Get cost breakdown by model.
  */
 export function getCostByModel(db: Database.Database, days: number = 30): ModelCost[] {
-  const cutoffDate = new Date();
-  cutoffDate.setDate(cutoffDate.getDate() - days);
-  const cutoffStr = cutoffDate.toISOString().split("T")[0];
-
   const results = db.prepare(`
-    SELECT 
+    SELECT
       model,
-      SUM(cost) as cost,
-      SUM(total_tokens) as tokens,
-      SUM(input_tokens) as inputTokens,
-      SUM(output_tokens) as outputTokens
+      COALESCE(SUM(cost), 0) as cost,
+      COALESCE(SUM(total_tokens), 0) as tokens,
+      COALESCE(SUM(input_tokens), 0) as inputTokens,
+      COALESCE(SUM(output_tokens), 0) as outputTokens
     FROM usage_snapshots
     WHERE date >= ?
     GROUP BY model
     ORDER BY cost DESC
-  `).all(cutoffStr) as ModelCost[];
+  `).all(cutoffDate(days)) as ModelCost[];
 
   const total = results.reduce((sum, r) => sum + r.cost, 0);
 
   return results.map((r) => ({
     ...r,
+    cost: roundMoney(r.cost),
     percentOfTotal: total > 0 ? (r.cost / total) * 100 : 0,
   }));
 }
 
 /**
- * Get daily cost trend
+ * Get daily cost trend.
  */
 export function getDailyCost(db: Database.Database, days: number = 30): DailyCost[] {
-  const cutoffDate = new Date();
-  cutoffDate.setDate(cutoffDate.getDate() - days);
-  const cutoffStr = cutoffDate.toISOString().split("T")[0];
-
   const results = db.prepare(`
-    SELECT 
+    SELECT
       date,
-      SUM(cost) as cost,
-      SUM(input_tokens) as input,
-      SUM(output_tokens) as output
+      COALESCE(SUM(cost), 0) as cost,
+      COALESCE(SUM(input_tokens), 0) as input,
+      COALESCE(SUM(output_tokens), 0) as output
     FROM usage_snapshots
     WHERE date >= ?
     GROUP BY date
     ORDER BY date ASC
-  `).all(cutoffStr) as Array<{
+  `).all(cutoffDate(days)) as Array<{
     date: string;
     cost: number;
     input: number;
     output: number;
   }>;
 
-  // Format date as MM-DD
-  return results.map((r) => ({
-    date: r.date.slice(5), // YYYY-MM-DD → MM-DD
-    cost: parseFloat(r.cost.toFixed(2)),
-    input: r.input,
-    output: r.output,
-  }));
+  const byDate = new Map(results.map((r) => [r.date, r]));
+
+  return eachDay(days).map((day) => {
+    const row = byDate.get(day);
+    return {
+      date: day.slice(5),
+      dateIso: day,
+      cost: roundMoney(row?.cost ?? 0),
+      input: row?.input ?? 0,
+      output: row?.output ?? 0,
+    };
+  });
 }
 
 /**
- * Get hourly cost trend (last 24h)
+ * Get hourly cost trend for the last 24h.
  */
 export function getHourlyCost(db: Database.Database): HourlyCost[] {
-  const cutoffTimestamp = Date.now() - 24 * 60 * 60 * 1000; // 24h ago
+  const cutoffTimestamp = Date.now() - 23 * 60 * 60 * 1000;
 
   const results = db.prepare(`
-    SELECT 
+    SELECT
+      date,
       hour,
-      SUM(cost) as cost
+      COALESCE(SUM(cost), 0) as cost
     FROM usage_snapshots
     WHERE timestamp >= ?
-    GROUP BY hour
-    ORDER BY hour ASC
+    GROUP BY date, hour
   `).all(cutoffTimestamp) as Array<{
+    date: string;
     hour: number;
     cost: number;
   }>;
 
-  return results.map((r) => ({
-    hour: `${String(r.hour).padStart(2, "0")}:00`,
-    cost: parseFloat(r.cost.toFixed(2)),
-  }));
+  const byHour = new Map(
+    results.map((r) => [`${r.date}:${String(r.hour).padStart(2, "0")}`, r.cost])
+  );
+
+  const rows: HourlyCost[] = [];
+  for (let i = 23; i >= 0; i--) {
+    const timestamp = Date.now() - i * 60 * 60 * 1000;
+    const date = new Date(timestamp);
+    const dateIso = dateString(date);
+    const hour = date.getUTCHours();
+    const key = `${dateIso}:${String(hour).padStart(2, "0")}`;
+
+    rows.push({
+      hour: `${String(hour).padStart(2, "0")}:00`,
+      timestamp,
+      cost: roundMoney(byHour.get(key) ?? 0),
+    });
+  }
+
+  return rows;
+}
+
+/**
+ * Get most expensive sessions in the selected range.
+ */
+export function getCostBySession(
+  db: Database.Database,
+  days: number = 30,
+  limit: number = 20
+): SessionCost[] {
+  return db.prepare(`
+    SELECT
+      COALESCE(session_key, agent_id || ':' || model) as sessionKey,
+      MAX(session_id) as sessionId,
+      agent_id as agent,
+      model,
+      COALESCE(SUM(cost), 0) as cost,
+      COALESCE(SUM(total_tokens), 0) as tokens,
+      COALESCE(SUM(input_tokens), 0) as inputTokens,
+      COALESCE(SUM(output_tokens), 0) as outputTokens,
+      MAX(timestamp) as lastSeenAt
+    FROM usage_snapshots
+    WHERE date >= ?
+    GROUP BY COALESCE(session_key, agent_id || ':' || model), agent_id, model
+    ORDER BY cost DESC
+    LIMIT ?
+  `).all(cutoffDate(days), limit).map((row) => {
+    const session = row as SessionCost;
+    return { ...session, cost: roundMoney(session.cost) };
+  });
+}
+
+export function getCostSettings(db: Database.Database): CostSettings {
+  const budget = safeNumber(
+    getSetting(db, "monthly_budget_usd"),
+    safeNumber(process.env.COST_MONTHLY_BUDGET_USD, DEFAULT_BUDGET)
+  );
+  const alertThreshold = safeNumber(
+    getSetting(db, "alert_threshold_percent"),
+    safeNumber(process.env.COST_ALERT_THRESHOLD_PERCENT, DEFAULT_ALERT_THRESHOLD)
+  );
+
+  return {
+    budget: budget > 0 ? budget : DEFAULT_BUDGET,
+    alertThreshold: Math.min(Math.max(alertThreshold, 1), 100),
+  };
+}
+
+export function setCostSettings(
+  db: Database.Database,
+  settings: Partial<CostSettings>
+): CostSettings {
+  if (settings.budget !== undefined) {
+    if (!Number.isFinite(settings.budget) || settings.budget <= 0) {
+      throw new Error("Budget must be a positive number");
+    }
+    setSetting(db, "monthly_budget_usd", String(settings.budget));
+  }
+
+  if (settings.alertThreshold !== undefined) {
+    if (!Number.isFinite(settings.alertThreshold) || settings.alertThreshold <= 0 || settings.alertThreshold > 100) {
+      throw new Error("Alert threshold must be between 1 and 100");
+    }
+    setSetting(db, "alert_threshold_percent", String(settings.alertThreshold));
+  }
+
+  return getCostSettings(db);
+}
+
+export function getCollectionMetadata(db: Database.Database): CollectionMetadata {
+  const snapshotRow = db.prepare(`
+    SELECT
+      MAX(timestamp) as lastSnapshotAt,
+      COUNT(*) as storedSnapshots,
+      COUNT(DISTINCT COALESCE(session_key, agent_id || ':' || model)) as trackedSessions
+    FROM usage_snapshots
+  `).get() as {
+    lastSnapshotAt: number | null;
+    storedSnapshots: number;
+    trackedSessions: number;
+  };
+
+  return {
+    lastCollectedAt: safeNumber(getSetting(db, "last_collected_at"), 0) || null,
+    lastCollectionSource: getSetting(db, "last_collection_source"),
+    lastCollectionError: getSetting(db, "last_collection_error") || null,
+    lastSessionsSeen: safeNumber(getSetting(db, "last_sessions_seen"), 0),
+    lastSnapshotsInserted: safeNumber(getSetting(db, "last_snapshots_inserted"), 0),
+    lastSnapshotAt: snapshotRow.lastSnapshotAt,
+    storedSnapshots: snapshotRow.storedSnapshots,
+    trackedSessions: snapshotRow.trackedSessions,
+  };
 }

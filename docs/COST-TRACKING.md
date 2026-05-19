@@ -4,10 +4,10 @@ Mission Control now tracks real usage costs by reading OpenClaw session data and
 
 ## How It Works
 
-1. **Data Collection**: The `collect-usage.ts` script reads `openclaw status --json` to get current session data
-2. **Cost Calculation**: Uses model pricing table to calculate costs based on input/output tokens
-3. **Storage**: Saves snapshots to SQLite database (`data/usage-tracking.db`)
-4. **API**: The `/api/costs` endpoint queries the database to serve real cost data to the dashboard
+1. **Data Collection**: The dashboard/API reads `openclaw sessions list --json` and falls back to `openclaw status --json`
+2. **Delta Calculation**: OpenClaw exposes cumulative session counters, so Mission Control stores only the positive token delta since the last collection
+3. **Storage**: Saves billable deltas to SQLite database (`data/usage-tracking.db`)
+4. **API**: The `/api/costs` endpoint initializes the database, refreshes stale usage data, and serves cost data to the dashboard
 
 ## Model Pricing
 
@@ -35,8 +35,8 @@ npx tsx scripts/collect-usage.ts
 
 This will:
 - Read current OpenClaw session data
-- Calculate costs for each agent + model combination
-- Save a snapshot to the database (replacing any existing data for the same hour)
+- Compare each session with the last stored counter
+- Save only new token deltas to the database
 
 ## Automatic Collection (Cron)
 
@@ -74,14 +74,19 @@ CREATE TABLE usage_snapshots (
   date TEXT NOT NULL,           -- YYYY-MM-DD
   hour INTEGER NOT NULL,         -- 0-23
   agent_id TEXT NOT NULL,
+  session_key TEXT,
+  session_id TEXT,
   model TEXT NOT NULL,
   input_tokens INTEGER NOT NULL,
   output_tokens INTEGER NOT NULL,
   total_tokens INTEGER NOT NULL,
   cost REAL NOT NULL,
+  source TEXT NOT NULL DEFAULT 'delta',
   created_at INTEGER DEFAULT (strftime('%s', 'now'))
 );
 ```
+
+`usage_session_state` stores the latest cumulative counters per session so repeated polling does not double count usage.
 
 ## Querying the Database
 
@@ -169,7 +174,7 @@ Returns cost summary, breakdowns, and trends.
 **Costs seem wrong:**
 - Verify pricing in `src/lib/pricing.ts`
 - Check token counts: `openclaw status --json | jq '.sessions.byAgent[].recent[].totalTokens'`
-- Recalculate: delete database and re-collect
+- For legacy databases collected before delta tracking, archive/delete `data/usage-tracking.db` and re-collect
 
 ## Future Enhancements
 
