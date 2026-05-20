@@ -6,6 +6,7 @@ import { SystemInfo } from "@/components/SystemInfo";
 import { IntegrationStatus } from "@/components/IntegrationStatus";
 import { QuickActions } from "@/components/QuickActions";
 import { RecoveryPanel } from "@/components/RecoveryPanel";
+import { UpdatePanel } from "@/components/UpdatePanel";
 
 interface SystemData {
   agent: {
@@ -107,6 +108,11 @@ export default function SettingsPage() {
 
       {/* Grid Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
+        {/* Update System */}
+        <div className="lg:col-span-2">
+          <UpdatePanel />
+        </div>
+
         {/* System Info - Full width on first row */}
         <div className="lg:col-span-2">
           <SystemInfo data={systemData} />

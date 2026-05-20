@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Cpu, HardDrive, MemoryStick, Shield, ShieldCheck, Clock } from "lucide-react";
 
 interface SystemStats {
@@ -26,6 +27,9 @@ export function StatusBar() {
     uptime: "0d 0h",
   });
 
+  const [updateInfo, setUpdateInfo] = useState<{ hasUpdate: boolean, sha: string }>({ hasUpdate: false, sha: "..." });
+  const router = useRouter();
+
   useEffect(() => {
     const fetchStats = async () => {
       try {
@@ -39,10 +43,25 @@ export function StatusBar() {
       }
     };
 
-    fetchStats();
-    const interval = setInterval(fetchStats, 10000); // Update every 10s
+    const fetchUpdateCheck = async () => {
+      try {
+        const res = await fetch("/api/update/check");
+        if (res.ok) {
+          const data = await res.json();
+          setUpdateInfo({ hasUpdate: data.hasUpdate, sha: data.localSha?.slice(0, 7) || "..." });
+        }
+      } catch (error) {}
+    };
 
-    return () => clearInterval(interval);
+    fetchStats();
+    fetchUpdateCheck();
+    const interval = setInterval(fetchStats, 10000); // Update every 10s
+    const updateInterval = setInterval(fetchUpdateCheck, 5 * 60 * 1000); // Check update every 5m
+
+    return () => {
+      clearInterval(interval);
+      clearInterval(updateInterval);
+    };
   }, []);
 
   const cpuColor = stats.cpu < 60 ? "var(--positive)" : stats.cpu < 85 ? "var(--warning)" : "var(--negative)";
@@ -220,6 +239,33 @@ export function StatusBar() {
           Ativo: {stats.uptime}
         </span>
       </div>
+
+      {/* Separator */}
+      <div style={{ width: "1px", height: "16px", backgroundColor: "var(--border)" }} />
+
+      {/* Update Indicator */}
+      {updateInfo.hasUpdate ? (
+        <div 
+          className="flex items-center gap-1 cursor-pointer hover:opacity-80 transition-opacity" 
+          style={{ animation: "pulse 2s infinite" }} 
+          onClick={() => router.push('/settings')}
+        >
+          <div style={{ width: "6px", height: "6px", borderRadius: "50%", backgroundColor: "var(--warning)" }} />
+          <span style={{ fontFamily: "var(--font-body)", fontSize: "10px", fontWeight: 600, color: "var(--warning)", letterSpacing: "0.5px" }}>
+            UPDATE
+          </span>
+        </div>
+      ) : (
+        <div 
+          className="flex items-center gap-1 cursor-pointer hover:opacity-80 transition-opacity" 
+          onClick={() => router.push('/settings')}
+        >
+          <div style={{ width: "6px", height: "6px", borderRadius: "50%", backgroundColor: "var(--positive)" }} />
+          <span style={{ fontFamily: "var(--font-body)", fontSize: "10px", fontWeight: 500, color: "var(--text-muted)" }}>
+            v{updateInfo.sha}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

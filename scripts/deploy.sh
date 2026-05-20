@@ -46,6 +46,9 @@ for arg in "$@"; do
     --headless)
       HEADLESS=true
       ;;
+    --headless)
+      HEADLESS=true
+      ;;
     -h|--help)
       cat <<EOF
 Uso: $0 [opções]
