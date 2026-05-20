@@ -322,7 +322,7 @@ if ! command -v pm2 &>/dev/null; then
 fi
 
 # Libera a porta se estiver ocupada por processo órfão (fora do PM2)
-ORPHAN_PID=$(lsof -ti :"$APP_PORT" 2>/dev/null | head -1)
+ORPHAN_PID=$(lsof -ti :"$APP_PORT" 2>/dev/null | head -1 || true)
 if [[ -n "$ORPHAN_PID" ]]; then
   PM2_PIDS=$(pm2 list 2>/dev/null | grep -oP '\d+(?=\s+\|)' || true)
   if ! echo "$PM2_PIDS" | grep -qw "$ORPHAN_PID"; then

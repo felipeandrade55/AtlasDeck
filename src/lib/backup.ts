@@ -245,7 +245,7 @@ export async function runBackup(): Promise<BackupResult> {
     fs.writeFileSync(listFile, listContent, "utf-8");
 
     log(`Creating archive: ${archiveName}`);
-    const tarCmd = `tar -czf "${archivePath}" -T "${listFile}"`;
+    const tarCmd = `tar --exclude="node_modules" --exclude=".next" --exclude="data/backups" --exclude=".git" --exclude="*.tar.gz" --exclude="*.log" -czf "${archivePath}" -T "${listFile}"`;
     await execAsync(tarCmd, { timeout: 300000, encoding: "utf-8" });
 
     fs.unlinkSync(listFile);

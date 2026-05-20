@@ -64,6 +64,19 @@ export async function POST(request: NextRequest) {
       async start(controller) {
         const encoder = new TextEncoder();
         let logsBuffer = "";
+
+        const pingInterval = setInterval(() => {
+          try {
+            controller.enqueue(encoder.encode(":\n\n"));
+          } catch (e) {}
+        }, 15000);
+
+        const safeClose = () => {
+          clearInterval(pingInterval);
+          try {
+            controller.close();
+          } catch (e) {}
+        };
         
         const send = (event: string, data: any) => {
           controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
@@ -208,7 +221,7 @@ export async function POST(request: NextRequest) {
                 
                 send("complete", { success: false, durationMs, phases: initialPhases, error: `Exit code ${code}` });
             }
-            controller.close();
+            safeClose();
           });
 
           child.on("error", (err) => {
@@ -220,7 +233,7 @@ export async function POST(request: NextRequest) {
                   logs: logsBuffer
               });
               send("complete", { success: false, phases: initialPhases, error: err.message });
-              controller.close();
+              safeClose();
           });
 
         } catch (error) {
@@ -233,7 +246,7 @@ export async function POST(request: NextRequest) {
                 logs: logsBuffer
             });
             send("complete", { success: false, phases: initialPhases, error: msg });
-            controller.close();
+            safeClose();
         }
       }
     }),
