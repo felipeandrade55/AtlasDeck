@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Download, CheckCircle, AlertTriangle, RefreshCw, XCircle } from "lucide-react";
-import { UpdateCheckResult, UpdateHistoryEntry, UpdatePhase } from "@/lib/update";
+import type { UpdateCheckResult, UpdateHistoryEntry, UpdatePhase } from "@/lib/update";
 
 export function UpdatePanel() {
   const [status, setStatus] = useState<'loading' | 'uptodate' | 'available' | 'updating' | 'complete' | 'error'>('loading');
