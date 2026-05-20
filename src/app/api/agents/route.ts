@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { readFileSync, statSync } from "fs";
-import { join } from "path";
+import { readFileSync, writeFileSync, statSync, existsSync, mkdirSync } from "fs";
+import { join, dirname } from "path";
 import { getOpenClawDir } from "@/lib/openclaw-config";
 
 export const dynamic = "force-dynamic";
@@ -26,9 +26,55 @@ interface Agent {
   activeSessions: number;
 }
 
-// Fallback config used when an agent doesn't define its own ui config in openclaw.json.
-// The main agent reads name/emoji from env vars; all others fall back to generic defaults.
-// Override via each agent's openclaw.json → ui.emoji / ui.color / name fields.
+const FALLBACK_CONFIG_PATH = join(process.cwd(), "data", "openclaw-fallback.json");
+
+const DEFAULT_MOCK_CONFIG = {
+  agents: {
+    defaults: {
+      model: {
+        primary: "openai/gpt-5.4-codex"
+      }
+    },
+    list: [
+      {
+        id: "main",
+        name: "Mission Control",
+        ui: { emoji: "🤖", color: "#ff6b35" },
+        model: { primary: "openai/gpt-5.4" },
+        workspace: "./workspace/mission-control",
+        subagents: { allowAgents: ["devops", "coder"] }
+      },
+      {
+        id: "devops",
+        name: "DevOps Sentinel",
+        ui: { emoji: "🛡️", color: "#10b981" },
+        model: { primary: "openai/gpt-5.4-mini" },
+        workspace: "./workspace/devops",
+        subagents: { allowAgents: [] }
+      },
+      {
+        id: "coder",
+        name: "Code Architect",
+        ui: { emoji: "💻", color: "#3b82f6" },
+        model: { primary: "openai/gpt-5.4-codex" },
+        workspace: "./workspace/coder",
+        subagents: { allowAgents: [] }
+      }
+    ]
+  },
+  channels: {
+    telegram: {
+      dmPolicy: "pairing",
+      accounts: {
+        main: {
+          botToken: "configured_mock_token",
+          dmPolicy: "pairing"
+        }
+      }
+    }
+  }
+};
+
 const DEFAULT_AGENT_CONFIG: Record<string, { emoji: string; color: string; name?: string }> = {
   main: {
     emoji: process.env.NEXT_PUBLIC_AGENT_EMOJI || "🤖",
@@ -37,16 +83,10 @@ const DEFAULT_AGENT_CONFIG: Record<string, { emoji: string; color: string; name?
   },
 };
 
-/**
- * Get agent display info (emoji, color, name) from openclaw.json or defaults
- */
 function getAgentDisplayInfo(agentId: string, agentConfig: any): { emoji: string; color: string; name: string } {
-  // First try to get from agent's own config in openclaw.json
   const configEmoji = agentConfig?.ui?.emoji;
   const configColor = agentConfig?.ui?.color;
   const configName = agentConfig?.name;
-
-  // Then try defaults
   const defaults = DEFAULT_AGENT_CONFIG[agentId];
 
   return {
@@ -56,26 +96,44 @@ function getAgentDisplayInfo(agentId: string, agentConfig: any): { emoji: string
   };
 }
 
+function resolveConfigPath(): { path: string; isFallback: boolean } {
+  const prodDir = getOpenClawDir();
+  const prodPath = join(prodDir, "openclaw.json");
+
+  if (existsSync(prodDir)) {
+    // If prod openclaw.json doesn't exist but directory does, initialize it
+    if (!existsSync(prodPath)) {
+      try {
+        writeFileSync(prodPath, JSON.stringify(DEFAULT_MOCK_CONFIG, null, 2), "utf-8");
+      } catch {}
+    }
+    return { path: prodPath, isFallback: false };
+  }
+
+  // Fallback to local data/openclaw-fallback.json
+  if (!existsSync(FALLBACK_CONFIG_PATH)) {
+    try {
+      mkdirSync(dirname(FALLBACK_CONFIG_PATH), { recursive: true });
+      writeFileSync(FALLBACK_CONFIG_PATH, JSON.stringify(DEFAULT_MOCK_CONFIG, null, 2), "utf-8");
+    } catch {}
+  }
+  return { path: FALLBACK_CONFIG_PATH, isFallback: true };
+}
+
 export async function GET() {
   try {
-    // Read openclaw config
-    const configPath = join(getOpenClawDir(), "openclaw.json");
+    const { path: configPath } = resolveConfigPath();
     const config = JSON.parse(readFileSync(configPath, "utf-8"));
 
-    // Get agents from config
     if (!config.agents?.list?.length) {
-      return NextResponse.json({ agents: [] });
+      return NextResponse.json({ agents: [], isDemo: true });
     }
 
     const agents: Agent[] = config.agents.list.map((agent: any) => {
       const agentInfo = getAgentDisplayInfo(agent.id, agent);
-
-      // Get telegram account info
-      const telegramAccount =
-        config.channels?.telegram?.accounts?.[agent.id];
+      const telegramAccount = config.channels?.telegram?.accounts?.[agent.id];
       const botToken = telegramAccount?.botToken;
 
-      // Check if agent has recent activity
       const memoryPath = join(agent.workspace, "memory");
       let lastActivity = undefined;
       let status: "online" | "offline" = "offline";
@@ -85,22 +143,12 @@ export async function GET() {
         const memoryFile = join(memoryPath, `${today}.md`);
         const stat = statSync(memoryFile);
         lastActivity = stat.mtime.toISOString();
-        // Consider online if activity within last 5 minutes
-        status =
-          Date.now() - stat.mtime.getTime() < 5 * 60 * 1000
-            ? "online"
-            : "offline";
-      } catch (e) {
-        // No recent activity
-      }
+        status = Date.now() - stat.mtime.getTime() < 5 * 60 * 1000 ? "online" : "offline";
+      } catch (e) {}
 
-      // Get details of allowed subagents
       const allowAgents = agent.subagents?.allowAgents || [];
       const allowAgentsDetails = allowAgents.map((subagentId: string) => {
-        // Find subagent in config
-        const subagentConfig = config.agents.list.find(
-          (a: any) => a.id === subagentId
-        );
+        const subagentConfig = config.agents.list.find((a: any) => a.id === subagentId);
         if (subagentConfig) {
           const subagentInfo = getAgentDisplayInfo(subagentId, subagentConfig);
           return {
@@ -110,7 +158,6 @@ export async function GET() {
             color: subagentInfo.color,
           };
         }
-        // Fallback if subagent not found in config
         const fallbackInfo = getAgentDisplayInfo(subagentId, null);
         return {
           id: subagentId,
@@ -125,26 +172,151 @@ export async function GET() {
         name: agent.name || agentInfo.name,
         emoji: agentInfo.emoji,
         color: agentInfo.color,
-        model:
-          agent.model?.primary || config.agents.defaults?.model?.primary || "openai/gpt-5.4-codex",
+        model: agent.model?.primary || config.agents.defaults?.model?.primary || "openai/gpt-5.4-codex",
         workspace: agent.workspace,
-        dmPolicy:
-          telegramAccount?.dmPolicy ||
-          config.channels?.telegram?.dmPolicy ||
-          "pairing",
+        dmPolicy: telegramAccount?.dmPolicy || config.channels?.telegram?.dmPolicy || "pairing",
         allowAgents,
         allowAgentsDetails,
         botToken: botToken ? "configured" : undefined,
         status,
         lastActivity,
-        activeSessions: 0, // TODO: get from sessions API
+        activeSessions: 0,
       };
     });
 
     return NextResponse.json({ agents });
   } catch (error: any) {
     console.error("Error reading agents:", error);
-    // Config file not found or parse/structure error — degrade gracefully
-    return NextResponse.json({ agents: [] });
+    return NextResponse.json({ agents: [], error: error.message });
+  }
+}
+
+export async function POST(request: Request) {
+  try {
+    const { path: configPath } = resolveConfigPath();
+    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    const body = await request.json();
+
+    if (!body.id || !body.name) {
+      return NextResponse.json({ error: "Missing id or name" }, { status: 400 });
+    }
+
+    // Check duplicate
+    if (config.agents.list.some((a: any) => a.id === body.id)) {
+      return NextResponse.json({ error: "Agent ID already exists" }, { status: 400 });
+    }
+
+    const newAgent = {
+      id: body.id,
+      name: body.name,
+      ui: {
+        emoji: body.emoji || "🤖",
+        color: body.color || "#666666"
+      },
+      model: {
+        primary: body.model || config.agents.defaults?.model?.primary || "openai/gpt-5.4-codex"
+      },
+      workspace: body.workspace || `./workspace/${body.id}`,
+      subagents: {
+        allowAgents: body.allowAgents || []
+      }
+    };
+
+    config.agents.list.push(newAgent);
+
+    // Write Telegram config if provided
+    if (body.botToken || body.dmPolicy) {
+      if (!config.channels) config.channels = {};
+      if (!config.channels.telegram) config.channels.telegram = { dmPolicy: "pairing" };
+      if (!config.channels.telegram.accounts) config.channels.telegram.accounts = {};
+      
+      config.channels.telegram.accounts[body.id] = {
+        botToken: body.botToken || "",
+        dmPolicy: body.dmPolicy || "pairing"
+      };
+    }
+
+    writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+    return NextResponse.json({ success: true });
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+
+export async function PUT(request: Request) {
+  try {
+    const { path: configPath } = resolveConfigPath();
+    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    const body = await request.json();
+
+    if (!body.id) {
+      return NextResponse.json({ error: "Missing id" }, { status: 400 });
+    }
+
+    const index = config.agents.list.findIndex((a: any) => a.id === body.id);
+    if (index === -1) {
+      return NextResponse.json({ error: "Agent not found" }, { status: 404 });
+    }
+
+    // Update Agent fields
+    const agent = config.agents.list[index];
+    if (body.name) agent.name = body.name;
+    if (!agent.ui) agent.ui = {};
+    if (body.emoji) agent.ui.emoji = body.emoji;
+    if (body.color) agent.ui.color = body.color;
+    if (!agent.model) agent.model = {};
+    if (body.model) agent.model.primary = body.model;
+    if (body.workspace) agent.workspace = body.workspace;
+    if (!agent.subagents) agent.subagents = { allowAgents: [] };
+    if (body.allowAgents) agent.subagents.allowAgents = body.allowAgents;
+
+    // Update Telegram info
+    if (body.botToken !== undefined || body.dmPolicy) {
+      if (!config.channels) config.channels = {};
+      if (!config.channels.telegram) config.channels.telegram = { dmPolicy: "pairing" };
+      if (!config.channels.telegram.accounts) config.channels.telegram.accounts = {};
+      
+      config.channels.telegram.accounts[body.id] = {
+        botToken: body.botToken === "configured" ? (config.channels.telegram.accounts[body.id]?.botToken || "") : (body.botToken || ""),
+        dmPolicy: body.dmPolicy || "pairing"
+      };
+    }
+
+    writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+    return NextResponse.json({ success: true });
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+
+export async function DELETE(request: Request) {
+  try {
+    const { path: configPath } = resolveConfigPath();
+    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    const { searchParams } = new URL(request.url);
+    const id = searchParams.get("id");
+
+    if (!id) {
+      return NextResponse.json({ error: "Missing id parameter" }, { status: 400 });
+    }
+
+    config.agents.list = config.agents.list.filter((a: any) => a.id !== id);
+
+    // Clean telegram config
+    if (config.channels?.telegram?.accounts?.[id]) {
+      delete config.channels.telegram.accounts[id];
+    }
+
+    // Clean delegation dependencies from other agents
+    config.agents.list.forEach((agent: any) => {
+      if (agent.subagents?.allowAgents) {
+        agent.subagents.allowAgents = agent.subagents.allowAgents.filter((subId: string) => subId !== id);
+      }
+    });
+
+    writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+    return NextResponse.json({ success: true });
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import {
   Bot,
   Circle,
@@ -12,6 +12,17 @@ import {
   ExternalLink,
   GitBranch,
   LayoutGrid,
+  Plus,
+  Edit2,
+  Trash2,
+  X,
+  Coins,
+  Timer,
+  CheckCircle2,
+  HelpCircle,
+  ArrowRight,
+  TrendingUp,
+  Cpu
 } from "lucide-react";
 import { AgentOrganigrama } from "@/components/AgentOrganigrama";
 
@@ -40,14 +51,23 @@ export default function AgentsPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<"cards" | "organigrama">("cards");
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  
+  // Modals / Form State
+  const [showModal, setShowModal] = useState(false);
+  const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
+  const [formId, setFormId] = useState("");
+  const [formName, setFormName] = useState("");
+  const [formEmoji, setFormEmoji] = useState("🤖");
+  const [formColor, setFormColor] = useState("#3b82f6");
+  const [formModel, setFormModel] = useState("openai/gpt-5.4-codex");
+  const [formWorkspace, setFormWorkspace] = useState("");
+  const [formDmPolicy, setFormDmPolicy] = useState("pairing");
+  const [formBotToken, setFormBotToken] = useState("");
+  const [formAllowAgents, setFormAllowAgents] = useState<string[]>([]);
+  const [errorMsg, setErrorMsg] = useState("");
 
-  useEffect(() => {
-    fetchAgents();
-    const interval = setInterval(fetchAgents, 10000);
-    return () => clearInterval(interval);
-  }, []);
-
-  const fetchAgents = async () => {
+  const fetchAgents = useCallback(async () => {
     try {
       const res = await fetch("/api/agents");
       const data = await res.json();
@@ -57,6 +77,103 @@ export default function AgentsPage() {
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  useEffect(() => {
+    fetchAgents();
+    const interval = setInterval(fetchAgents, 8000);
+    return () => clearInterval(interval);
+  }, [fetchAgents]);
+
+  const handleOpenCreate = () => {
+    setEditingAgent(null);
+    setFormId("");
+    setFormName("");
+    setFormEmoji("🤖");
+    setFormColor("#3b82f6");
+    setFormModel("openai/gpt-5.4-codex");
+    setFormWorkspace("");
+    setFormDmPolicy("pairing");
+    setFormBotToken("");
+    setFormAllowAgents([]);
+    setErrorMsg("");
+    setShowModal(true);
+  };
+
+  const handleOpenEdit = (agent: Agent) => {
+    setEditingAgent(agent);
+    setFormId(agent.id);
+    setFormName(agent.name);
+    setFormEmoji(agent.emoji);
+    setFormColor(agent.color);
+    setFormModel(agent.model);
+    setFormWorkspace(agent.workspace);
+    setFormDmPolicy(agent.dmPolicy || "pairing");
+    setFormBotToken(agent.botToken === "configured" ? "configured" : "");
+    setFormAllowAgents(agent.allowAgents || []);
+    setErrorMsg("");
+    setShowModal(true);
+  };
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formId.trim() || !formName.trim()) {
+      setErrorMsg("ID e Nome são obrigatórios.");
+      return;
+    }
+
+    const isEdit = !!editingAgent;
+    const url = "/api/agents";
+    const method = isEdit ? "PUT" : "POST";
+
+    const payload = {
+      id: formId.trim(),
+      name: formName.trim(),
+      emoji: formEmoji,
+      color: formColor,
+      model: formModel,
+      workspace: formWorkspace.trim() || `./workspace/${formId.trim()}`,
+      dmPolicy: formDmPolicy,
+      botToken: formBotToken,
+      allowAgents: formAllowAgents
+    };
+
+    try {
+      const res = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setErrorMsg(data.error || "Ocorreu um erro ao salvar o agente.");
+        return;
+      }
+      setShowModal(false);
+      fetchAgents();
+    } catch {
+      setErrorMsg("Erro de conexão ao servidor.");
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm(`Deseja realmente remover o agente ${id}? Isto limpará suas delegações correspondentes.`)) return;
+
+    try {
+      const res = await fetch(`/api/agents?id=${id}`, { method: "DELETE" });
+      if (res.ok) {
+        setSelectedAgentId(null);
+        fetchAgents();
+      }
+    } catch (error) {
+      console.error("Failed to delete agent:", error);
+    }
+  };
+
+  const toggleFormSubagent = (subId: string) => {
+    setFormAllowAgents(prev => 
+      prev.includes(subId) ? prev.filter(x => x !== subId) : [...prev, subId]
+    );
   };
 
   const formatLastActivity = (timestamp?: string) => {
@@ -73,297 +190,515 @@ export default function AgentsPage() {
     return `há ${days}d`;
   };
 
-  if (loading) {
+  const selectedAgent = agents.find(a => a.id === selectedAgentId);
+
+  if (loading && agents.length === 0) {
     return (
       <div className="p-8">
         <div className="flex items-center justify-center min-h-[400px]">
-          <div className="animate-pulse text-lg" style={{ color: "var(--text-muted)" }}>
-            Carregando agentes...
+          <div className="flex flex-col items-center gap-3">
+            <Cpu className="w-8 h-8 animate-spin" style={{ color: "var(--accent)" }} />
+            <span style={{ color: "var(--text-secondary)" }}>Carregando Enxame de Agentes...</span>
           </div>
         </div>
       </div>
     );
   }
 
+  // Aggregate stats
+  const totalAgents = agents.length;
+  const onlineAgents = agents.filter(a => a.status === "online").length;
+  const activeSessions = agents.reduce((acc, curr) => acc + (curr.activeSessions || 0), 0);
+  const connectedBots = agents.filter(a => a.botToken).length;
+
   return (
-    <div className="p-4 md:p-8">
+    <div className="p-4 md:p-8 space-y-6">
       {/* Header */}
-      <div className="mb-6">
-        <h1
-          className="text-3xl font-bold mb-2"
-          style={{
-            fontFamily: "var(--font-heading)",
-            color: "var(--text-primary)",
-            letterSpacing: "-1.5px",
-          }}
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1
+            className="text-3xl font-bold mb-2 flex items-center gap-2"
+            style={{
+              fontFamily: "var(--font-heading)",
+              color: "var(--text-primary)",
+              letterSpacing: "-1px",
+            }}
+          >
+            <Users className="w-8 h-8" style={{ color: "var(--accent)" }} />
+            Agentes
+          </h1>
+          <p style={{ color: "var(--text-secondary)", fontSize: "14px" }}>
+            Visão geral do enxame de agentes • Controle de delegação em tempo real
+          </p>
+        </div>
+        
+        <button
+          onClick={handleOpenCreate}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg font-semibold transition-all hover:scale-105"
+          style={{ backgroundColor: "var(--accent)", color: "white", border: "none", cursor: "pointer" }}
         >
-          <Users className="inline-block w-8 h-8 mr-2 mb-1" />
-          Agentes
-        </h1>
-        <p style={{ color: "var(--text-secondary)", fontSize: "14px" }}>
-          Visão geral do sistema multi-agente • {agents.length} agentes configurados
-        </p>
+          <Plus className="w-4 h-4" />
+          Adicionar Agente
+        </button>
       </div>
 
-      {/* Tab switcher */}
-      <div className="flex gap-2 mb-6 border-b" style={{ borderColor: "var(--border)" }}>
+      {/* KPI Cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {[
+          { icon: Users, label: "Total de Agentes", value: totalAgents.toString(), color: "var(--accent)" },
+          { icon: Circle, label: "Ativos Agora", value: `${onlineAgents} online`, color: onlineAgents > 0 ? "var(--success)" : "var(--text-muted)", fillDot: true },
+          { icon: Activity, label: "Sessões de Trabalho", value: activeSessions.toString(), color: "var(--warning)" },
+          { icon: MessageSquare, label: "Telegram Bots", value: `${connectedBots} integrados`, color: "#0088cc" },
+        ].map((kpi, idx) => {
+          const KIcon = kpi.icon;
+          return (
+            <div key={idx} className="p-4 rounded-xl" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
+              <div className="flex items-center gap-2 mb-2 text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+                <KIcon className="w-4 h-4" style={{ color: kpi.color, fill: kpi.fillDot ? kpi.color : "none" }} />
+                {kpi.label}
+              </div>
+              <div className="text-xl md:text-2xl font-bold" style={{ color: "var(--text-primary)" }}>{kpi.value}</div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Delegation Warning Tip */}
+      <div className="flex items-start gap-3 p-4 rounded-xl text-sm" style={{ backgroundColor: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.15)" }}>
+        <HelpCircle className="w-5 h-5 flex-shrink-0 mt-0.5" style={{ color: "#3b82f6" }} />
+        <div style={{ color: "var(--text-secondary)" }}>
+          <span className="font-semibold text-white">Como funciona a delegação?</span> Ao configurar um agente principal (ex: <code className="text-xs px-1 py-0.5 rounded bg-zinc-800">main</code>), você pode definir quais sub-agentes ele tem permissão para disparar. Quando você pedir algo complexo no chat ou no Telegram, o OpenClaw principal enviará tarefas automaticamente para o sub-agente correspondente de forma transparente!
+        </div>
+      </div>
+
+      {/* Tab Switcher */}
+      <div className="flex gap-2 border-b" style={{ borderColor: "var(--border)" }}>
         {[
           { id: "cards" as const, label: "Cards dos Agentes", icon: LayoutGrid },
-          { id: "organigrama" as const, label: "Organigrama", icon: GitBranch },
+          { id: "organigrama" as const, label: "Visualização de Fluxos (Organograma)", icon: GitBranch },
         ].map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             onClick={() => setActiveTab(id)}
-            className="flex items-center gap-2 px-4 py-2 font-medium transition-all"
+            className="flex items-center gap-2 px-4 py-2 font-semibold transition-all"
             style={{
               color: activeTab === id ? "var(--accent)" : "var(--text-secondary)",
               borderBottom: activeTab === id ? "2px solid var(--accent)" : "2px solid transparent",
               background: "none", border: "none", cursor: "pointer",
-              borderBottomStyle: "solid",
-              borderBottomWidth: "2px",
-              borderBottomColor: activeTab === id ? "var(--accent)" : "transparent",
-              paddingBottom: "0.5rem",
+              paddingBottom: "0.75rem",
             }}
           >
-            <Icon className="w-4 h-4" />
+            <Icon className="w-4.5 h-4.5" />
             {label}
           </button>
         ))}
       </div>
 
-      {/* Organigrama View */}
+      {/* Main Views */}
       {activeTab === "organigrama" && (
-        <div className="rounded-xl" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
-          <div className="px-5 py-4" style={{ borderBottom: "1px solid var(--border)" }}>
-            <h2 className="font-semibold" style={{ color: "var(--text-primary)" }}>Hierarquia dos Agentes</h2>
-            <p className="text-sm" style={{ color: "var(--text-muted)" }}>Visualização das permissões de comunicação dos agentes</p>
+        <div className="rounded-xl overflow-hidden" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
+          <div className="px-5 py-4 border-b" style={{ borderColor: "var(--border)" }}>
+            <h2 className="font-bold text-lg" style={{ color: "var(--text-primary)" }}>Hierarquia de Delegação de Tarefas</h2>
+            <p className="text-xs" style={{ color: "var(--text-muted)" }}>Gráfico interativo ilustrando a rede de sub-agentes permitidos por origem</p>
           </div>
-          <AgentOrganigrama agents={agents} />
+          <AgentOrganigrama agents={agents} onSelectAgent={setSelectedAgentId} />
         </div>
       )}
 
-      {/* Agents Grid */}
       {activeTab === "cards" && (
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {agents.map((agent) => (
-          <div
-            key={agent.id}
-            className="rounded-xl overflow-hidden transition-all hover:scale-[1.02]"
-            style={{
-              backgroundColor: "var(--card)",
-              border: "1px solid var(--border)",
-            }}
-          >
-            {/* Header with status */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {agents.map((agent) => (
             <div
-              className="px-5 py-4 flex items-center justify-between"
+              key={agent.id}
+              onClick={() => setSelectedAgentId(agent.id)}
+              className="rounded-xl overflow-hidden transition-all hover:-translate-y-1 hover:shadow-lg cursor-pointer"
               style={{
-                borderBottom: "1px solid var(--border)",
-                background: `linear-gradient(135deg, ${agent.color}15, transparent)`,
+                backgroundColor: "var(--card)",
+                border: selectedAgentId === agent.id ? `2px solid ${agent.color}` : "1px solid var(--border)",
               }}
             >
-              <div className="flex items-center gap-3">
-                <div
-                  className="w-12 h-12 rounded-xl flex items-center justify-center text-2xl"
-                  style={{
-                    backgroundColor: `${agent.color}20`,
-                    border: `2px solid ${agent.color}`,
-                  }}
-                >
-                  {agent.emoji}
-                </div>
-                <div>
-                  <h3
-                    className="text-lg font-bold"
+              {/* Card Header */}
+              <div
+                className="px-4 py-3 flex items-center justify-between border-b"
+                style={{
+                  borderColor: "var(--border)",
+                  background: `linear-gradient(135deg, ${agent.color}10, transparent)`,
+                }}
+              >
+                <div className="flex items-center gap-3">
+                  <div
+                    className="w-10 h-10 rounded-lg flex items-center justify-center text-xl"
                     style={{
-                      fontFamily: "var(--font-heading)",
-                      color: "var(--text-primary)",
+                      backgroundColor: `${agent.color}15`,
+                      border: `1.5px solid ${agent.color}40`,
                     }}
                   >
-                    {agent.name}
-                  </h3>
-                  <div className="flex items-center gap-2 mt-1">
-                    <Circle
-                      className="w-2 h-2"
-                      style={{
-                        fill: agent.status === "online" ? "#4ade80" : "#6b7280",
-                        color: agent.status === "online" ? "#4ade80" : "#6b7280",
-                      }}
-                    />
-                    <span
-                      className="text-xs font-medium"
-                      style={{
-                        color:
-                          agent.status === "online"
-                            ? "#4ade80"
-                            : "var(--text-muted)",
-                      }}
-                    >
-                      {agent.status}
-                    </span>
+                    {agent.emoji}
                   </div>
+                  <div>
+                    <h3 className="font-bold text-sm md:text-base" style={{ color: "var(--text-primary)" }}>
+                      {agent.name}
+                    </h3>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: agent.status === "online" ? "#4ade80" : "#6b7280" }} />
+                      <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: agent.status === "online" ? "#4ade80" : "var(--text-muted)" }}>
+                        {agent.status}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleOpenEdit(agent); }}
+                    className="p-1.5 rounded-md hover:bg-zinc-800 transition-colors"
+                    style={{ color: "var(--text-muted)", border: "none", background: "none", cursor: "pointer" }}
+                    title="Editar Agente"
+                  >
+                    <Edit2 className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleDelete(agent.id); }}
+                    className="p-1.5 rounded-md hover:bg-red-950 transition-colors"
+                    style={{ color: "#ef4444", border: "none", background: "none", cursor: "pointer" }}
+                    title="Excluir Agente"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
                 </div>
               </div>
 
-              {agent.botToken && (
-                <div title="Telegram Bot Connected">
-                  <MessageSquare
-                    className="w-5 h-5"
-                    style={{ color: "#0088cc" }}
-                  />
+              {/* Card Body */}
+              <div className="p-4 space-y-3 text-xs">
+                <div className="flex justify-between">
+                  <span style={{ color: "var(--text-muted)" }}>Modelo Principal</span>
+                  <span className="font-mono text-white text-[11px] truncate max-w-[160px]">{agent.model.split("/").pop()}</span>
                 </div>
-              )}
-            </div>
-
-            {/* Details */}
-            <div className="p-5 space-y-4">
-              {/* Model */}
-              <div className="flex items-start gap-3">
-                <Bot className="w-4 h-4 mt-0.5" style={{ color: agent.color }} />
-                <div className="flex-1 min-w-0">
-                  <div
-                    className="text-xs font-medium mb-1"
-                    style={{ color: "var(--text-muted)" }}
-                  >
-                    Modelo
-                  </div>
-                  <div
-                    className="text-sm font-mono truncate"
-                    style={{ color: "var(--text-primary)" }}
-                  >
-                    {agent.model}
-                  </div>
+                <div className="flex justify-between">
+                  <span style={{ color: "var(--text-muted)" }}>Sub-agentes Ativos</span>
+                  <span className="font-semibold text-white">{agent.allowAgents.length}</span>
                 </div>
-              </div>
-
-              {/* Workspace */}
-              <div className="flex items-start gap-3">
-                <HardDrive
-                  className="w-4 h-4 mt-0.5"
-                  style={{ color: agent.color }}
-                />
-                <div className="flex-1 min-w-0">
-                  <div
-                    className="text-xs font-medium mb-1"
-                    style={{ color: "var(--text-muted)" }}
-                  >
-                    Espaço de Trabalho
-                  </div>
-                  <div
-                    className="text-sm font-mono truncate"
-                    style={{ color: "var(--text-primary)" }}
-                    title={agent.workspace}
-                  >
-                    {agent.workspace}
-                  </div>
+                <div className="flex justify-between">
+                  <span style={{ color: "var(--text-muted)" }}>Workspace</span>
+                  <span className="font-mono text-[10px] text-zinc-400 truncate max-w-[160px]">{agent.workspace}</span>
                 </div>
-              </div>
 
-              {/* DM Policy */}
-              {agent.dmPolicy && (
-                <div className="flex items-start gap-3">
-                  <Shield
-                    className="w-4 h-4 mt-0.5"
-                    style={{ color: agent.color }}
-                  />
-                  <div className="flex-1">
-                    <div
-                      className="text-xs font-medium mb-1"
-                      style={{ color: "var(--text-muted)" }}
-                    >
-                      Política de DM
-                    </div>
-                    <div
-                      className="text-sm font-medium"
-                      style={{ color: "var(--text-primary)" }}
-                    >
-                      {agent.dmPolicy}
+                {agent.allowAgents.length > 0 && (
+                  <div className="pt-2 border-t" style={{ borderColor: "var(--border)" }}>
+                    <div className="mb-1 text-[10px] uppercase font-bold text-zinc-500">Delega chamadas para:</div>
+                    <div className="flex flex-wrap gap-1">
+                      {agent.allowAgentsDetails?.map(sub => (
+                        <span key={sub.id} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px]" style={{ backgroundColor: `${sub.color}15`, color: sub.color, border: `1.5px solid ${sub.color}25` }}>
+                          <span>{sub.emoji}</span>
+                          <span>{sub.name}</span>
+                        </span>
+                      ))}
                     </div>
                   </div>
-                </div>
-              )}
-
-              {/* Subagents */}
-              {agent.allowAgents.length > 0 && (
-                <div className="flex items-start gap-3">
-                  <Users
-                    className="w-4 h-4 mt-0.5"
-                    style={{ color: agent.color }}
-                  />
-                  <div className="flex-1">
-                    <div
-                      className="text-xs font-medium mb-2"
-                      style={{ color: "var(--text-muted)" }}
-                    >
-                      Pode criar sub-agentes ({agent.allowAgents.length})
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {agent.allowAgentsDetails && agent.allowAgentsDetails.length > 0 ? (
-                        agent.allowAgentsDetails.map((subagent) => (
-                          <div
-                            key={subagent.id}
-                            className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg transition-all hover:scale-105"
-                            style={{
-                              backgroundColor: `${subagent.color}15`,
-                              border: `1px solid ${subagent.color}40`,
-                            }}
-                            title={`${subagent.name} (${subagent.id})`}
-                          >
-                            <span className="text-sm">{subagent.emoji}</span>
-                            <span
-                              style={{
-                                color: subagent.color,
-                                fontWeight: 600,
-                              }}
-                            >
-                              {subagent.name}
-                            </span>
-                          </div>
-                        ))
-                      ) : (
-                        agent.allowAgents.map((subagent) => (
-                          <span
-                            key={subagent}
-                            className="text-xs px-2 py-1 rounded"
-                            style={{
-                              backgroundColor: `${agent.color}20`,
-                              color: agent.color,
-                              fontWeight: 500,
-                            }}
-                          >
-                            {subagent}
-                          </span>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Last Activity */}
-              <div className="flex items-center justify-between pt-3 border-t border-[var(--border)]">
-                <div className="flex items-center gap-2">
-                  <Activity className="w-4 h-4" style={{ color: "var(--text-muted)" }} />
-                  <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-                    Última atividade: {formatLastActivity(agent.lastActivity)}
-                  </span>
-                </div>
-                {agent.activeSessions > 0 && (
-                  <span
-                    className="text-xs font-medium px-2 py-1 rounded"
-                    style={{
-                      backgroundColor: "var(--success)20",
-                      color: "var(--success)",
-                    }}
-                  >
-                    {agent.activeSessions} ativo(s)
-                  </span>
                 )}
               </div>
             </div>
+          ))}
+        </div>
+      )}
+
+      {/* Drawer / Sidebar de Detalhes do Agente */}
+      {selectedAgent && (
+        <div className="fixed inset-y-0 right-0 w-full max-w-md bg-zinc-950 shadow-2xl border-l z-50 p-6 flex flex-col space-y-6 animate-in slide-in-from-right duration-200" style={{ borderColor: "var(--border)", backgroundColor: "var(--card-elevated)" }}>
+          <div className="flex items-center justify-between border-b pb-4" style={{ borderColor: "var(--border)" }}>
+            <div className="flex items-center gap-3">
+              <div className="text-3xl p-1.5 rounded-lg" style={{ backgroundColor: `${selectedAgent.color}15`, border: `1.5px solid ${selectedAgent.color}40` }}>{selectedAgent.emoji}</div>
+              <div>
+                <h2 className="font-bold text-lg text-white">{selectedAgent.name}</h2>
+                <div className="flex items-center gap-1">
+                  <Circle className="w-2 h-2" style={{ fill: selectedAgent.status === "online" ? "#4ade80" : "#6b7280", color: selectedAgent.status === "online" ? "#4ade80" : "#6b7280" }} />
+                  <span className="text-xs text-zinc-400 capitalize">{selectedAgent.status}</span>
+                </div>
+              </div>
+            </div>
+            <button onClick={() => setSelectedAgentId(null)} className="p-1 rounded-md hover:bg-zinc-800 text-zinc-400" style={{ background: "none", border: "none", cursor: "pointer" }}>
+              <X className="w-5 h-5" />
+            </button>
           </div>
-        ))}
-      </div>
+
+          <div className="flex-1 overflow-y-auto space-y-5 text-sm pr-1">
+            <div className="space-y-3">
+              <h3 className="font-bold text-xs uppercase tracking-wider text-zinc-500">Configurações Gerais</h3>
+              <div className="space-y-2.5 p-3 rounded-lg bg-zinc-900/50 border" style={{ borderColor: "var(--border)" }}>
+                <div className="flex justify-between text-xs">
+                  <span className="text-zinc-400">ID Único:</span>
+                  <span className="font-mono text-white font-bold">{selectedAgent.id}</span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-zinc-400">Modelo LLM:</span>
+                  <span className="font-mono text-white">{selectedAgent.model}</span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-zinc-400">Diretório Workspace:</span>
+                  <span className="font-mono text-zinc-300">{selectedAgent.workspace}</span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-zinc-400">Política de DM:</span>
+                  <span className="text-white capitalize">{selectedAgent.dmPolicy}</span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-zinc-400">Integração Telegram:</span>
+                  <span className="font-bold" style={{ color: selectedAgent.botToken ? "#0088cc" : "var(--text-muted)" }}>
+                    {selectedAgent.botToken ? "✓ Ativo" : "Não configurado"}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Subagent delegation detail */}
+            <div className="space-y-3">
+              <h3 className="font-bold text-xs uppercase tracking-wider text-zinc-500">Sub-agentes Autorizados</h3>
+              {selectedAgent.allowAgents.length > 0 ? (
+                <div className="space-y-2">
+                  <p className="text-xs text-zinc-400">Este agente tem permissão para acionar e delegar tarefas aos seguintes sub-agentes:</p>
+                  <div className="grid grid-cols-1 gap-2">
+                    {selectedAgent.allowAgentsDetails?.map(sub => (
+                      <div key={sub.id} className="flex items-center justify-between p-2.5 rounded-lg border text-xs" style={{ borderColor: "var(--border)", backgroundColor: "var(--card)" }}>
+                        <div className="flex items-center gap-2">
+                          <span>{sub.emoji}</span>
+                          <span className="font-semibold text-white">{sub.name}</span>
+                          <span className="text-[10px] font-mono text-zinc-500">({sub.id})</span>
+                        </div>
+                        <ArrowRight className="w-3.5 h-3.5 text-zinc-500" />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="p-4 text-center rounded-lg border text-xs text-zinc-500" style={{ borderColor: "var(--border)", backgroundColor: "var(--card)" }}>
+                  Este agente não pode delegar tarefas para sub-agentes. Ele resolve tudo de forma isolada.
+                </div>
+              )}
+            </div>
+
+            {/* Activity integrations */}
+            <div className="space-y-3">
+              <h3 className="font-bold text-xs uppercase tracking-wider text-zinc-500">Atividade Recente</h3>
+              <div className="p-3 rounded-lg border space-y-2 text-xs" style={{ borderColor: "var(--border)", backgroundColor: "var(--card)" }}>
+                <div className="flex justify-between">
+                  <span className="text-zinc-400">Última ação registrada:</span>
+                  <span className="text-white font-medium">{formatLastActivity(selectedAgent.lastActivity)}</span>
+                </div>
+                <a
+                  href={`/activity?agent=${selectedAgent.id}`}
+                  className="flex items-center justify-center gap-1.5 w-full py-2 mt-2 rounded-md font-semibold transition-all"
+                  style={{ backgroundColor: "var(--accent)", color: "white", textDecoration: "none" }}
+                >
+                  <Activity className="w-3.5 h-3.5" />
+                  Ver Histórico de Atividades
+                </a>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex gap-3 pt-4 border-t" style={{ borderColor: "var(--border)" }}>
+            <button
+              onClick={() => handleOpenEdit(selectedAgent)}
+              className="flex-1 py-2 rounded-lg font-semibold border flex items-center justify-center gap-2 transition-all hover:bg-zinc-800 text-white"
+              style={{ borderColor: "var(--border)", backgroundColor: "transparent", cursor: "pointer" }}
+            >
+              <Edit2 className="w-4 h-4" /> Editar
+            </button>
+            <button
+              onClick={() => handleDelete(selectedAgent.id)}
+              className="flex-1 py-2 rounded-lg font-semibold flex items-center justify-center gap-2 transition-all hover:bg-red-950 text-white"
+              style={{ backgroundColor: "#ef4444", border: "none", cursor: "pointer" }}
+            >
+              <Trash2 className="w-4 h-4" /> Excluir
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Criar / Editar Agente */}
+      {showModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="w-full max-w-lg bg-zinc-950 border rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-150" style={{ borderColor: "var(--border)", backgroundColor: "var(--card-elevated)" }}>
+            <div className="px-6 py-4 border-b flex items-center justify-between" style={{ borderColor: "var(--border)" }}>
+              <h3 className="font-bold text-lg text-white">
+                {editingAgent ? `Editar Agente: ${editingAgent.id}` : "Adicionar Novo Agente ao Enxame"}
+              </h3>
+              <button onClick={() => setShowModal(false)} className="p-1 rounded-md hover:bg-zinc-800 text-zinc-400" style={{ background: "none", border: "none", cursor: "pointer" }}>
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSave} className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
+              {errorMsg && (
+                <div className="p-3 text-xs font-semibold rounded-lg bg-red-950/40 border border-red-500/20 text-red-400">
+                  {errorMsg}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <label className="block space-y-1">
+                  <span className="text-xs font-bold text-zinc-400 uppercase tracking-wide">ID do Agente (Fixo)</span>
+                  <input
+                    disabled={!!editingAgent}
+                    value={formId}
+                    onChange={(e) => setFormId(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))}
+                    placeholder="ex: data-analyst"
+                    className="w-full px-3 py-2 rounded-lg text-xs outline-none bg-zinc-900 border text-white"
+                    style={{ borderColor: "var(--border)" }}
+                  />
+                </label>
+
+                <label className="block space-y-1">
+                  <span className="text-xs font-bold text-zinc-400 uppercase tracking-wide">Nome de Exibição</span>
+                  <input
+                    value={formName}
+                    onChange={(e) => setFormName(e.target.value)}
+                    placeholder="ex: Analista de Dados"
+                    className="w-full px-3 py-2 rounded-lg text-xs outline-none bg-zinc-900 border text-white"
+                    style={{ borderColor: "var(--border)" }}
+                  />
+                </label>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <label className="block space-y-1 col-span-1">
+                  <span className="text-xs font-bold text-zinc-400 uppercase tracking-wide">Emoji</span>
+                  <input
+                    value={formEmoji}
+                    onChange={(e) => setFormEmoji(e.target.value)}
+                    placeholder="🤖"
+                    maxLength={4}
+                    className="w-full px-3 py-2 text-center rounded-lg text-sm outline-none bg-zinc-900 border text-white"
+                    style={{ borderColor: "var(--border)" }}
+                  />
+                </label>
+
+                <label className="block space-y-1 col-span-2">
+                  <span className="text-xs font-bold text-zinc-400 uppercase tracking-wide">Cor do Tema</span>
+                  <div className="flex gap-2">
+                    <input
+                      type="color"
+                      value={formColor}
+                      onChange={(e) => setFormColor(e.target.value)}
+                      className="w-10 h-8 rounded border-none cursor-pointer bg-transparent"
+                    />
+                    <input
+                      value={formColor}
+                      onChange={(e) => setFormColor(e.target.value)}
+                      placeholder="#3b82f6"
+                      className="min-w-0 flex-1 px-3 py-2 rounded-lg text-xs outline-none bg-zinc-900 border text-white font-mono"
+                      style={{ borderColor: "var(--border)" }}
+                    />
+                  </div>
+                </label>
+              </div>
+
+              <label className="block space-y-1">
+                <span className="text-xs font-bold text-zinc-400 uppercase tracking-wide">Modelo de IA Primário</span>
+                <select
+                  value={formModel}
+                  onChange={(e) => setFormModel(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg text-xs outline-none bg-zinc-900 border text-white"
+                  style={{ borderColor: "var(--border)" }}
+                >
+                  <option value="openai/gpt-5.4">openai/gpt-5.4 (Recomendado)</option>
+                  <option value="openai/gpt-5.4-mini">openai/gpt-5.4-mini (Rápido e Barato)</option>
+                  <option value="openai/gpt-5.4-codex">openai/gpt-5.4-codex (Especialista em Código)</option>
+                  <option value="anthropic/claude-3.5-sonnet">anthropic/claude-3.5-sonnet</option>
+                  <option value="google/gemini-1.5-pro">google/gemini-1.5-pro</option>
+                </select>
+              </label>
+
+              <label className="block space-y-1">
+                <span className="text-xs font-bold text-zinc-400 uppercase tracking-wide">Diretório Workspace no Servidor</span>
+                <input
+                  value={formWorkspace}
+                  onChange={(e) => setFormWorkspace(e.target.value)}
+                  placeholder="ex: ./workspace/data-analyst (ou deixar em branco para auto)"
+                  className="w-full px-3 py-2 rounded-lg text-xs outline-none bg-zinc-900 border text-zinc-300 font-mono"
+                  style={{ borderColor: "var(--border)" }}
+                />
+              </label>
+
+              {/* Subagents Checklist - Delegation Mappings */}
+              <div className="space-y-1.5">
+                <span className="text-xs font-bold text-zinc-400 uppercase tracking-wide block">Delegação: Permissões de Sub-Agente</span>
+                <span className="text-[10px] text-zinc-500 block mb-1">Selecione quais outros agentes este agente pode instanciar e delegar sub-tarefas:</span>
+                <div className="max-h-28 overflow-y-auto p-2 rounded-lg bg-zinc-900 border space-y-1.5" style={{ borderColor: "var(--border)" }}>
+                  {agents.filter(a => a.id !== formId).map(a => (
+                    <label key={a.id} className="flex items-center gap-2 text-xs text-white cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={formAllowAgents.includes(a.id)}
+                        onChange={() => toggleFormSubagent(a.id)}
+                        className="rounded text-red-500 focus:ring-0 cursor-pointer"
+                      />
+                      <span>{a.emoji}</span>
+                      <span className="font-semibold">{a.name}</span>
+                      <span className="text-[10px] text-zinc-500">({a.id})</span>
+                    </label>
+                  ))}
+                  {agents.filter(a => a.id !== formId).length === 0 && (
+                    <div className="text-center py-2 text-zinc-500 text-xs">Crie outros agentes primeiro para permitir delegação.</div>
+                  )}
+                </div>
+              </div>
+
+              {/* Telegram Integration Fold */}
+              <div className="pt-3 border-t space-y-3" style={{ borderColor: "var(--border)" }}>
+                <h4 className="font-bold text-xs uppercase text-zinc-400 tracking-wider flex items-center gap-1.5">
+                  <MessageSquare className="w-3.5 h-3.5 text-[#0088cc]" /> Integração Telegram (Opcional)
+                </h4>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <label className="block space-y-1">
+                    <span className="text-xs font-bold text-zinc-400 uppercase tracking-wide">Token do Telegram Bot</span>
+                    <input
+                      type="password"
+                      value={formBotToken}
+                      onChange={(e) => setFormBotToken(e.target.value)}
+                      placeholder={formBotToken === "configured" ? "•••••••••••••••••••••" : "ex: 123456:ABC-DEF..."}
+                      className="w-full px-3 py-2 rounded-lg text-xs outline-none bg-zinc-900 border text-white font-mono"
+                      style={{ borderColor: "var(--border)" }}
+                    />
+                  </label>
+
+                  <label className="block space-y-1">
+                    <span className="text-xs font-bold text-zinc-400 uppercase tracking-wide">Política de DM</span>
+                    <select
+                      value={formDmPolicy}
+                      onChange={(e) => setFormDmPolicy(e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg text-xs outline-none bg-zinc-900 border text-white"
+                      style={{ borderColor: "var(--border)" }}
+                    >
+                      <option value="pairing">Pairing (Pareamento Múltiplo)</option>
+                      <option value="direct">Direct (Comando Direto Único)</option>
+                      <option value="disabled">Disabled (Desabilitado)</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-4 border-t" style={{ borderColor: "var(--border)" }}>
+                <button
+                  type="button"
+                  onClick={() => setShowModal(false)}
+                  className="flex-1 py-2 rounded-lg font-semibold text-xs border transition-all hover:bg-zinc-800 text-white"
+                  style={{ borderColor: "var(--border)", backgroundColor: "transparent", cursor: "pointer" }}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 py-2 rounded-lg font-semibold text-xs transition-all hover:scale-105 text-white"
+                  style={{ backgroundColor: "var(--accent)", border: "none", cursor: "pointer" }}
+                >
+                  Salvar Agente
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   );

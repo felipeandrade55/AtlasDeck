@@ -39,7 +39,7 @@ interface SystemData {
   disk: { total: number; used: number; free: number; percent: number };
   network: { rx: number; tx: number };
   systemd: SystemdService[];
-  tailscale: { active: boolean; ip: string; devices: TailscaleDevice[] };
+  tailscale: { active: boolean; backendState?: string; authUrl?: string; ip: string; devices: TailscaleDevice[]; rxBytes?: number; txBytes?: number };
   firewall: { active: boolean; rules: FirewallRule[]; ruleCount: number };
   fail2ban: { active: boolean; bannedIps: string[] };
 }
@@ -49,6 +49,26 @@ interface LogsModal {
   backend: string;
   content: string;
   loading: boolean;
+}
+
+function SparklineChart({ rxHistory, txHistory }: { rxHistory: number[]; txHistory: number[] }) {
+  const h = 44;
+  const w = 200;
+  const maxVal = Math.max(...rxHistory, ...txHistory, 0.1);
+  const toPath = (data: number[]) => {
+    if (data.length < 2) return "";
+    return data.map((v, i) => {
+      const x = ((i / (data.length - 1)) * w).toFixed(1);
+      const y = (h - (v / maxVal) * h).toFixed(1);
+      return `${i === 0 ? "M" : "L"}${x},${y}`;
+    }).join(" ");
+  };
+  return (
+    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ display: "block" }}>
+      <path d={toPath(rxHistory)} fill="none" stroke="var(--success)" strokeWidth="1.5" strokeLinejoin="round" />
+      <path d={toPath(txHistory)} fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinejoin="round" />
+    </svg>
+  );
 }
 
 function formatUptime(ms: number): string {
@@ -106,6 +126,33 @@ export default function SystemMonitorPage() {
     const interval = setInterval(fetchSystemData, 5000);
     return () => clearInterval(interval);
   }, [autoRefresh]);
+
+  // VPN traffic polling (every 2s when tailscale is active)
+  useEffect(() => {
+    if (!systemData?.tailscale.active) return;
+    const poll = async () => {
+      try {
+        const res = await fetch("/api/system/tailscale");
+        if (!res.ok) return;
+        const d = await res.json();
+        const rx = d.rxBytes ?? 0;
+        const tx = d.txBytes ?? 0;
+        const now = Date.now();
+        if (prevVpnRef.current) {
+          const dt = (now - prevVpnRef.current.ts) / 1000;
+          if (dt > 0) {
+            const rxRate = Math.max(0, (rx - prevVpnRef.current.rx) / dt / 1024);
+            const txRate = Math.max(0, (tx - prevVpnRef.current.tx) / dt / 1024);
+            setVpnHistory(prev => [...prev.slice(-59), { rx: rxRate, tx: txRate }]);
+          }
+        }
+        prevVpnRef.current = { rx, tx, ts: now };
+      } catch {}
+    };
+    poll();
+    const id = setInterval(poll, 2000);
+    return () => clearInterval(id);
+  }, [systemData?.tailscale.active]);
 
   // Handle Logs SSE Connection
   useEffect(() => {
@@ -205,10 +252,13 @@ export default function SystemMonitorPage() {
   };
 
   const [tailscaleAuthUrl, setTailscaleAuthUrl] = useState<string | null>(null);
+  const [vpnHistory, setVpnHistory] = useState<{ rx: number; tx: number }[]>([]);
+  const prevVpnRef = useRef<{ rx: number; tx: number; ts: number } | null>(null);
 
-  const handleTailscaleAction = async (action: 'install' | 'up') => {
-    setActionLoading(prev => ({ ...prev, tailscale: true }));
-    setTailscaleAuthUrl(null);
+  const handleTailscaleAction = async (action: 'install' | 'up' | 'start' | 'stop' | 'restart' | 'allow_firewall') => {
+    const key = `tailscale_${action}`;
+    setActionLoading(prev => ({ ...prev, [key]: true, tailscale: true }));
+    if (action !== 'stop') setTailscaleAuthUrl(null);
     try {
       const res = await fetch("/api/system/tailscale", {
         method: "POST",
@@ -220,7 +270,7 @@ export default function SystemMonitorPage() {
 
       if (data.authUrl) {
         setTailscaleAuthUrl(data.authUrl);
-        showToast("⚠️ Autenticação do Tailscale necessária no navegador", "warning" as any);
+        showToast("⚠️ Autenticação necessária — clique no link abaixo", "error");
       } else {
         showToast(`✅ Tailscale: ${data.message}`);
         setTimeout(fetchSystemData, 2000);
@@ -229,7 +279,7 @@ export default function SystemMonitorPage() {
       const msg = err instanceof Error ? err.message : "Ação falhou";
       showToast(`❌ Tailscale: ${msg}`, "error");
     } finally {
-      setActionLoading(prev => ({ ...prev, tailscale: false }));
+      setActionLoading(prev => ({ ...prev, [key]: false, tailscale: false }));
     }
   };
 
@@ -603,80 +653,181 @@ export default function SystemMonitorPage() {
           {/* VPN & Firewall */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Tailscale VPN */}
-            <div className="p-6 rounded-xl" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
-              <div className="flex items-center gap-3 mb-4">
-                <div className="p-2 rounded-lg" style={{ backgroundColor: "var(--card-elevated)" }}>
-                  <Wifi className="w-5 h-5" style={{ color: systemData.tailscale.active ? "var(--success)" : "var(--error)" }} />
-                </div>
-                <div>
-                  <h3 className="font-semibold" style={{ color: "var(--text-primary)" }}>Tailscale VPN</h3>
-                  <p className="text-sm" style={{ color: systemData.tailscale.active ? "var(--success)" : "var(--error)" }}>
-                    {systemData.tailscale.active ? "Ativo" : "Inativo"}
-                  </p>
-                </div>
-              </div>
-              <div className="space-y-2 mb-4">
-                <div className="flex justify-between text-sm">
-                  <span style={{ color: "var(--text-secondary)" }}>Este servidor</span>
-                  <span className="font-mono" style={{ color: "var(--text-primary)" }}>{systemData.tailscale.ip}</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span style={{ color: "var(--text-secondary)" }}>Dispositivos conectados</span>
-                  <span style={{ color: "var(--text-primary)" }}>{systemData.tailscale.devices.length}</span>
-                </div>
-              </div>
-              {systemData.tailscale.devices.length > 0 && (
-               <div className="space-y-2 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
-                  {systemData.tailscale.devices.map((dev, i) => (
-                    <div key={i} className="flex items-center justify-between text-xs">
-                      <div className="flex items-center gap-2">
-                        <Monitor className="w-3 h-3" style={{ color: "var(--text-muted)" }} />
-                        <span className="font-mono" style={{ color: "var(--text-secondary)" }}>{dev.hostname}</span>
-                        <span style={{ color: "var(--text-muted)" }}>({dev.os})</span>
+            {(() => {
+              const ts = systemData.tailscale;
+              const bs = ts.backendState || (ts.active ? "Running" : "NotInstalled");
+              const activeAuthUrl = tailscaleAuthUrl || ts.authUrl || null;
+              const statusColor = bs === "Running" ? "var(--success)" : bs === "NeedsLogin" ? "#f59e0b" : "var(--error)";
+              const statusLabel = bs === "Running" ? "Ativo" : bs === "NeedsLogin" ? "Login Necessário" : bs === "Stopped" ? "Parado" : bs === "NotInstalled" ? "Não instalado" : "Inativo";
+              const rxNow = vpnHistory.length > 0 ? vpnHistory[vpnHistory.length - 1].rx : 0;
+              const txNow = vpnHistory.length > 0 ? vpnHistory[vpnHistory.length - 1].tx : 0;
+              return (
+                <div className="p-6 rounded-xl" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
+                  {/* Header row */}
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 rounded-lg" style={{ backgroundColor: "var(--card-elevated)" }}>
+                        <Wifi className="w-5 h-5" style={{ color: statusColor }} />
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono" style={{ color: "var(--text-muted)" }}>{dev.ip}</span>
-                        <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: dev.online ? "var(--success)" : "var(--text-muted)" }} />
+                      <div>
+                        <h3 className="font-semibold" style={{ color: "var(--text-primary)" }}>Tailscale VPN</h3>
+                        <p className="text-sm font-medium" style={{ color: statusColor }}>{statusLabel}</p>
                       </div>
                     </div>
-                  ))}
-                </div>
-              )}
-
-              {!systemData.tailscale.active && (
-                <div className="mt-4 pt-4 space-y-3" style={{ borderTop: "1px solid var(--border)" }}>
-                  <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
-                    O Tailscale não está ativo neste servidor. Para criar uma rede segura privada (VPN zero-config), instale ou inicie o serviço:
-                  </p>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => handleTailscaleAction('install')}
-                      disabled={actionLoading.tailscale}
-                      className="flex-1 py-1.5 rounded text-xs font-semibold transition-opacity hover:opacity-90 disabled:opacity-50"
-                      style={{ backgroundColor: "var(--card-elevated)", color: "var(--text-primary)", border: "1px solid var(--border)" }}
-                    >
-                      {actionLoading.tailscale ? <Loader2 className="w-3 h-3 animate-spin mx-auto" /> : "Instalar Tailscale"}
-                    </button>
-                    <button
-                      onClick={() => handleTailscaleAction('up')}
-                      disabled={actionLoading.tailscale}
-                      className="flex-1 py-1.5 rounded text-xs font-bold transition-opacity hover:opacity-90 disabled:opacity-50"
-                      style={{ backgroundColor: "var(--info, #3b82f6)", color: "white" }}
-                    >
-                      {actionLoading.tailscale ? <Loader2 className="w-3 h-3 animate-spin mx-auto" /> : "Iniciar (Login)"}
-                    </button>
+                    {/* Service controls */}
+                    {(bs === "Running" || bs === "Stopped" || bs === "NeedsLogin") && (
+                      <div className="flex items-center gap-1">
+                        {bs === "Running" && (
+                          <>
+                            <button
+                              onClick={() => handleTailscaleAction("restart")}
+                              disabled={!!actionLoading[`tailscale_restart`]}
+                              className="p-1.5 rounded transition-colors hover:bg-white/5"
+                              title="Reiniciar"
+                              style={{ color: "var(--text-muted)", background: "none", border: "none", cursor: "pointer" }}
+                            >
+                              {actionLoading[`tailscale_restart`] ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCw className="w-4 h-4" />}
+                            </button>
+                            <button
+                              onClick={() => handleTailscaleAction("stop")}
+                              disabled={!!actionLoading[`tailscale_stop`]}
+                              className="p-1.5 rounded transition-colors hover:bg-white/5"
+                              title="Parar"
+                              style={{ color: "var(--error)", background: "none", border: "none", cursor: "pointer" }}
+                            >
+                              {actionLoading[`tailscale_stop`] ? <Loader2 className="w-4 h-4 animate-spin" /> : <Square className="w-4 h-4" />}
+                            </button>
+                          </>
+                        )}
+                        {(bs === "Stopped" || bs === "NeedsLogin") && (
+                          <button
+                            onClick={() => handleTailscaleAction("start")}
+                            disabled={!!actionLoading[`tailscale_start`]}
+                            className="p-1.5 rounded transition-colors hover:bg-white/5"
+                            title="Iniciar"
+                            style={{ color: "var(--success)", background: "none", border: "none", cursor: "pointer" }}
+                          >
+                            {actionLoading[`tailscale_start`] ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  {tailscaleAuthUrl && (
-                    <div className="p-3 rounded bg-blue-500/10 border border-blue-500/20 text-center">
-                      <p className="text-xs text-blue-400 mb-2">Clique no link abaixo para autenticar seu servidor no Tailscale:</p>
-                      <a href={tailscaleAuthUrl} target="_blank" rel="noreferrer" className="text-xs font-mono font-bold text-blue-300 hover:underline break-all">
-                        {tailscaleAuthUrl}
+
+                  {/* Info rows */}
+                  {ts.ip && (
+                    <div className="flex justify-between text-sm mb-1">
+                      <span style={{ color: "var(--text-secondary)" }}>Este servidor</span>
+                      <span className="font-mono" style={{ color: "var(--text-primary)" }}>{ts.ip}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between text-sm mb-3">
+                    <span style={{ color: "var(--text-secondary)" }}>Dispositivos conectados</span>
+                    <span style={{ color: "var(--text-primary)" }}>{ts.devices.length}</span>
+                  </div>
+
+                  {/* Traffic graph */}
+                  {bs === "Running" && (
+                    <div className="mb-3 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
+                      <div className="flex items-center justify-between text-xs mb-1">
+                        <span style={{ color: "var(--text-muted)" }}>Tráfego VPN (tempo real)</span>
+                        <div className="flex gap-3">
+                          <span style={{ color: "var(--success)" }}>↓ {rxNow.toFixed(1)} KB/s</span>
+                          <span style={{ color: "var(--accent)" }}>↑ {txNow.toFixed(1)} KB/s</span>
+                        </div>
+                      </div>
+                      <div className="rounded overflow-hidden" style={{ backgroundColor: "var(--card-elevated)" }}>
+                        <SparklineChart
+                          rxHistory={vpnHistory.map(p => p.rx)}
+                          txHistory={vpnHistory.map(p => p.tx)}
+                        />
+                      </div>
+                      <div className="flex gap-4 mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
+                        <span className="flex items-center gap-1"><span style={{ color: "var(--success)" }}>—</span> RX (entrada)</span>
+                        <span className="flex items-center gap-1"><span style={{ color: "var(--accent)" }}>—</span> TX (saída)</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Device list */}
+                  {ts.devices.length > 0 && (
+                    <div className="space-y-2 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
+                      {ts.devices.map((dev, i) => (
+                        <div key={i} className="flex items-center justify-between text-xs">
+                          <div className="flex items-center gap-2">
+                            <Monitor className="w-3 h-3" style={{ color: "var(--text-muted)" }} />
+                            <span className="font-mono" style={{ color: "var(--text-secondary)" }}>{dev.hostname}</span>
+                            <span style={{ color: "var(--text-muted)" }}>({dev.os})</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono" style={{ color: "var(--text-muted)" }}>{dev.ip}</span>
+                            <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: dev.online ? "var(--success)" : "var(--text-muted)" }} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Auth URL */}
+                  {activeAuthUrl && (
+                    <div className="mt-3 p-3 rounded-lg" style={{ backgroundColor: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.3)" }}>
+                      <p className="text-xs mb-2 font-semibold" style={{ color: "#fbbf24" }}>Autenticação necessária — abra o link no navegador:</p>
+                      <a href={activeAuthUrl} target="_blank" rel="noreferrer"
+                        className="text-xs font-mono break-all hover:underline"
+                        style={{ color: "#60a5fa" }}>
+                        {activeAuthUrl}
                       </a>
                     </div>
                   )}
+
+                  {/* Install / Login buttons when not running */}
+                  {bs === "NotInstalled" && (
+                    <div className="mt-4 pt-4 space-y-2" style={{ borderTop: "1px solid var(--border)" }}>
+                      <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
+                        Instale o Tailscale para criar uma VPN privada zero-config. O firewall será configurado automaticamente.
+                      </p>
+                      <button
+                        onClick={() => handleTailscaleAction("install")}
+                        disabled={!!actionLoading[`tailscale_install`]}
+                        className="w-full py-1.5 rounded text-xs font-bold transition-opacity hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
+                        style={{ backgroundColor: "var(--accent)", color: "white" }}
+                      >
+                        {actionLoading[`tailscale_install`] ? <Loader2 className="w-3 h-3 animate-spin" /> : "Instalar Tailscale"}
+                      </button>
+                    </div>
+                  )}
+
+                  {(bs === "Stopped" || bs === "NeedsLogin") && !activeAuthUrl && (
+                    <div className="mt-3 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
+                      <button
+                        onClick={() => handleTailscaleAction("start")}
+                        disabled={!!actionLoading[`tailscale_start`]}
+                        className="w-full py-1.5 rounded text-xs font-bold transition-opacity hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
+                        style={{ backgroundColor: "#3b82f6", color: "white" }}
+                      >
+                        {actionLoading[`tailscale_start`] ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                        {bs === "NeedsLogin" ? "Entrar na conta Tailscale" : "Iniciar Tailscale"}
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Firewall allow button */}
+                  {bs === "Running" && (
+                    <div className="mt-3">
+                      <button
+                        onClick={() => handleTailscaleAction("allow_firewall")}
+                        disabled={!!actionLoading[`tailscale_allow_firewall`]}
+                        className="w-full py-1.5 rounded text-xs font-semibold transition-opacity hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
+                        style={{ backgroundColor: "var(--card-elevated)", color: "var(--text-secondary)", border: "1px solid var(--border)" }}
+                      >
+                        {actionLoading[`tailscale_allow_firewall`] ? <Loader2 className="w-3 h-3 animate-spin" /> : <ShieldCheck className="w-3 h-3" />}
+                        Permitir Tailscale no Firewall
+                      </button>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+              );
+            })()}
 
             {/* Firewall */}
             <div className="p-6 rounded-xl" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>

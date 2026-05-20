@@ -212,27 +212,33 @@ export async function GET() {
 
     // ── Tailscale VPN ─────────────────────────────────────────────────────────
     let tailscaleActive = false;
+    let tailscaleBackendState = "NotInstalled";
+    let tailscaleAuthUrl = "";
     let tailscaleIp = "";
+    let tailscaleRxBytes = 0;
+    let tailscaleTxBytes = 0;
     const tailscaleDevices: TailscaleDevice[] = [];
     try {
-      const { stdout: tsStatus } = await execAsync("tailscale status 2>/dev/null || true");
-      const lines = tsStatus.trim().split("\n").filter(Boolean);
-      if (lines.length > 0) {
-        tailscaleActive = true;
-        for (const line of lines) {
-          if (line.startsWith("#")) continue;
-          const parts = line.trim().split(/\s+/);
-          if (parts.length >= 3) {
-            tailscaleDevices.push({
-              ip: parts[0],
-              hostname: parts[1],
-              os: parts[3] || "",
-              online: line.includes("active"),
-            });
-          }
-        }
-        if (tailscaleDevices.length > 0) {
-          tailscaleIp = tailscaleDevices[0].ip || tailscaleIp;
+      const { stdout: tsJson } = await execAsync("tailscale status --json 2>/dev/null || echo '{}'");
+      const tsData = JSON.parse(tsJson.trim() || "{}");
+      tailscaleBackendState = tsData.BackendState || "NotInstalled";
+      tailscaleAuthUrl = tsData.AuthURL || "";
+      tailscaleActive = tailscaleBackendState === "Running";
+      if (tsData.TailscaleIPs?.length > 0) {
+        tailscaleIp = tsData.TailscaleIPs[0];
+      }
+      if (tsData.Self) {
+        tailscaleRxBytes = tsData.Self.RxBytes || 0;
+        tailscaleTxBytes = tsData.Self.TxBytes || 0;
+      }
+      if (tsData.Peer) {
+        for (const peer of Object.values(tsData.Peer) as any[]) {
+          tailscaleDevices.push({
+            ip: peer.TailscaleIPs?.[0] || "",
+            hostname: peer.HostName || "",
+            os: peer.OS || "",
+            online: peer.Online || peer.Active || false,
+          });
         }
       }
     } catch (error) {
@@ -316,8 +322,12 @@ export async function GET() {
       systemd: services,
       tailscale: {
         active: tailscaleActive,
+        backendState: tailscaleBackendState,
+        authUrl: tailscaleAuthUrl,
         ip: tailscaleIp,
         devices: tailscaleDevices,
+        rxBytes: tailscaleRxBytes,
+        txBytes: tailscaleTxBytes,
       },
       firewall: {
         active: firewallActive,
