@@ -99,6 +99,9 @@ export function UpdatePanel() {
               setErrorMsg(data.message);
             } else if (currentEvent === 'complete') {
               setStatus(data.success ? 'complete' : 'error');
+              if (!data.success && data.error) {
+                setErrorMsg(prev => prev || data.error);
+              }
               setDuration(data.durationMs);
               fetchHistory();
             }
@@ -247,12 +250,12 @@ export function UpdatePanel() {
             </div>
 
             {/* Terminal */}
-            <div className="rounded-lg p-4 h-64 overflow-y-auto" style={{ backgroundColor: "#0d1117", border: "1px solid #30363d" }}>
+            <div className="rounded-lg p-4 h-64 overflow-y-auto w-full" style={{ backgroundColor: "#0d1117", border: "1px solid #30363d" }}>
               <div style={{ fontFamily: "var(--font-mono)", fontSize: "12px", color: "#e6edf3", lineHeight: 1.5 }}>
                 {logs.map((log, i) => (
                   <div key={i} className="whitespace-pre-wrap break-words flex gap-3">
-                    <span style={{ color: "#484f58", userSelect: "none" }}>{log.timestamp.split('T')[1].slice(0, 8)}</span>
-                    <span>{log.line}</span>
+                    <span style={{ color: "#484f58", userSelect: "none", minWidth: "60px" }}>{log.timestamp.split('T')[1].slice(0, 8)}</span>
+                    <span style={{ wordBreak: "break-all" }}>{log.line}</span>
                   </div>
                 ))}
                 <div className="animate-pulse text-gray-500 mt-2">●</div>
@@ -287,20 +290,35 @@ export function UpdatePanel() {
           <div className="p-6" style={{ backgroundColor: "rgba(239, 68, 68, 0.1)" }}>
             <div className="flex items-start gap-4">
               <XCircle className="w-6 h-6 mt-1 text-red-500" />
-              <div className="flex-1">
+              <div className="flex-1 w-full min-w-0">
                 <h3 className="text-lg font-bold mb-1 text-red-500" style={{ fontFamily: "var(--font-heading)" }}>
                   Falha na atualização
                 </h3>
-                <div className="rounded bg-red-950/30 border border-red-900 p-3 mb-4 text-sm text-red-200">
-                  {errorMsg}
+                <div className="rounded bg-red-950/30 border border-red-900 p-3 mb-4 text-sm text-red-200 break-words whitespace-pre-wrap">
+                  {errorMsg || "Erro desconhecido"}
                 </div>
                 <p className="text-sm text-red-300 mb-4">
                   Um backup foi criado antes da atualização e o sistema continua rodando a versão anterior. 
-                  Verifique os logs ou o histórico para mais detalhes.
+                  Verifique os logs abaixo ou o histórico para mais detalhes.
                 </p>
-                <button onClick={() => fetchCheck(true)} className="px-4 py-2 rounded-lg text-sm font-medium bg-red-900/50 hover:bg-red-900 text-white transition-colors border border-red-700">
+                <button onClick={() => fetchCheck(true)} className="px-4 py-2 rounded-lg text-sm font-medium bg-red-900/50 hover:bg-red-900 text-white transition-colors border border-red-700 mb-4">
                   Tentar Novamente
                 </button>
+                
+                {/* Terminal for Error State */}
+                {logs.length > 0 && (
+                  <div className="rounded-lg p-4 h-64 overflow-y-auto w-full" style={{ backgroundColor: "#0d1117", border: "1px solid #30363d" }}>
+                    <div style={{ fontFamily: "var(--font-mono)", fontSize: "12px", color: "#e6edf3", lineHeight: 1.5 }}>
+                      {logs.map((log, i) => (
+                        <div key={i} className="whitespace-pre-wrap break-words flex gap-3">
+                          <span style={{ color: "#484f58", userSelect: "none", minWidth: "60px" }}>{log.timestamp.split('T')[1].slice(0, 8)}</span>
+                          <span style={{ wordBreak: "break-all" }}>{log.line}</span>
+                        </div>
+                      ))}
+                      <div ref={logsEndRef} />
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>

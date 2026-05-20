@@ -6,8 +6,11 @@
 
 import fs from "fs";
 import path from "path";
-import { execSync } from "child_process";
+import { execSync, exec } from "child_process";
+import { promisify } from "util";
 import { getOpenClawDir } from "./openclaw-config";
+
+const execAsync = promisify(exec);
 
 export interface BackupConfig {
   enabled: boolean;
@@ -243,7 +246,7 @@ export async function runBackup(): Promise<BackupResult> {
 
     log(`Creating archive: ${archiveName}`);
     const tarCmd = `tar -czf "${archivePath}" -T "${listFile}"`;
-    execSync(tarCmd, { timeout: 300000, encoding: "utf-8" });
+    await execAsync(tarCmd, { timeout: 300000, encoding: "utf-8" });
 
     fs.unlinkSync(listFile);
 

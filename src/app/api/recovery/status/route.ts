@@ -41,20 +41,30 @@ async function checkGatewayHttp(): Promise<{ reachable: boolean; status: number 
   const started = Date.now();
   const tryFetch = async (url: string) => {
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 2500);
+    const t = setTimeout(() => ctrl.abort(), 4000);
     try {
-      const res = await fetch(url, { signal: ctrl.signal, cache: 'no-store' });
-      return res;
+      return await fetch(url, { signal: ctrl.signal, cache: 'no-store' });
     } finally {
       clearTimeout(t);
     }
   };
-  try {
-    const res = await tryFetch(`${GATEWAY_URL}/health`).catch(() => tryFetch(GATEWAY_URL));
-    return { reachable: true, status: res.status, latencyMs: Date.now() - started };
-  } catch {
-    return { reachable: false, status: null, latencyMs: Date.now() - started };
+
+  const urls = Array.from(new Set([
+    GATEWAY_URL,
+    GATEWAY_URL.replace('127.0.0.1', 'localhost'),
+    GATEWAY_URL.replace('127.0.0.1', '0.0.0.0')
+  ]));
+
+  for (const base of urls) {
+    try {
+      const res = await tryFetch(`${base}/health`).catch(() => tryFetch(base));
+      return { reachable: true, status: res.status, latencyMs: Date.now() - started };
+    } catch {
+      // ignore and try next
+    }
   }
+
+  return { reachable: false, status: null, latencyMs: Date.now() - started };
 }
 
 async function checkSystemdUnit(unit: string): Promise<{ exists: boolean; active: boolean; sub: string | null; since: string | null }> {

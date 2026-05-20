@@ -206,7 +206,7 @@ export async function POST(request: NextRequest) {
                     error: `Exit code ${code}`
                 });
                 
-                send("complete", { success: false, durationMs, phases: initialPhases });
+                send("complete", { success: false, durationMs, phases: initialPhases, error: `Exit code ${code}` });
             }
             controller.close();
           });
@@ -219,7 +219,7 @@ export async function POST(request: NextRequest) {
                   error: err.message,
                   logs: logsBuffer
               });
-              send("complete", { success: false, phases: initialPhases });
+              send("complete", { success: false, phases: initialPhases, error: err.message });
               controller.close();
           });
 
@@ -232,7 +232,7 @@ export async function POST(request: NextRequest) {
                 error: msg,
                 logs: logsBuffer
             });
-            send("complete", { success: false, phases: initialPhases });
+            send("complete", { success: false, phases: initialPhases, error: msg });
             controller.close();
         }
       }
