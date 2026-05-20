@@ -48,8 +48,11 @@ export function AgentOrganigrama({ agents, onSelectAgent }: AgentOrganigramaProp
   }
 
   const agentMap = new Map(agents.map((a) => [a.id, a]));
-  const childIds = new Set(agents.flatMap((a) => a.allowAgents));
-  const roots = agents.filter((a) => !childIds.has(a.id));
+  const childIds = new Set(agents.flatMap((a) => a.allowAgents || []));
+  
+  // If there are agents but no roots due to circular references, treat all as roots to break the loop
+  const rawRoots = agents.filter((a) => !childIds.has(a.id));
+  const roots = rawRoots.length > 0 ? rawRoots : agents;
 
   function getChildren(agentId: string): Agent[] {
     const agent = agentMap.get(agentId);
@@ -59,8 +62,12 @@ export function AgentOrganigrama({ agents, onSelectAgent }: AgentOrganigramaProp
 
   const positions: NodePos[] = [];
   const leafXCounter = { val: 0 };
+  const visited = new Set<string>();
 
   function layoutDFS(agent: Agent, level: number): void {
+    if (visited.has(agent.id)) return;
+    visited.add(agent.id);
+
     const children = getChildren(agent.id);
 
     if (children.length === 0) {
@@ -78,8 +85,8 @@ export function AgentOrganigrama({ agents, onSelectAgent }: AgentOrganigramaProp
         layoutDFS(child, level + 1);
       }
       const childPositions = children.map((c) => positions.find((p) => p.id === c.id)).filter(Boolean) as NodePos[];
-      const leftX = Math.min(...childPositions.map((p) => p.x));
-      const rightX = Math.max(...childPositions.map((p) => p.x + p.width));
+      const leftX = childPositions.length > 0 ? Math.min(...childPositions.map((p) => p.x)) : 0;
+      const rightX = childPositions.length > 0 ? Math.max(...childPositions.map((p) => p.x + p.width)) : NODE_W;
       const centerX = leftX + (rightX - leftX) / 2 - NODE_W / 2;
       positions.push({
         id: agent.id,
@@ -96,9 +103,9 @@ export function AgentOrganigrama({ agents, onSelectAgent }: AgentOrganigramaProp
     layoutDFS(root, 0);
   }
 
-  const minX = Math.min(...positions.map((p) => p.x));
-  const maxX = Math.max(...positions.map((p) => p.x + p.width));
-  const maxY = Math.max(...positions.map((p) => p.y + p.height));
+  const minX = positions.length > 0 ? Math.min(...positions.map((p) => p.x)) : 0;
+  const maxX = positions.length > 0 ? Math.max(...positions.map((p) => p.x + p.width)) : NODE_W;
+  const maxY = positions.length > 0 ? Math.max(...positions.map((p) => p.y + p.height)) : NODE_H;
   const padding = 40;
   const svgW = maxX - minX + padding * 2;
   const svgH = maxY + padding * 2;
