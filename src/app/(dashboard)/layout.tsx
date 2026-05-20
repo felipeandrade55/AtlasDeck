@@ -1,6 +1,6 @@
 "use client";
 
-import { Dock, TopBar, StatusBar } from "@/components/TenacitOS";
+import { Dock, TopBar, StatusBar } from "@/components/AtlasDeck";
 
 export default function DashboardLayout({
   children,
@@ -8,7 +8,7 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   return (
-    <div className="tenacios-shell" style={{ minHeight: "100vh" }}>
+    <div className="atlasdeck-shell" style={{ minHeight: "100vh" }}>
       <Dock />
       <TopBar />
       

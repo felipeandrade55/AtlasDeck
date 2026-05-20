@@ -1,44 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import fs from 'fs/promises';
-import path from 'path';
-import { randomUUID } from 'crypto';
+import { loadNotifications, saveNotifications, addNotification } from '@/lib/notifications';
 
-const DATA_PATH = path.join(process.cwd(), 'data', 'notifications.json');
-
-export interface Notification {
-  id: string;
-  timestamp: string;
-  title: string;
-  message: string;
-  type: 'info' | 'success' | 'warning' | 'error';
-  read: boolean;
-  link?: string;
-  metadata?: Record<string, unknown>;
-}
-
-interface NotificationsResponse {
-  notifications: Notification[];
-  unreadCount: number;
-}
-
-async function loadNotifications(): Promise<Notification[]> {
-  try {
-    const data = await fs.readFile(DATA_PATH, 'utf-8');
-    return JSON.parse(data);
-  } catch {
-    return [];
-  }
-}
-
-async function saveNotifications(notifications: Notification[]): Promise<void> {
-  const dir = path.dirname(DATA_PATH);
-  try {
-    await fs.access(dir);
-  } catch {
-    await fs.mkdir(dir, { recursive: true });
-  }
-  await fs.writeFile(DATA_PATH, JSON.stringify(notifications, null, 2));
-}
+export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
   try {
@@ -63,7 +26,7 @@ export async function GET(request: NextRequest) {
 
     const unreadCount = (await loadNotifications()).filter((n) => !n.read).length;
 
-    return NextResponse.json<NotificationsResponse>({
+    return NextResponse.json({
       notifications,
       unreadCount,
     });
@@ -95,28 +58,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const notifications = await loadNotifications();
-
-    const newNotification: Notification = {
-      id: randomUUID(),
-      timestamp: new Date().toISOString(),
-      title: body.title,
-      message: body.message,
-      type,
-      read: false,
-      link: body.link,
-      metadata: body.metadata,
-    };
-
-    // Prepend (newest first)
-    notifications.unshift(newNotification);
-
-    // Keep only last 100 notifications
-    if (notifications.length > 100) {
-      notifications.splice(100);
-    }
-
-    await saveNotifications(notifications);
+    const newNotification = await addNotification(
+      body.title,
+      body.message,
+      type as 'info' | 'success' | 'warning' | 'error',
+      body.link,
+      body.metadata
+    );
 
     return NextResponse.json(newNotification, { status: 201 });
   } catch (error) {
@@ -191,3 +139,4 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: 'Failed to delete notification' }, { status: 500 });
   }
 }
+

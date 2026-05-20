@@ -188,4 +188,4 @@ Returns cost summary, breakdowns, and trends.
 ---
 
 **Created:** 2026-02-20  
-**Author:** Tenacitas 🦞
+**Author:** AtlasDeck 🦞

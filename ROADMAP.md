@@ -4,7 +4,7 @@
 > Mejorar lo que ya existe y añadir datos reales
 
 ### 1.1 Activity Logger Real
-- [ ] Crear endpoint POST `/api/activities` para que Tenacitas registre acciones
+- [ ] Crear endpoint POST `/api/activities` para que AtlasDeck registre acciones
 - [ ] Hook en OpenClaw para loguear automáticamente cada tool call
 - [ ] Campos: timestamp, type, description, status, duration, tokens_used
 - [ ] Retención: últimos 30 días
@@ -101,7 +101,7 @@
 > Interacción bidireccional
 
 ### 5.1 Command Terminal
-- [ ] Input para enviar mensajes/comandos a Tenacitas
+- [ ] Input para enviar mensajes/comandos a AtlasDeck
 - [ ] Output en tiempo real de respuesta
 - [ ] Historial de comandos
 - [ ] Shortcuts para comandos frecuentes
@@ -128,7 +128,7 @@
   - NEW: `src/app/api/sessions/route.ts`
   - NEW: `src/app/(dashboard)/sessions/page.tsx`
   - MODIFIED: `src/components/Sidebar.tsx` (añadida entrada Sessions)
-  - MODIFIED: `src/components/TenacitOS/Dock.tsx` (añadida entrada Sessions)
+  - MODIFIED: `src/components/AtlasDeck/Dock.tsx` (añadida entrada Sessions)
 
 ### 5.4 Notifications System ✅ (nuevo — 2026-02-20)
 - [x] **API de notificaciones** → `GET/POST/PATCH/DELETE /api/notifications`
@@ -144,7 +144,7 @@
 - **Archivos:**
   - NEW: `src/app/api/notifications/route.ts`
   - NEW: `src/components/NotificationDropdown.tsx`
-  - MODIFIED: `src/components/TenacitOS/TopBar.tsx`
+  - MODIFIED: `src/components/AtlasDeck/TopBar.tsx`
   - MODIFIED: `src/app/api/cron/run/route.ts` (integración)
 
 ---
@@ -179,7 +179,7 @@
 ### 7.1 Live Activity Stream
 - [ ] WebSocket connection
 - [ ] Updates en tiempo real del activity feed
-- [ ] Indicador "Tenacitas está trabajando..."
+- [ ] Indicador "AtlasDeck está trabajando..."
 - [ ] Toast notifications
 
 ### 7.2 System Status
@@ -417,4 +417,4 @@
 ---
 
 *Creado: 2026-02-07*
-*Última actualización: 2026-02-21 (Tenacitas nightly shift)*
+*Última actualización: 2026-02-21 (AtlasDeck nightly shift)*

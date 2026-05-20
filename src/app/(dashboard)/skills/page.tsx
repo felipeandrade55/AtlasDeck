@@ -15,7 +15,7 @@ import {
   ChevronDown,
   BookOpen,
 } from "lucide-react";
-import { SectionHeader, MetricCard } from "@/components/TenacitOS";
+import { SectionHeader, MetricCard } from "@/components/AtlasDeck";
 
 interface Skill {
   id: string;

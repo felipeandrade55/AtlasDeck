@@ -1,14 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { execSync } from "child_process";
 import { insertCronRun } from "@/lib/cron-runs-db";
+import { addNotification } from "@/lib/notifications";
 
 async function createNotification(title: string, message: string, type: "info" | "success" | "warning" | "error" = "info") {
   try {
-    await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/notifications`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, message, type }),
-    });
+    await addNotification(title, message, type);
   } catch (error) {
     console.error("Failed to create notification:", error);
   }

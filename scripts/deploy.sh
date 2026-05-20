@@ -1,7 +1,7 @@
 #!/bin/bash
 # deploy.sh — Roda no VPS: baixa atualizações do GitHub, build, restart e health check
 #
-# Uso: ./scripts/deploy.sh [--bidirecional]
+# Uso: ./scripts/deploy.sh [--bidirecional] [--headless]
 #
 # Sem flags:        pull destrutivo (GitHub → VPS). Mudanças locais no VPS são descartadas.
 # --bidirecional:   antes do pull, commita e dá push em qualquer alteração feita no VPS,
@@ -9,10 +9,14 @@
 
 set -eo pipefail
 
+# Quick pre-scan for --headless flag (needed before auto-preservation block)
+_HEADLESS_PRESCAN=false
+for _arg in "$@"; do [[ "$_arg" == "--headless" ]] && _HEADLESS_PRESCAN=true; done
+
 # ─── AUTO-PRESERVAÇÃO ─────────────────────────────────────────────────────────
 # Copia o script para /tmp e re-executa de lá. Assim, o git reset --hard
 # pode sobrescrever scripts/deploy.sh no repositório sem interromper a execução.
-if [[ "${_DEPLOY_SAFE:-}" != "1" ]]; then
+if [[ "${_DEPLOY_SAFE:-}" != "1" ]] && ! $_HEADLESS_PRESCAN; then
   _TMP=$(mktemp /tmp/deploy.XXXXXX.sh)
   cp "$0" "$_TMP"
   chmod +x "$_TMP"
@@ -33,10 +37,14 @@ GH_GIT_EMAIL="felipeandrade55@gmail.com"
 
 # ─── PARSE DE ARGUMENTOS ──────────────────────────────────────────────────────
 BIDIRECTIONAL=false
+HEADLESS=false
 for arg in "$@"; do
   case "$arg" in
     --bidirecional|--bidirectional)
       BIDIRECTIONAL=true
+      ;;
+    --headless)
+      HEADLESS=true
       ;;
     -h|--help)
       cat <<EOF
@@ -46,6 +54,9 @@ Opções:
   --bidirecional   Antes de puxar do GitHub, commita e dá push em qualquer
                    alteração local detectada no VPS (sincronização VPS → GitHub).
                    Requer PAT com escopo 'repo' (write).
+  --headless       Modo não-interativo para CI/automação. Pula prompts
+                   interativos (credenciais, Fail2Ban, UFW) e desabilita
+                   cores na saída. Credenciais devem estar pré-configuradas.
   -h, --help       Exibe esta ajuda.
 
 Sem flags, opera em modo padrão (apenas pull destrutivo: GitHub → VPS).
@@ -60,8 +71,13 @@ EOF
 done
 # ─────────────────────────────────────────────────────────────────────────────
 
-GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'
-RED='\033[0;31m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
+if [[ -t 1 ]] && ! $HEADLESS; then
+  GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'
+  RED='\033[0;31m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
+else
+  GREEN=''; YELLOW=''; CYAN=''
+  RED=''; BOLD=''; DIM=''; NC=''
+fi
 
 TOTAL_START=$(date +%s)
 REPORT=()
@@ -134,20 +150,26 @@ if [[ "$HAS_CREDS" == "yes" ]]; then
   ok "Credenciais já configuradas ($GH_GIT_EMAIL)"
   record "Credenciais GitHub" "ok" "$(elapsed $T)"
 else
-  warn "Credenciais não encontradas — informe login e PAT"
-  echo ""
-  echo -e "  ${DIM}PAT em: github.com → Settings → Developer settings → Personal access tokens${NC}"
-  echo -e "  ${DIM}Escopo necessário: 'repo' (write para --bidirecional, read para pull simples)${NC}"
-  echo ""
-  read -rp "  GitHub login : " GH_USER
-  read -rsp "  GitHub PAT   : " GH_TOKEN
-  echo ""
+  if $HEADLESS; then
+    warn "Credenciais não encontradas — modo headless, pulando prompt interativo."
+    warn "Configure ~/.git-credentials manualmente antes de executar em modo headless."
+    record "Credenciais GitHub" "skip" "$(elapsed $T)"
+  else
+    warn "Credenciais não encontradas — informe login e PAT"
+    echo ""
+    echo -e "  ${DIM}PAT em: github.com → Settings → Developer settings → Personal access tokens${NC}"
+    echo -e "  ${DIM}Escopo necessário: 'repo' (write para --bidirecional, read para pull simples)${NC}"
+    echo ""
+    read -rp "  GitHub login : " GH_USER
+    read -rsp "  GitHub PAT   : " GH_TOKEN
+    echo ""
 
-  printf 'https://%s:%s@github.com\n' "$GH_USER" "$GH_TOKEN" > ~/.git-credentials
-  chmod 600 ~/.git-credentials
+    printf 'https://%s:%s@github.com\n' "$GH_USER" "$GH_TOKEN" > ~/.git-credentials
+    chmod 600 ~/.git-credentials
 
-  ok "Credenciais salvas (~/.git-credentials)"
-  record "Credenciais GitHub" "ok" "$(elapsed $T)"
+    ok "Credenciais salvas (~/.git-credentials)"
+    record "Credenciais GitHub" "ok" "$(elapsed $T)"
+  fi
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -459,14 +481,18 @@ step "Verificando Fail2Ban (Proteção contra Brute Force)..."
 T=$(now)
 
 if ! command -v fail2ban-client &>/dev/null; then
-  echo ""
-  read -rp "  Deseja instalar e configurar o Fail2Ban para proteger contra brute force? (y/N): " INSTALL_F2B
-  if [[ "$INSTALL_F2B" =~ ^[Yy]$ ]]; then
-    info "Instalando fail2ban..."
-    sudo apt-get update -qq && sudo apt-get install -y fail2ban
-    
-    if [ ! -f /etc/fail2ban/jail.local ]; then
-      cat <<EOF | sudo tee /etc/fail2ban/jail.local > /dev/null
+  if $HEADLESS; then
+    warn "Fail2Ban não encontrado — modo headless, pulando instalação."
+    record "Fail2Ban Setup" "skip" "$(elapsed $T)"
+  else
+    echo ""
+    read -rp "  Deseja instalar e configurar o Fail2Ban para proteger contra brute force? (y/N): " INSTALL_F2B
+    if [[ "$INSTALL_F2B" =~ ^[Yy]$ ]]; then
+      info "Instalando fail2ban..."
+      sudo apt-get update -qq && sudo apt-get install -y fail2ban
+      
+      if [ ! -f /etc/fail2ban/jail.local ]; then
+        cat <<EOF | sudo tee /etc/fail2ban/jail.local > /dev/null
 [DEFAULT]
 bantime = 1h
 findtime = 10m
@@ -479,13 +505,14 @@ filter = sshd
 logpath = /var/log/auth.log
 maxretry = 3
 EOF
-      sudo systemctl restart fail2ban
+        sudo systemctl restart fail2ban
+      fi
+      ok "Fail2Ban instalado e Jail SSH ativa"
+      record "Fail2Ban Setup" "ok" "$(elapsed $T)"
+    else
+      warn "Instalação do Fail2Ban ignorada."
+      record "Fail2Ban Setup" "skip" "$(elapsed $T)"
     fi
-    ok "Fail2Ban instalado e Jail SSH ativa"
-    record "Fail2Ban Setup" "ok" "$(elapsed $T)"
-  else
-    warn "Instalação do Fail2Ban ignorada."
-    record "Fail2Ban Setup" "skip" "$(elapsed $T)"
   fi
 else
   ok "Fail2Ban já está instalado e ativo"
@@ -506,20 +533,25 @@ else
     ok "Firewall UFW já está ativo"
     record "Firewall UFW" "ok" "$(elapsed $T)"
   else
-    echo ""
-    read -rp "  Deseja ativar o Firewall (UFW) com portas padrão (SSH, 80, 443, 3000)? (y/N): " ENABLE_UFW
-    if [[ "$ENABLE_UFW" =~ ^[Yy]$ ]]; then
-      info "Configurando regras padrão..."
-      sudo ufw allow ssh > /dev/null
-      sudo ufw allow http > /dev/null
-      sudo ufw allow https > /dev/null
-      sudo ufw allow 3000/tcp > /dev/null
-      sudo ufw --force enable > /dev/null
-      ok "Firewall ativado com segurança padrão"
-      record "Firewall UFW" "ok" "$(elapsed $T)"
-    else
-      warn "Ativação do Firewall ignorada."
+    if $HEADLESS; then
+      warn "Firewall UFW inativo — modo headless, pulando ativação."
       record "Firewall UFW" "skip" "$(elapsed $T)"
+    else
+      echo ""
+      read -rp "  Deseja ativar o Firewall (UFW) com portas padrão (SSH, 80, 443, 3000)? (y/N): " ENABLE_UFW
+      if [[ "$ENABLE_UFW" =~ ^[Yy]$ ]]; then
+        info "Configurando regras padrão..."
+        sudo ufw allow ssh > /dev/null
+        sudo ufw allow http > /dev/null
+        sudo ufw allow https > /dev/null
+        sudo ufw allow 3000/tcp > /dev/null
+        sudo ufw --force enable > /dev/null
+        ok "Firewall ativado com segurança padrão"
+        record "Firewall UFW" "ok" "$(elapsed $T)"
+      else
+        warn "Ativação do Firewall ignorada."
+        record "Firewall UFW" "skip" "$(elapsed $T)"
+      fi
     fi
   fi
 fi

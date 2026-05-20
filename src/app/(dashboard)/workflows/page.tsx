@@ -136,7 +136,7 @@ const WORKFLOWS: Workflow[] = [
     status: "active",
     steps: [
       "Carlos envía /cfo, /cmo, /cto, /legal, /growth, /coach o /producto",
-      "Tenacitas carga el skill advisory-board/SKILL.md",
+      "AtlasDeck carga el skill advisory-board/SKILL.md",
       "Lee el archivo de memoria del advisor correspondiente (memory/advisors/)",
       "Responde en la voz y personalidad del advisor con contexto de Carlos",
       "Actualiza el archivo de memoria con lo aprendido en la consulta",
@@ -152,7 +152,7 @@ const WORKFLOWS: Workflow[] = [
     trigger: "cron",
     status: "active",
     steps: [
-      "Comprueba si hay cambios en el workspace de Tenacitas",
+      "Comprueba si hay cambios en el workspace de AtlasDeck",
       "Si hay cambios: git add -A",
       "Genera mensaje de commit automático con timestamp y resumen de cambios",
       "git push al repositorio remoto",

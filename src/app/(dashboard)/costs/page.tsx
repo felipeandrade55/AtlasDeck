@@ -362,16 +362,52 @@ export default function CostsPage() {
 
       {(error || costData.collection.error || !derived.hasUsage) && (
         <div
-          className="flex flex-col gap-2 rounded-xl p-4 text-sm"
-          style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}
+          className="flex flex-col gap-3 rounded-xl p-5 text-sm"
+          style={{ backgroundColor: "var(--card)", border: `1px solid ${error || costData.collection.error ? "var(--warning)" : "var(--border)"}` }}
         >
           <div className="flex items-center gap-2 font-semibold" style={{ color: error || costData.collection.error ? "var(--warning)" : "var(--text-primary)" }}>
-            <AlertTriangle className="w-4 h-4" />
-            {error || costData.collection.error ? "Coleta parcial de custos" : "Aguardando uso registrado"}
+            <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+            {error || costData.collection.error
+              ? costData.collection.status === "unavailable"
+                ? "OpenClaw não está acessível"
+                : "Coleta parcial de custos"
+              : "Aguardando uso registrado"}
           </div>
-          <p style={{ wordBreak: "break-word" }}>
-            {error || costData.collection.error || "A API de custos está pronta, mas ainda não há deltas de tokens salvos no banco local."}
+          <p style={{ color: "var(--text-secondary)" }}>
+            {error || costData.collection.error
+              ? costData.collection.status === "unavailable"
+                ? "Não foi possível conectar ao OpenClaw para coletar dados de uso. Verifique se o OpenClaw está instalado e configurado corretamente."
+                : "A coleta de custos encontrou um problema, mas dados anteriores ainda estão disponíveis."
+              : "A API de custos está pronta, mas ainda não há deltas de tokens salvos no banco local."}
           </p>
+          <div className="flex flex-wrap items-center gap-3">
+            {(costData.collection.status === "unavailable" || error) && (
+              <a
+                href="/costs"
+                onClick={(e) => {
+                  e.preventDefault();
+                  window.open("/api/openclaw/config?test=1", "_blank");
+                }}
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+                style={{ backgroundColor: "var(--card-elevated)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+              >
+                🔧 Diagnóstico OpenClaw
+              </a>
+            )}
+            {(error || costData.collection.error) && (
+              <details className="text-xs w-full">
+                <summary className="cursor-pointer select-none" style={{ color: "var(--text-muted)" }}>
+                  Detalhes técnicos
+                </summary>
+                <pre
+                  className="mt-2 p-3 rounded-lg overflow-x-auto whitespace-pre-wrap break-all"
+                  style={{ backgroundColor: "var(--card-elevated)", color: "var(--text-muted)", fontSize: "11px", lineHeight: "1.5" }}
+                >
+                  {error || costData.collection.error}
+                </pre>
+              </details>
+            )}
+          </div>
         </div>
       )}
 

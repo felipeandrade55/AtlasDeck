@@ -1,8 +1,8 @@
-# TenacitOS — Mission Control
+# AtlasDeck — Mission Control
 
 A real-time dashboard and control center for [OpenClaw](https://openclaw.ai) AI agent instances. Built with Next.js, React 19, and Tailwind CSS v4.
 
-> **TenacitOS** lives inside your OpenClaw workspace and reads its configuration, agents, sessions, memory, and logs directly from the host. No extra database or backend required — OpenClaw is the backend.
+> **AtlasDeck** lives inside your OpenClaw workspace and reads its configuration, agents, sessions, memory, and logs directly from the host. No extra database or backend required — OpenClaw is the backend.
 
 ---
 
@@ -58,7 +58,7 @@ A real-time dashboard and control center for [OpenClaw](https://openclaw.ai) AI 
 
 ## How it works
 
-TenacitOS reads directly from your OpenClaw installation:
+AtlasDeck reads directly from your OpenClaw installation:
 
 ```
 /root/.openclaw/              ← OPENCLAW_DIR (configurable)
@@ -67,7 +67,7 @@ TenacitOS reads directly from your OpenClaw installation:
 ├── workspace-studio/         ← sub-agent workspaces
 ├── workspace-infra/
 ├── ...
-└── workspace/mission-control/ ← TenacitOS lives here
+└── workspace/mission-control/ ← AtlasDeck lives here
 ```
 
 The app uses `OPENCLAW_DIR` to locate `openclaw.json` and all workspaces. **No manual agent configuration needed** — agents are auto-discovered from `openclaw.json`.
@@ -80,7 +80,7 @@ The app uses `OPENCLAW_DIR` to locate `openclaw.json` and all workspaces. **No m
 
 ```bash
 cd /root/.openclaw/workspace   # or your OPENCLAW_DIR/workspace
-git clone https://github.com/carlosazaustre/tenacitOS.git mission-control
+git clone https://github.com/felipeandrade55/AtlasDeck.git mission-control
 cd mission-control
 npm install
 ```
@@ -176,7 +176,7 @@ Create `/etc/systemd/system/mission-control.service`:
 
 ```ini
 [Unit]
-Description=TenacitOS — OpenClaw Mission Control
+Description=AtlasDeck — OpenClaw Mission Control
 After=network.target
 
 [Service]
@@ -303,7 +303,7 @@ mission-control/
 │   │   ├── login/            # Login page
 │   │   └── office/           # 3D office (unprotected route)
 │   ├── components/
-│   │   ├── TenacitOS/        # OS-style UI shell (topbar, dock, status bar)
+│   │   ├── AtlasDeck/        # OS-style UI shell (topbar, dock, status bar)
 │   │   └── Office3D/         # React Three Fiber 3D office
 │   ├── config/
 │   │   └── branding.ts       # Branding constants (reads from env vars)

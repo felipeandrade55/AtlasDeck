@@ -75,7 +75,11 @@ function readCostsResponse(days: number, collection: CollectionResult | null, co
     const metadata = getCollectionMetadata(db);
     const totals = getUsageTotals(db, days);
 
-    const status = collectionError
+    // Use the persisted error from DB if no collection was attempted and there is one
+    const effectiveError = collectionError
+      ?? (!collection && metadata.lastCollectionError ? metadata.lastCollectionError : null);
+
+    const status = effectiveError
       ? metadata.lastSnapshotAt
         ? "stale"
         : "unavailable"
@@ -99,7 +103,7 @@ function readCostsResponse(days: number, collection: CollectionResult | null, co
       collection: {
         status,
         lastRun: collection,
-        error: collectionError,
+        error: effectiveError,
         autoCollectIntervalMs: intervalMs,
         ...metadata,
       },

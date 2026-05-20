@@ -6,7 +6,7 @@ import { getOpenClawDir } from "@/lib/openclaw-config";
 export const dynamic = "force-dynamic";
 
 const AGENT_CONFIG = {
-  main: { emoji: "🦞", color: "#ff6b35", name: "Tenacitas", role: "Boss" },
+  main: { emoji: "🦞", color: "#ff6b35", name: "AtlasDeck", role: "Boss" },
   academic: {
     emoji: "🎓",
     color: "#4ade80",

@@ -54,7 +54,7 @@ export async function GET() {
         name: 'Workspace Principal',
         emoji: mainInfo?.emoji || '🦞',
         path: mainWorkspace,
-        agentName: mainInfo?.name || 'Tenacitas',
+        agentName: mainInfo?.name || 'AtlasDeck',
       });
     }
     

@@ -85,31 +85,42 @@ async function checkBin(config: OpenClawConfig): Promise<{ ok: boolean; detail: 
 }
 
 async function checkSessions(config: OpenClawConfig): Promise<Pick<OpenClawStatus, "sessionsReachable" | "sessionsSeen" | "sessionsDetail">> {
-  try {
-    const { stdout } = await execFileAsync(config.openclawBin, ["sessions", "list", "--json"], {
-      timeout: 7000,
-      windowsHide: true,
-      encoding: "utf8",
-      maxBuffer: 5 * 1024 * 1024,
-      env: {
-        ...process.env,
-        OPENCLAW_DIR: config.openclawDir,
-        OPENCLAW_WORKSPACE: config.openclawWorkspace,
-      },
-    });
-    const payload = JSON.parse(String(stdout));
-    return {
-      sessionsReachable: true,
-      sessionsSeen: sessionsCountFromPayload(payload),
-      sessionsDetail: null,
-    };
-  } catch (error) {
-    return {
-      sessionsReachable: false,
-      sessionsSeen: 0,
-      sessionsDetail: errorMessage(error),
-    };
+  const argSets = [
+    ["sessions", "list", "--json"],
+    ["sessions", "--json"],
+    ["sessions", "list"],
+    ["sessions"],
+  ];
+
+  for (const args of argSets) {
+    try {
+      const { stdout } = await execFileAsync(config.openclawBin, args, {
+        timeout: 7000,
+        windowsHide: true,
+        encoding: "utf8",
+        maxBuffer: 5 * 1024 * 1024,
+        env: {
+          ...process.env,
+          OPENCLAW_DIR: config.openclawDir,
+          OPENCLAW_WORKSPACE: config.openclawWorkspace,
+        },
+      });
+      const payload = JSON.parse(String(stdout));
+      return {
+        sessionsReachable: true,
+        sessionsSeen: sessionsCountFromPayload(payload),
+        sessionsDetail: `Formato: ${args.join(" ")}`,
+      };
+    } catch {
+      // Try next format
+    }
   }
+
+  return {
+    sessionsReachable: false,
+    sessionsSeen: 0,
+    sessionsDetail: "Nenhum formato de comando funcionou",
+  };
 }
 
 async function buildStatus(config: OpenClawConfig, testSessions: boolean): Promise<OpenClawStatus> {

@@ -15,7 +15,7 @@ import fs from "fs";
 import { readOpenClawConfig } from "./openclaw-config";
 
 const execFileAsync = promisify(execFile);
-const OPENCLAW_TIMEOUT_MS = 10_000;
+const OPENCLAW_TIMEOUT_MS = 15_000;
 const OPENCLAW_MAX_BUFFER = 10 * 1024 * 1024;
 
 export interface SessionData {
@@ -108,38 +108,86 @@ function isRunDuplicate(key: string): boolean {
 
 async function runOpenClaw(args: string[]): Promise<unknown> {
   const config = readOpenClawConfig();
-  const { stdout } = await execFileAsync(config.openclawBin, args, {
-    timeout: OPENCLAW_TIMEOUT_MS,
-    windowsHide: true,
-    maxBuffer: OPENCLAW_MAX_BUFFER,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      OPENCLAW_DIR: config.openclawDir,
-      OPENCLAW_WORKSPACE: config.openclawWorkspace,
-    },
-  });
-
   try {
-    return JSON.parse(String(stdout));
-  } catch (err) {
-    const raw = String(stdout).trim();
-    throw new Error(`Invalid JSON output from OpenClaw (Length: ${raw.length}):\n${raw.slice(0, 500)}`);
+    const { stdout } = await execFileAsync(config.openclawBin, args, {
+      timeout: OPENCLAW_TIMEOUT_MS,
+      windowsHide: true,
+      maxBuffer: OPENCLAW_MAX_BUFFER,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        OPENCLAW_DIR: config.openclawDir,
+        OPENCLAW_WORKSPACE: config.openclawWorkspace,
+      },
+    });
+
+    try {
+      return JSON.parse(String(stdout));
+    } catch {
+      const raw = String(stdout).trim();
+      throw new Error(`Invalid JSON from openclaw ${args.join(" ")} (len=${raw.length}): ${raw.slice(0, 300)}`);
+    }
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException & { stderr?: string };
+    const detail = err.stderr ? String(err.stderr).trim() : "";
+    if (detail && !err.message.includes(detail)) {
+      throw new Error(`${err.message}${detail ? ` — ${detail}` : ""}`);
+    }
+    throw error;
   }
 }
 
 /**
- * Get current OpenClaw status with session data.
+ * Try multiple argument formats for an OpenClaw command, returning the first
+ * one that succeeds with valid JSON. This handles CLI version differences
+ * (e.g. `sessions list --json` vs `sessions --json` vs `sessions-list --json`).
  */
-export async function getOpenClawStatus(): Promise<unknown> {
-  return runOpenClaw(["status"]);
+async function tryOpenClawFormats(
+  argSets: string[][],
+  label: string
+): Promise<{ data: unknown; format: string }> {
+  const errors: string[] = [];
+
+  for (const args of argSets) {
+    try {
+      const data = await runOpenClaw(args);
+      return { data, format: args.join(" ") };
+    } catch (error) {
+      errors.push(`[${args.join(" ")}] ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  throw new Error(`${label}: all formats failed:\n${errors.join("\n")}`);
 }
 
 /**
- * Get current OpenClaw sessions list.
+ * Get current OpenClaw status with session data (JSON).
+ */
+export async function getOpenClawStatus(): Promise<unknown> {
+  const { data } = await tryOpenClawFormats(
+    [
+      ["status", "--json"],
+      ["status"],
+    ],
+    "openclaw status"
+  );
+  return data;
+}
+
+/**
+ * Get current OpenClaw sessions list (JSON).
  */
 export async function getOpenClawSessionsList(): Promise<unknown> {
-  return runOpenClaw(["sessions", "list"]);
+  const { data } = await tryOpenClawFormats(
+    [
+      ["sessions", "list", "--json"],
+      ["sessions", "--json"],
+      ["sessions", "list"],
+      ["sessions"],
+    ],
+    "openclaw sessions list"
+  );
+  return data;
 }
 
 /**
@@ -223,25 +271,28 @@ async function getOpenClawUsageSessions(): Promise<{
   sessions: SessionData[];
   source: CollectionResult["source"];
 }> {
+  // Try sessions list first (most accurate)
   try {
     const data = await getOpenClawSessionsList();
     const sessions = extractSessionsListData(data);
     if (sessions.length > 0) {
       return { sessions, source: "sessions-list" };
     }
-    throw new Error("openclaw sessions list returned empty array");
-  } catch (sessionsError) {
-    try {
-      const status = await getOpenClawStatus();
-      const sessions = extractSessionData(status);
-      return { sessions, source: "status" };
-    } catch (statusError) {
-      const message = [
-        sessionsError instanceof Error ? sessionsError.message : String(sessionsError),
-        statusError instanceof Error ? statusError.message : String(statusError),
-      ].filter(Boolean).join(" | ");
-      throw new Error(`OpenClaw usage unavailable: ${message}`);
-    }
+    // Empty sessions from a valid response is fine — fall through to status
+  } catch {
+    // sessions list failed — fall through to status
+  }
+
+  // Fallback: try status endpoint
+  try {
+    const status = await getOpenClawStatus();
+    const sessions = extractSessionData(status);
+    // Even empty sessions from a successful status call is valid
+    return { sessions, source: "status" };
+  } catch (statusError) {
+    throw new Error(
+      `OpenClaw indisponível: não foi possível obter sessões. Verifique se o OpenClaw está instalado e acessível. Detalhe: ${statusError instanceof Error ? statusError.message : String(statusError)}`
+    );
   }
 }
 

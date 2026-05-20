@@ -79,7 +79,7 @@ export function TopBar() {
               letterSpacing: "-0.5px",
             }}
           >
-            TenacitOS
+            AtlasDeck
           </h1>
           {/* Version Badge */}
           <div
