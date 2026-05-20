@@ -1,10 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { loadNotifications, saveNotifications, addNotification } from '@/lib/notifications';
+import { startUpdateScheduler, ensureRecentCheck } from '@/lib/update-scheduler';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
   try {
+    // Garante que o agendador de updates está rodando e dispara um check leve
+    // se a última verificação foi há mais de 5 min (o sino pinga a cada 30s).
+    startUpdateScheduler();
+    void ensureRecentCheck();
+
     const { searchParams } = new URL(request.url);
     const onlyUnread = searchParams.get('unread') === 'true';
     const limit = parseInt(searchParams.get('limit') || '50');

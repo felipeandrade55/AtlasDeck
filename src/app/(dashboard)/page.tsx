@@ -22,6 +22,7 @@ import {
   Zap,
   Server,
   Terminal,
+  Clock,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -30,6 +31,7 @@ interface Stats {
   today: number;
   success: number;
   error: number;
+  pending: number;
   byType: Record<string, number>;
 }
 
@@ -45,7 +47,7 @@ interface Agent {
 }
 
 export default function DashboardPage() {
-  const [stats, setStats] = useState<Stats>({ total: 0, today: 0, success: 0, error: 0, byType: {} });
+  const [stats, setStats] = useState<Stats>({ total: 0, today: 0, success: 0, error: 0, pending: 0, byType: {} });
   const [agents, setAgents] = useState<Agent[]>([]);
   const router = useRouter();
 
@@ -61,6 +63,7 @@ export default function DashboardPage() {
           today:   actStats.today             || 0,
           success: actStats.byStatus?.success || 0,
           error:   actStats.byStatus?.error   || 0,
+          pending: (actStats.byStatus?.pending || 0) + (actStats.byStatus?.running || 0),
           byType:  actStats.byType            || {},
         });
         setAgents(agentsData.agents || []);
@@ -96,30 +99,41 @@ export default function DashboardPage() {
       {/* Stats Grid + Weather */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 mb-4 md:mb-6">
         {/* Stats */}
-        <div className="lg:col-span-3 grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="lg:col-span-3 grid grid-cols-2 md:grid-cols-5 gap-3">
           <StatsCard
             title="Total de Atividades"
             value={stats.total.toLocaleString()}
             icon={<Activity className="w-5 h-5" />}
             iconColor="var(--info)"
+            subtitle="Todas as ações registradas nos últimos 365 dias"
           />
           <StatsCard
             title="Hoje"
             value={stats.today.toLocaleString()}
             icon={<Zap className="w-5 h-5" />}
             iconColor="var(--accent)"
+            subtitle="Ações executadas desde meia-noite de hoje"
+          />
+          <StatsCard
+            title="Em andamento"
+            value={stats.pending.toLocaleString()}
+            icon={<Clock className="w-5 h-5" />}
+            iconColor="var(--warning)"
+            subtitle="Ações pendentes ou em execução no momento"
           />
           <StatsCard
             title="Bem-sucedidos"
             value={stats.success.toLocaleString()}
             icon={<CheckCircle className="w-5 h-5" />}
             iconColor="var(--success)"
+            subtitle="Ações que terminaram com sucesso"
           />
           <StatsCard
             title="Erros"
             value={stats.error.toLocaleString()}
             icon={<XCircle className="w-5 h-5" />}
             iconColor="var(--error)"
+            subtitle="Ações que falharam ou retornaram erro"
           />
         </div>
 

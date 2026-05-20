@@ -252,7 +252,7 @@ export function StatusBar() {
         >
           <div style={{ width: "6px", height: "6px", borderRadius: "50%", backgroundColor: "var(--warning)" }} />
           <span style={{ fontFamily: "var(--font-body)", fontSize: "10px", fontWeight: 600, color: "var(--warning)", letterSpacing: "0.5px" }}>
-            UPDATE
+            ATUALIZAR
           </span>
         </div>
       ) : (

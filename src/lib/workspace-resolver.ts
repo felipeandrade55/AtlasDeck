@@ -1,25 +1,33 @@
 import path from "path";
-
-const OPENCLAW_DIR = process.env.OPENCLAW_DIR || "/root/.openclaw";
+import { getOpenClawDir } from "./openclaw-config";
 
 /**
  * Resolve a workspace ID to an absolute filesystem path.
- * Supports: 'workspace', 'mission-control', and any 'workspace-<name>'.
+ *
+ * Supports:
+ *   - "workspace"           → <OPENCLAW_DIR>/workspace
+ *   - "workspace-<name>"    → <OPENCLAW_DIR>/workspace-<name>
+ *   - "mission-control"     → <OPENCLAW_DIR>/workspace/mission-control
+ *
+ * Resolution honours the saved openclaw-config.json first, then the
+ * OPENCLAW_DIR env var, then the default `/root/.openclaw`.
+ *
+ * Returns null when the workspace id is invalid or the resolved path
+ * escapes OPENCLAW_DIR (defense in depth against traversal attempts).
  */
 export function resolveWorkspacePath(workspace: string): string | null {
   if (!workspace || typeof workspace !== "string") return null;
 
-  // Direct mission-control under workspace
+  const openclawDir = getOpenClawDir();
+
   if (workspace === "mission-control") {
-    return path.join(OPENCLAW_DIR, "workspace", "mission-control");
+    return path.join(openclawDir, "workspace", "mission-control");
   }
 
-  // Any workspace-* or plain workspace
-  const base = path.join(OPENCLAW_DIR, workspace);
+  const base = path.join(openclawDir, workspace);
 
-  // Security: ensure resolved path is still under OPENCLAW_DIR
   const resolved = path.resolve(base);
-  const openclawResolved = path.resolve(OPENCLAW_DIR);
+  const openclawResolved = path.resolve(openclawDir);
   if (!resolved.startsWith(openclawResolved)) return null;
 
   return resolved;

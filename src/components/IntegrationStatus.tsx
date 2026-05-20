@@ -2,6 +2,7 @@
 
 import { MessageCircle, Twitter, Mail, CheckCircle, XCircle, AlertCircle, type LucideIcon } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
+import { ptBR } from "date-fns/locale";
 
 interface Integration {
   id: string;
@@ -98,6 +99,7 @@ export function IntegrationStatus({ integrations }: IntegrationStatusProps) {
                       Última atividade:{" "}
                       {formatDistanceToNow(new Date(integration.lastActivity), {
                         addSuffix: true,
+                        locale: ptBR,
                       })}
                     </div>
                   )}

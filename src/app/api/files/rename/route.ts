@@ -3,6 +3,8 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { logActivity } from '@/lib/activities-db';
 import { resolveWorkspacePath } from '@/lib/workspace-resolver';
+import { sanitizeWorkspaceRelativePath } from '@/lib/memory-files';
+import { indexFile, removeFile } from '@/lib/memory-fts';
 
 export async function POST(request: NextRequest) {
   try {
@@ -35,6 +37,14 @@ export async function POST(request: NextRequest) {
     logActivity('file_write', `Renamed ${path.basename(filePath)} to ${newName}`, 'success', {
       metadata: { workspace, oldPath: filePath, newName },
     });
+
+    const ws = workspace || 'workspace';
+    const oldRel = path.relative(base, fullPath).replace(/\\/g, '/');
+    const newRel = path.relative(base, newPath).replace(/\\/g, '/');
+    const safeOld = sanitizeWorkspaceRelativePath(oldRel);
+    if (safeOld) removeFile(ws, safeOld);
+    const safeNew = sanitizeWorkspaceRelativePath(newRel);
+    if (safeNew) await indexFile(ws, safeNew, newPath);
 
     return NextResponse.json({ success: true, newPath: path.relative(base, newPath) });
   } catch (error) {

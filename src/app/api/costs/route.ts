@@ -13,12 +13,11 @@ import {
   setCostSettings,
   getCurrentCostForTimeframe,
 } from "@/lib/usage-queries";
-import { collectUsage, initDatabase, type CollectionResult } from "@/lib/usage-collector";
+import { collectUsage, initDatabase, type CollectionResult, getOpenClawDiagnostics } from "@/lib/usage-collector";
 import { MODEL_PRICING } from "@/lib/pricing";
 import { addNotification } from "@/lib/notifications";
-import { readOpenClawConfig } from "@/lib/openclaw-config";
+import { sendTelegramAlert } from "@/lib/telegram";
 import path from "path";
-import fs from "fs";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -57,62 +56,6 @@ function shouldCollect(lastCollectedAt: number | null, intervalMs: number, force
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-async function sendTelegramAlert(
-  botTokenOverride: string,
-  chatIdOverride: string,
-  message: string
-) {
-  let botToken = botTokenOverride;
-  let chatId = chatIdOverride;
-
-  // Fallback to openclaw.json if not specified
-  if (!botToken || !chatId) {
-    try {
-      const configPath = path.join(readOpenClawConfig().openclawDir, 'openclaw.json');
-      if (fs.existsSync(configPath)) {
-        const openclawConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-        const mainAccount = openclawConfig?.channels?.telegram?.accounts?.main;
-        if (!botToken && mainAccount?.botToken) {
-          botToken = mainAccount.botToken;
-        }
-        if (!chatId && mainAccount?.chatId) {
-          chatId = mainAccount.chatId;
-        }
-      }
-    } catch (e) {
-      console.error("Failed to read openclaw.json fallback for Telegram:", e);
-    }
-  }
-
-  if (!botToken || !chatId) {
-    console.warn("Telegram alert skipped: Bot Token or Chat ID not configured.");
-    return false;
-  }
-
-  try {
-    const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: message,
-        parse_mode: "HTML",
-      }),
-    });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Telegram API returned status ${res.status}: ${errText}`);
-    }
-
-    return true;
-  } catch (error) {
-    console.error("Failed to send Telegram alert:", error);
-    return false;
-  }
 }
 
 async function evaluateCostAlerts(db: any) {
@@ -191,7 +134,7 @@ function pricingTable() {
   }));
 }
 
-function readCostsResponse(days: number, collection: CollectionResult | null, collectionError: string | null, intervalMs: number) {
+async function readCostsResponse(days: number, collection: CollectionResult | null, collectionError: string | null, intervalMs: number) {
   const db = initDatabase(DB_PATH);
 
   try {
@@ -218,6 +161,16 @@ function readCostsResponse(days: number, collection: CollectionResult | null, co
           ? "cached"
           : "empty";
 
+    // Include diagnostics when collection failed or data is stale/empty
+    let diagnostics = null;
+    if (status === "unavailable" || status === "empty" || status === "stale" || effectiveError) {
+      try {
+        diagnostics = await getOpenClawDiagnostics();
+      } catch {
+        diagnostics = null;
+      }
+    }
+
     return {
       ...summary,
       budget: settings.budget,
@@ -243,6 +196,7 @@ function readCostsResponse(days: number, collection: CollectionResult | null, co
         autoCollectIntervalMs: intervalMs,
         ...metadata,
       },
+      diagnostics,
     };
   } finally {
     db.close();
@@ -278,7 +232,7 @@ export async function GET(request: NextRequest) {
       db2.close();
     }
 
-    return NextResponse.json(readCostsResponse(days, collection, collectionError, intervalMs));
+    return NextResponse.json(await readCostsResponse(days, collection, collectionError, intervalMs));
   } catch (error) {
     console.error("Error fetching cost data:", error);
     return NextResponse.json(

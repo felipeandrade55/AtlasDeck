@@ -12,9 +12,9 @@ interface SearchResult {
 }
 
 const typeConfig = {
-  memory: { icon: FileText, color: "#3B82F6", bg: "rgba(59, 130, 246, 0.1)" },
-  activity: { icon: Zap, color: "var(--accent)", bg: "rgba(255, 59, 48, 0.1)" },
-  task: { icon: Calendar, color: "#A855F7", bg: "rgba(168, 85, 247, 0.1)" },
+  memory: { icon: FileText, color: "#3B82F6", bg: "rgba(59, 130, 246, 0.1)", label: "Memória" },
+  activity: { icon: Zap, color: "var(--accent)", bg: "rgba(255, 59, 48, 0.1)", label: "Atividade" },
+  task: { icon: Calendar, color: "#A855F7", bg: "rgba(168, 85, 247, 0.1)", label: "Tarefa" },
 };
 
 interface GlobalSearchProps {
@@ -132,7 +132,7 @@ export function GlobalSearch({ fullPage = false }: GlobalSearchProps) {
                             className="text-xs px-2 py-0.5 rounded"
                             style={{ backgroundColor: config.bg, color: config.color }}
                           >
-                            {result.type}
+                            {config.label}
                           </span>
                         </div>
                         <p 

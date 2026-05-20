@@ -6,7 +6,7 @@ import { GlobalSearch } from "@/components/GlobalSearch";
 import { NotificationDropdown } from "@/components/NotificationDropdown";
 import { useRouter } from "next/navigation";
 
-const OWNER_NAME = process.env.NEXT_PUBLIC_OWNER_NAME ?? "User";
+const OWNER_NAME = process.env.NEXT_PUBLIC_OWNER_NAME ?? "Usuário";
 const OWNER_INITIAL = OWNER_NAME.charAt(0).toUpperCase();
 
 export function TopBar() {

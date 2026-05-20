@@ -1,12 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
-
-const OPENCLAW_DIR = process.env.OPENCLAW_DIR || "/root/.openclaw";
-
-// Files to show in the memory browser
-const ROOT_FILES = ["MEMORY.md", "SOUL.md", "USER.md", "AGENTS.md", "TOOLS.md", "IDENTITY.md"];
-const MEMORY_DIR = "memory";
+import { MEMORY_DIR, ROOT_FILES, sanitizeWorkspaceRelativePath } from "@/lib/memory-files";
+import { resolveWorkspacePath } from "@/lib/workspace-resolver";
+import { indexFile } from "@/lib/memory-fts";
 
 interface FileNode {
   name: string;
@@ -27,19 +24,13 @@ async function fileExists(filePath: string): Promise<boolean> {
 async function getFileTree(workspacePath: string): Promise<FileNode[]> {
   const tree: FileNode[] = [];
 
-  // Add root markdown files
   for (const file of ROOT_FILES) {
     const fullPath = path.join(workspacePath, file);
     if (await fileExists(fullPath)) {
-      tree.push({
-        name: file,
-        path: file,
-        type: "file",
-      });
+      tree.push({ name: file, path: file, type: "file" });
     }
   }
 
-  // Add memory folder if it exists
   const memoryPath = path.join(workspacePath, MEMORY_DIR);
   if (await fileExists(memoryPath)) {
     const memoryStats = await fs.stat(memoryPath);
@@ -71,67 +62,40 @@ async function getFileTree(workspacePath: string): Promise<FileNode[]> {
   return tree;
 }
 
-function sanitizePath(requestedPath: string): string | null {
-  // Prevent directory traversal
-  const normalized = path.normalize(requestedPath);
-  if (normalized.startsWith("..") || path.isAbsolute(normalized)) {
-    return null;
-  }
-
-  // Only allow .md files
-  if (!normalized.endsWith(".md")) {
-    return null;
-  }
-
-  // Only allow root files or files in memory/
-  const isRootFile = ROOT_FILES.includes(normalized);
-  const isMemoryFile = normalized.startsWith(`${MEMORY_DIR}/`);
-
-  if (!isRootFile && !isMemoryFile) {
-    return null;
-  }
-
-  return normalized;
-}
-
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const workspace = searchParams.get("workspace") || "workspace";
   const filePath = searchParams.get("path");
 
   try {
-    // Determine workspace path
-    const workspacePath = path.join(OPENCLAW_DIR, workspace);
-    
-    // Validate workspace exists
+    const workspacePath = resolveWorkspacePath(workspace);
+    if (!workspacePath) {
+      return NextResponse.json({ error: "Unknown workspace" }, { status: 400 });
+    }
+
     if (!(await fileExists(workspacePath))) {
       return NextResponse.json(
         { error: "Workspace not found" },
-        { status: 404 }
+        { status: 404 },
       );
     }
 
     if (!filePath) {
-      // Return file tree
       const tree = await getFileTree(workspacePath);
       return NextResponse.json(tree);
     }
 
-    // Read specific file
-    const safePath = sanitizePath(filePath);
+    const safePath = sanitizeWorkspaceRelativePath(filePath);
     if (!safePath) {
       return NextResponse.json(
         { error: "Invalid file path" },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
     const fullPath = path.join(workspacePath, safePath);
     if (!(await fileExists(fullPath))) {
-      return NextResponse.json(
-        { error: "File not found" },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: "File not found" }, { status: 404 });
     }
 
     const content = await fs.readFile(fullPath, "utf-8");
@@ -140,7 +104,7 @@ export async function GET(request: NextRequest) {
     console.error("Error reading file:", error);
     return NextResponse.json(
       { error: "Failed to read file" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
@@ -153,42 +117,45 @@ export async function PUT(request: NextRequest) {
     if (!filePath || typeof content !== "string") {
       return NextResponse.json(
         { error: "Missing path or content" },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
-    const safePath = sanitizePath(filePath);
+    const safePath = sanitizeWorkspaceRelativePath(filePath);
     if (!safePath) {
       return NextResponse.json(
         { error: "Invalid file path" },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
-    const workspacePath = path.join(OPENCLAW_DIR, workspace);
-    
-    // Validate workspace exists
+    const workspacePath = resolveWorkspacePath(workspace);
+    if (!workspacePath) {
+      return NextResponse.json({ error: "Unknown workspace" }, { status: 400 });
+    }
+
     if (!(await fileExists(workspacePath))) {
       return NextResponse.json(
         { error: "Workspace not found" },
-        { status: 404 }
+        { status: 404 },
       );
     }
 
     const fullPath = path.join(workspacePath, safePath);
 
-    // Create memory directory if needed
     const dir = path.dirname(fullPath);
     await fs.mkdir(dir, { recursive: true });
-
     await fs.writeFile(fullPath, content, "utf-8");
+
+    // Keep FTS index in sync. Errors are swallowed inside indexFile.
+    await indexFile(workspace, safePath, fullPath);
 
     return NextResponse.json({ success: true, path: safePath });
   } catch (error) {
     console.error("Error saving file:", error);
     return NextResponse.json(
       { error: "Failed to save file" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

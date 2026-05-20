@@ -8,6 +8,8 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { logActivity } from '@/lib/activities-db';
 import { resolveWorkspacePath } from '@/lib/workspace-resolver';
+import { sanitizeWorkspaceRelativePath } from '@/lib/memory-files';
+import { indexFile } from '@/lib/memory-fts';
 
 export async function POST(request: NextRequest) {
   try {
@@ -37,6 +39,13 @@ export async function POST(request: NextRequest) {
     logActivity('file_write', `Edited file: ${filePath}`, 'success', {
       metadata: { workspace, filePath, size: stat.size },
     });
+
+    // Keep FTS index in sync for memory-tracked paths.
+    const relForIndex = path.relative(base, fullPath).replace(/\\/g, '/');
+    const safeRel = sanitizeWorkspaceRelativePath(relForIndex);
+    if (safeRel) {
+      await indexFile(workspace || 'workspace', safeRel, fullPath);
+    }
 
     return NextResponse.json({ success: true, path: filePath, size: stat.size });
   } catch (error) {

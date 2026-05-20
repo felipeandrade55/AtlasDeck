@@ -7,6 +7,7 @@ interface StatsCardProps {
   value: string | number;
   icon: ReactNode;
   iconColor?: string;
+  subtitle?: string;
   trend?: {
     value: number;
     isPositive: boolean;
@@ -18,15 +19,17 @@ export function StatsCard({
   value,
   icon,
   iconColor = "var(--info)",
+  subtitle,
   trend,
 }: StatsCardProps) {
   return (
     <div 
-      className="rounded-xl p-4 md:p-6"
+      className="rounded-xl p-4 md:p-5"
       style={{
         backgroundColor: 'var(--card)',
         border: '1px solid var(--border)',
       }}
+      title={subtitle}
     >
       <div className="flex items-center justify-between mb-1.5 md:mb-2">
         <span 
@@ -60,6 +63,15 @@ export function StatsCard({
           </span>
         )}
       </div>
+      
+      {subtitle && (
+        <p 
+          className="text-[10px] md:text-xs mt-1.5 line-clamp-2"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          {subtitle}
+        </p>
+      )}
     </div>
   );
 }

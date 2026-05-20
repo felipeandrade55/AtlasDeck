@@ -3,12 +3,8 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { logActivity } from '@/lib/activities-db';
 import { resolveWorkspacePath } from '@/lib/workspace-resolver';
-
-// Protected paths - never allow deletion
-const PROTECTED = [
-  'MEMORY.md', 'SOUL.md', 'USER.md', 'AGENTS.md', 'TOOLS.md',
-  'package.json', 'tsconfig.json', '.env', '.env.local',
-];
+import { PROTECTED_FILES, sanitizeWorkspaceRelativePath } from '@/lib/memory-files';
+import { removeFile } from '@/lib/memory-fts';
 
 export async function DELETE(request: NextRequest) {
   try {
@@ -30,8 +26,11 @@ export async function DELETE(request: NextRequest) {
     }
 
     const filename = path.basename(fullPath);
-    if (PROTECTED.includes(filename)) {
-      return NextResponse.json({ error: `Cannot delete protected file: ${filename}` }, { status: 403 });
+    if ((PROTECTED_FILES as readonly string[]).includes(filename)) {
+      return NextResponse.json(
+        { error: `Cannot delete protected file: ${filename}` },
+        { status: 403 },
+      );
     }
 
     const stat = await fs.stat(fullPath);
@@ -41,9 +40,19 @@ export async function DELETE(request: NextRequest) {
       await fs.unlink(fullPath);
     }
 
-    logActivity('file_write', `Deleted ${stat.isDirectory() ? 'folder' : 'file'}: ${filePath}`, 'success', {
-      metadata: { workspace, filePath },
-    });
+    logActivity(
+      'file_write',
+      `Deleted ${stat.isDirectory() ? 'folder' : 'file'}: ${filePath}`,
+      'success',
+      { metadata: { workspace, filePath } },
+    );
+
+    // Best-effort FTS cleanup. Only memory-tracked paths matter here.
+    const relForIndex = path.relative(base, fullPath).replace(/\\/g, '/');
+    const safeRel = sanitizeWorkspaceRelativePath(relForIndex);
+    if (safeRel) {
+      removeFile(workspace || 'workspace', safeRel);
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {

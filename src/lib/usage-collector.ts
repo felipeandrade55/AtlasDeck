@@ -18,6 +18,53 @@ const execFileAsync = promisify(execFile);
 const OPENCLAW_TIMEOUT_MS = 15_000;
 const OPENCLAW_MAX_BUFFER = 10 * 1024 * 1024;
 
+/**
+ * Try to resolve the full path to the openclaw binary using `which`.
+ */
+async function resolveOpenClawPath(binName: string): Promise<string | null> {
+  const isWindows = process.platform === "win32";
+  const cmd = isWindows ? "where" : "which";
+  try {
+    const { stdout } = await execFileAsync(cmd, [binName], {
+      timeout: 5_000,
+      windowsHide: true,
+    });
+    const resolved = String(stdout).trim().split("\n")[0];
+    return resolved || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Diagnostic info about the OpenClaw environment.
+ */
+export async function getOpenClawDiagnostics(): Promise<{
+  bin: string;
+  resolvedPath: string | null;
+  binExists: boolean;
+  openclawDir: string;
+  openclawWorkspace: string;
+  pathEnv: string;
+  platform: string;
+}> {
+  const config = readOpenClawConfig();
+  const resolvedPath = await resolveOpenClawPath(config.openclawBin);
+  const binExists = resolvedPath
+    ? fs.existsSync(resolvedPath)
+    : fs.existsSync(config.openclawBin);
+
+  return {
+    bin: config.openclawBin,
+    resolvedPath,
+    binExists,
+    openclawDir: config.openclawDir,
+    openclawWorkspace: config.openclawWorkspace,
+    pathEnv: process.env.PATH || "",
+    platform: process.platform,
+  };
+}
+
 export interface SessionData {
   agentId: string;
   sessionKey: string;
@@ -108,8 +155,11 @@ function isRunDuplicate(key: string): boolean {
 
 async function runOpenClaw(args: string[]): Promise<unknown> {
   const config = readOpenClawConfig();
+  const resolved = await resolveOpenClawPath(config.openclawBin);
+  const binToRun = resolved || config.openclawBin;
+
   try {
-    const { stdout } = await execFileAsync(config.openclawBin, args, {
+    const { stdout } = await execFileAsync(binToRun, args, {
       timeout: OPENCLAW_TIMEOUT_MS,
       windowsHide: true,
       maxBuffer: OPENCLAW_MAX_BUFFER,
@@ -128,12 +178,23 @@ async function runOpenClaw(args: string[]): Promise<unknown> {
       throw new Error(`Invalid JSON from openclaw ${args.join(" ")} (len=${raw.length}): ${raw.slice(0, 300)}`);
     }
   } catch (error) {
-    const err = error as NodeJS.ErrnoException & { stderr?: string };
+    const err = error as NodeJS.ErrnoException & { stderr?: string; code?: string };
     const detail = err.stderr ? String(err.stderr).trim() : "";
-    if (detail && !err.message.includes(detail)) {
-      throw new Error(`${err.message}${detail ? ` — ${detail}` : ""}`);
+
+    // Build a rich diagnostic message
+    let diagnostic = "";
+    if (err.code === "ENOENT") {
+      diagnostic = `Binário '${config.openclawBin}' não encontrado no PATH. `;
+      diagnostic += `Tentado: ${binToRun}. `;
+      diagnostic += `Configure OPENCLAW_BIN no .env ou instale o OpenClaw no PATH do servidor. `;
+    } else {
+      diagnostic = `Falha ao executar '${config.openclawBin} ${args.join(" ")}'. `;
     }
-    throw error;
+    diagnostic += `Plataforma: ${process.platform}. `;
+    diagnostic += `Diretório configurado: ${config.openclawDir}. `;
+
+    const fullMessage = `${diagnostic}${err.message}${detail ? ` — ${detail}` : ""}`;
+    throw new Error(fullMessage);
   }
 }
 

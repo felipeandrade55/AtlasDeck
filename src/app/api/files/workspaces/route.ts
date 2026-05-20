@@ -1,8 +1,7 @@
 import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
-
-const OPENCLAW_DIR = process.env.OPENCLAW_DIR || '/root/.openclaw';
+import { getOpenClawDir } from '@/lib/openclaw-config';
 
 interface Workspace {
   id: string;
@@ -43,10 +42,11 @@ function getAgentInfo(workspacePath: string): { name: string; emoji: string } | 
 
 export async function GET() {
   try {
+    const openclawDir = getOpenClawDir();
     const workspaces: Workspace[] = [];
-    
+
     // Main workspace
-    const mainWorkspace = path.join(OPENCLAW_DIR, 'workspace');
+    const mainWorkspace = path.join(openclawDir, 'workspace');
     if (fs.existsSync(mainWorkspace)) {
       const mainInfo = getAgentInfo(mainWorkspace);
       workspaces.push({
@@ -57,13 +57,13 @@ export async function GET() {
         agentName: mainInfo?.name || 'AtlasDeck',
       });
     }
-    
+
     // Agent workspaces
-    const entries = fs.readdirSync(OPENCLAW_DIR, { withFileTypes: true });
+    const entries = fs.readdirSync(openclawDir, { withFileTypes: true });
     
     for (const entry of entries) {
       if (entry.isDirectory() && entry.name.startsWith('workspace-')) {
-        const workspacePath = path.join(OPENCLAW_DIR, entry.name);
+        const workspacePath = path.join(openclawDir, entry.name);
         const agentInfo = getAgentInfo(workspacePath);
         
         const agentId = entry.name.replace('workspace-', '');

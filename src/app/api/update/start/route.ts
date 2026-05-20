@@ -1,261 +1,137 @@
-import { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 import { spawn } from "child_process";
+import fs from "fs";
 import path from "path";
-import { runBackup } from "@/lib/backup";
+import { randomUUID } from "crypto";
 import {
-  UpdatePhase,
   UpdateHistoryEntry,
-  isUpdateRunning,
+  UpdateLiveStatus,
   addUpdateHistoryEntry,
-  updateHistoryEntry,
-  readUpdateConfig,
+  buildInitialPhases,
+  checkForUpdates,
+  clearLiveStatus,
+  getActiveUpdate,
   getLocalVersion,
-  checkForUpdates
+  liveLogPath,
+  liveStatusPath,
+  phaseEventsPath,
+  readUpdateConfig,
+  writeLiveStatus,
 } from "@/lib/update";
 
-export async function POST(request: NextRequest) {
-  if (isUpdateRunning()) {
-    return new Response(JSON.stringify({ error: "Update is already running" }), {
-      status: 409,
-      headers: { "Content-Type": "application/json" }
-    });
+export const dynamic = "force-dynamic";
+export const maxDuration = 10;
+
+/**
+ * Inicia um update em modo *detached*: o script roda independente do servidor Next.js,
+ * então sobrevive ao restart do PM2 disparado pelo próprio script. O endpoint retorna
+ * imediatamente com sessionId; o cliente abre /api/update/stream para acompanhar.
+ */
+export async function POST() {
+  const active = getActiveUpdate();
+  if (active?.status === "running") {
+    return NextResponse.json(
+      { error: "Já existe um update em andamento", sessionId: active.sessionId },
+      { status: 409 }
+    );
   }
 
+  // Limpa estados anteriores
+  clearLiveStatus();
+  try { fs.unlinkSync(liveLogPath()); } catch {}
+  try { fs.unlinkSync(phaseEventsPath()); } catch {}
+
   const config = readUpdateConfig();
-  
-  // Create history entry
-  const entryId = new Date().toISOString();
-  
+  const sessionId = randomUUID();
+  const historyId = new Date().toISOString();
+  const startedAt = historyId;
+
   let fromSha = "unknown";
   try {
-      const local = await getLocalVersion();
-      fromSha = local.short;
-  } catch(e) {}
-  
+    const local = await getLocalVersion();
+    fromSha = local.short;
+  } catch {}
+
   let toSha = "unknown";
   try {
-      const chk = await checkForUpdates(true);
-      toSha = chk.remoteSha.slice(0, 7);
-  } catch(e) {}
+    const chk = await checkForUpdates(true);
+    toSha = chk.remoteSha.slice(0, 7);
+  } catch {}
 
-  const initialPhases: UpdatePhase[] = [
-    { name: "backup", status: config.backupBeforeUpdate ? "pending" : "skip" },
-    { name: "git-pull", status: "pending" },
-    { name: "npm-install", status: "pending" },
-    { name: "build", status: "pending" },
-    { name: "pm2-restart", status: "pending" },
-    { name: "health-check", status: "pending" }
-  ];
+  const initialPhases = buildInitialPhases(config.backupBeforeUpdate);
 
-  const entry: UpdateHistoryEntry = {
-    id: entryId,
+  const historyEntry: UpdateHistoryEntry = {
+    id: historyId,
     fromSha,
     toSha,
     status: "running",
-    startedAt: entryId,
+    startedAt,
     phases: initialPhases,
-    logs: ""
+    logs: "",
   };
-  
-  addUpdateHistoryEntry(entry);
+  addUpdateHistoryEntry(historyEntry);
 
-  return new Response(
-    new ReadableStream({
-      async start(controller) {
-        const encoder = new TextEncoder();
-        let logsBuffer = "";
+  const dataDir = path.join(process.cwd(), "data");
+  fs.mkdirSync(dataDir, { recursive: true });
 
-        const pingInterval = setInterval(() => {
-          try {
-            controller.enqueue(encoder.encode(":\n\n"));
-          } catch (e) {}
-        }, 15000);
+  // Cria os arquivos vazios para o stream conseguir abrir imediatamente
+  fs.writeFileSync(liveLogPath(), "");
+  fs.writeFileSync(phaseEventsPath(), "");
 
-        const safeClose = () => {
-          clearInterval(pingInterval);
-          try {
-            controller.close();
-          } catch (e) {}
-        };
-        
-        const send = (event: string, data: any) => {
-          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
-        };
+  // Abre file descriptors para stdout/stderr do filho
+  const logFd = fs.openSync(liveLogPath(), "a");
 
-        const updatePhase = (name: string, status: UpdatePhase['status'], durationSec?: number) => {
-            const index = initialPhases.findIndex(p => p.name === name);
-            if (index !== -1) {
-                initialPhases[index].status = status;
-                if (durationSec !== undefined) initialPhases[index].durationSec = durationSec;
-                if (status === 'running') initialPhases[index].startedAt = new Date().toISOString();
-                if (status === 'ok' || status === 'fail') initialPhases[index].completedAt = new Date().toISOString();
-                
-                send("phase", initialPhases[index]);
-            }
-        };
+  const scriptPath = path.join(process.cwd(), "scripts", "deploy.sh");
+  const args = ["--headless"];
+  if (config.backupBeforeUpdate) args.push("--with-backup");
+  args.push("--status-file", phaseEventsPath());
 
-        const appendLog = (line: string) => {
-            const timestamp = new Date().toISOString();
-            logsBuffer += `[${timestamp}] ${line}\n`;
-            send("log", { line, timestamp });
-        };
+  // Detached: cria novo grupo de processos, desliga do parent.
+  // Sobrevive ao PM2 restart que o próprio script vai disparar.
+  const child = spawn("bash", [scriptPath, ...args], {
+    cwd: process.cwd(),
+    env: { ...process.env, ATLASDECK_UPDATE_SESSION: sessionId },
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
+  });
 
-        try {
-          // Phase 1: Backup
-          if (config.backupBeforeUpdate) {
-            updatePhase("backup", "running");
-            appendLog("Starting backup before update...");
-            
-            const backupResult = await runBackup();
-            
-            if (backupResult.success) {
-              updatePhase("backup", "ok", backupResult.entry.durationMs ? Math.round(backupResult.entry.durationMs / 1000) : 0);
-              appendLog(`Backup completed: ${backupResult.archivePath}`);
-              updateHistoryEntry(entryId, { backupPath: backupResult.archivePath });
-            } else {
-              updatePhase("backup", "fail");
-              appendLog(`Backup failed. Update aborted.`);
-              throw new Error("Backup failed");
-            }
-          }
+  if (!child.pid) {
+    fs.closeSync(logFd);
+    return NextResponse.json(
+      { error: "Falha ao iniciar processo de update (sem PID)" },
+      { status: 500 }
+    );
+  }
 
-          // Phase 2-6: Deploy script
-          appendLog("Starting deploy.sh --headless...");
-          
-          const deployScriptPath = path.join(process.cwd(), "scripts", "deploy.sh");
-          
-          const child = spawn("bash", [deployScriptPath, "--headless"], {
-            cwd: process.cwd(),
-            env: { ...process.env }
-          });
+  // Fecha o FD no parent — o filho mantém sua cópia aberta
+  fs.closeSync(logFd);
 
-          let currentPhaseName = "";
-          let currentPhaseStart = 0;
+  // unref para que o servidor Next.js possa morrer sem matar o filho
+  child.unref();
 
-          const mapDeployPhase = (text: string) => {
-            const lower = text.toLowerCase();
-            if (lower.includes("atualizando código") || lower.includes("clone ou pull")) return "git-pull";
-            if (lower.includes("dependências")) return "npm-install";
-            if (lower.includes("build")) return "build";
-            if (lower.includes("gerenciando processo") || lower.includes("pm2")) return "pm2-restart";
-            if (lower.includes("health check")) return "health-check";
-            return "";
-          };
+  const liveStatus: UpdateLiveStatus = {
+    sessionId,
+    historyId,
+    pid: child.pid,
+    status: "running",
+    startedAt,
+    lastHeartbeat: new Date().toISOString(),
+    currentPhase: config.backupBeforeUpdate ? "backup" : "credentials",
+    phases: initialPhases,
+    fromSha,
+    toSha,
+    logFile: liveLogPath(),
+    statusFile: phaseEventsPath(),
+  };
 
-          const handleOutput = (data: Buffer) => {
-            const lines = data.toString().split('\n');
-            for (const line of lines) {
-                if (!line) continue;
-                
-                // Clean ANSI codes
-                const cleanLine = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
-                if (!cleanLine) continue;
+  writeLiveStatus(liveStatus);
 
-                appendLog(cleanLine);
-
-                // Detect phase transitions based on deploy.sh output (▶)
-                if (cleanLine.startsWith("▶")) {
-                    const nextPhase = mapDeployPhase(cleanLine);
-                    
-                    // Mark previous as ok if transitioning successfully
-                    if (currentPhaseName) {
-                        const durationSec = Math.round((Date.now() - currentPhaseStart) / 1000);
-                        updatePhase(currentPhaseName, "ok", durationSec);
-                    }
-                    
-                    if (nextPhase) {
-                        currentPhaseName = nextPhase;
-                        currentPhaseStart = Date.now();
-                        updatePhase(currentPhaseName, "running");
-                    }
-                }
-                
-                // Detect explicit failures
-                if (cleanLine.startsWith("✗")) {
-                    if (currentPhaseName) {
-                        updatePhase(currentPhaseName, "fail");
-                    }
-                    send("error", { message: cleanLine, phase: currentPhaseName });
-                }
-            }
-          };
-
-          child.stdout.on("data", handleOutput);
-          child.stderr.on("data", handleOutput);
-
-          child.on("close", (code) => {
-            const durationMs = Date.now() - new Date(entry.startedAt).getTime();
-            
-            if (code === 0) {
-                // Mark last phase as ok
-                if (currentPhaseName) {
-                    const durationSec = Math.round((Date.now() - currentPhaseStart) / 1000);
-                    updatePhase(currentPhaseName, "ok", durationSec);
-                }
-                
-                // Any pending phases not reached are likely skipped (e.g. npm install if no changes)
-                initialPhases.forEach(p => {
-                    if (p.status === 'pending' || p.status === 'running') {
-                        updatePhase(p.name, p.status === 'running' ? 'ok' : 'skip');
-                    }
-                });
-
-                updateHistoryEntry(entryId, {
-                    status: "success",
-                    completedAt: new Date().toISOString(),
-                    durationMs,
-                    phases: initialPhases,
-                    logs: logsBuffer
-                });
-                
-                send("complete", { success: true, durationMs, phases: initialPhases });
-            } else {
-                updateHistoryEntry(entryId, {
-                    status: "error",
-                    completedAt: new Date().toISOString(),
-                    durationMs,
-                    phases: initialPhases,
-                    logs: logsBuffer,
-                    error: `Exit code ${code}`
-                });
-                
-                send("complete", { success: false, durationMs, phases: initialPhases, error: `Exit code ${code}` });
-            }
-            safeClose();
-          });
-
-          child.on("error", (err) => {
-              appendLog(`Failed to start child process: ${err.message}`);
-              updateHistoryEntry(entryId, {
-                  status: "error",
-                  completedAt: new Date().toISOString(),
-                  error: err.message,
-                  logs: logsBuffer
-              });
-              send("complete", { success: false, phases: initialPhases, error: err.message });
-              safeClose();
-          });
-
-        } catch (error) {
-            const msg = error instanceof Error ? error.message : "Unknown error";
-            appendLog(`Fatal error: ${msg}`);
-            updateHistoryEntry(entryId, {
-                status: "error",
-                completedAt: new Date().toISOString(),
-                error: msg,
-                logs: logsBuffer
-            });
-            send("complete", { success: false, phases: initialPhases, error: msg });
-            safeClose();
-        }
-      }
-    }),
-    {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-      }
-    }
-  );
+  return NextResponse.json({
+    sessionId,
+    historyId,
+    pid: child.pid,
+    fromSha,
+    toSha,
+    phases: initialPhases,
+  });
 }

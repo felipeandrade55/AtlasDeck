@@ -1,22 +1,34 @@
 #!/bin/bash
 # deploy.sh — Roda no VPS: baixa atualizações do GitHub, build, restart e health check
 #
-# Uso: ./scripts/deploy.sh [--bidirecional] [--headless]
+# Uso: ./scripts/deploy.sh [--bidirecional] [--headless] [--with-backup] [--status-file PATH]
 #
 # Sem flags:        pull destrutivo (GitHub → VPS). Mudanças locais no VPS são descartadas.
 # --bidirecional:   antes do pull, commita e dá push em qualquer alteração feita no VPS,
 #                   sincronizando VPS → GitHub. Requer PAT com escopo 'repo' (write).
+# --headless:       modo não-interativo para CI/automação (sem cores, sem prompts).
+# --with-backup:    executa uma fase de backup (tar do data/ + .env + workspace OpenClaw)
+#                   antes do pull. Usado pelo update via interface.
+# --status-file P:  escreve atualizações JSON de fase em P (consumido pela UI).
 
 set -eo pipefail
 
-# Quick pre-scan for --headless flag (needed before auto-preservation block)
+# Quick pre-scan for flags
 _HEADLESS_PRESCAN=false
-for _arg in "$@"; do [[ "$_arg" == "--headless" ]] && _HEADLESS_PRESCAN=true; done
+_STATUS_FILE=""
+_PREV_ARG=""
+for _arg in "$@"; do
+  [[ "$_arg" == "--headless" ]] && _HEADLESS_PRESCAN=true
+  if [[ "$_PREV_ARG" == "--status-file" ]]; then
+    _STATUS_FILE="$_arg"
+  fi
+  _PREV_ARG="$_arg"
+done
 
 # ─── AUTO-PRESERVAÇÃO ─────────────────────────────────────────────────────────
-# Copia o script para /tmp e re-executa de lá. Assim, o git reset --hard
-# pode sobrescrever scripts/deploy.sh no repositório sem interromper a execução.
-if [[ "${_DEPLOY_SAFE:-}" != "1" ]] && ! $_HEADLESS_PRESCAN; then
+# Copia o script para /tmp e re-executa de lá. Sempre, inclusive em headless:
+# o git reset --hard pode sobrescrever scripts/deploy.sh enquanto roda.
+if [[ "${_DEPLOY_SAFE:-}" != "1" ]]; then
   _TMP=$(mktemp /tmp/deploy.XXXXXX.sh)
   cp "$0" "$_TMP"
   chmod +x "$_TMP"
@@ -38,36 +50,48 @@ GH_GIT_EMAIL="felipeandrade55@gmail.com"
 # ─── PARSE DE ARGUMENTOS ──────────────────────────────────────────────────────
 BIDIRECTIONAL=false
 HEADLESS=false
-for arg in "$@"; do
-  case "$arg" in
+WITH_BACKUP=false
+STATUS_FILE=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
     --bidirecional|--bidirectional)
       BIDIRECTIONAL=true
+      shift
       ;;
     --headless)
       HEADLESS=true
+      shift
       ;;
-    --headless)
-      HEADLESS=true
+    --with-backup)
+      WITH_BACKUP=true
+      shift
+      ;;
+    --status-file)
+      STATUS_FILE="$2"
+      shift 2
       ;;
     -h|--help)
       cat <<EOF
 Uso: $0 [opções]
 
 Opções:
-  --bidirecional   Antes de puxar do GitHub, commita e dá push em qualquer
-                   alteração local detectada no VPS (sincronização VPS → GitHub).
-                   Requer PAT com escopo 'repo' (write).
-  --headless       Modo não-interativo para CI/automação. Pula prompts
-                   interativos (credenciais, Fail2Ban, UFW) e desabilita
-                   cores na saída. Credenciais devem estar pré-configuradas.
-  -h, --help       Exibe esta ajuda.
+  --bidirecional       Antes de puxar do GitHub, commita e dá push em qualquer
+                       alteração local detectada no VPS (sincronização VPS → GitHub).
+                       Requer PAT com escopo 'repo' (write).
+  --headless           Modo não-interativo para CI/automação. Pula prompts
+                       interativos (credenciais, Fail2Ban, UFW) e desabilita
+                       cores na saída. Credenciais devem estar pré-configuradas.
+  --with-backup        Executa backup (tar) do data/ e workspace antes do pull.
+  --status-file PATH   Escreve atualizações JSON de fase no arquivo PATH.
+  -h, --help           Exibe esta ajuda.
 
 Sem flags, opera em modo padrão (apenas pull destrutivo: GitHub → VPS).
 EOF
       exit 0
       ;;
     *)
-      echo "Argumento desconhecido: $arg (use --help)" >&2
+      echo "Argumento desconhecido: $1 (use --help)" >&2
       exit 1
       ;;
   esac
@@ -93,6 +117,39 @@ info()    { echo -e "  ${DIM}$1${NC}"; }
 now()     { date +%s; }
 elapsed() { echo $(( $(date +%s) - $1 )); }
 record()  { REPORT+=("$1|$2|$3"); }
+
+# ─── STATUS FILE WRITER ───────────────────────────────────────────────────────
+# Escreve uma linha JSON com a fase atual e seu status no arquivo de status.
+# Formato: { "phase": "backup", "status": "running", "ts": "...", "durationSec": 0 }
+phase_status() {
+  local phase="$1"
+  local status="$2"
+  local duration="${3:-0}"
+  local error_msg="${4:-}"
+
+  [[ -z "$STATUS_FILE" ]] && return 0
+
+  local ts
+  ts=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
+
+  local err_json=""
+  if [[ -n "$error_msg" ]]; then
+    err_json=",\"error\":$(printf '%s' "$error_msg" | python3 -c 'import sys,json;print(json.dumps(sys.stdin.read()))' 2>/dev/null || echo "\"$error_msg\"")"
+  fi
+
+  # Append-only newline-delimited JSON for atomic writes
+  printf '{"phase":"%s","status":"%s","ts":"%s","durationSec":%d%s}\n' \
+    "$phase" "$status" "$ts" "$duration" "$err_json" >> "$STATUS_FILE"
+}
+
+# Heartbeat: registra que o processo está vivo
+heartbeat() {
+  [[ -z "$STATUS_FILE" ]] && return 0
+  local ts
+  ts=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
+  printf '{"heartbeat":"%s"}\n' "$ts" >> "$STATUS_FILE"
+}
+# ─────────────────────────────────────────────────────────────────────────────
 
 print_report() {
   local total=$(elapsed $TOTAL_START)
@@ -136,11 +193,109 @@ fi
 
 APP_URL="http://localhost:${APP_PORT}"
 
+# Cleanup status file
+if [[ -n "$STATUS_FILE" ]]; then
+  mkdir -p "$(dirname "$STATUS_FILE")"
+  : > "$STATUS_FILE"
+  phase_status "start" "running"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FASE 0 — BACKUP (opcional)
+# ══════════════════════════════════════════════════════════════════════════════
+if $WITH_BACKUP; then
+  step "Backup pré-update..."
+  T=$(now)
+  phase_status "backup" "running"
+
+  # Determina o diretório do projeto. Quando chamado pela UI o cwd já é o VPS_DIR;
+  # se for outro caso, tenta VPS_DIR como fallback.
+  PROJ_DIR="$(pwd)"
+  if [ ! -f "$PROJ_DIR/package.json" ] && [ -d "$VPS_DIR" ]; then
+    PROJ_DIR="$VPS_DIR"
+  fi
+
+  BACKUP_DIR="$PROJ_DIR/data/backups"
+  mkdir -p "$BACKUP_DIR"
+
+  BACKUP_TS=$(date +%Y-%m-%d_%H-%M-%S)
+  BACKUP_FILE="$BACKUP_DIR/openclaw-backup_${BACKUP_TS}.tar.gz"
+
+  # Constrói lista de paths para o tar
+  BACKUP_LIST=$(mktemp)
+  [ -d "$PROJ_DIR/data" ] && echo "$PROJ_DIR/data" >> "$BACKUP_LIST"
+  [ -f "$PROJ_DIR/.env" ] && echo "$PROJ_DIR/.env" >> "$BACKUP_LIST"
+
+  # Diretório OpenClaw
+  OPENCLAW_BASE="${OPENCLAW_DIR:-$HOME/.openclaw}"
+  if [ -d "$OPENCLAW_BASE" ]; then
+    [ -f "$OPENCLAW_BASE/openclaw.json" ] && echo "$OPENCLAW_BASE/openclaw.json" >> "$BACKUP_LIST"
+    [ -d "$OPENCLAW_BASE/agents" ] && echo "$OPENCLAW_BASE/agents" >> "$BACKUP_LIST"
+    [ -d "$OPENCLAW_BASE/skills" ] && echo "$OPENCLAW_BASE/skills" >> "$BACKUP_LIST"
+    [ -d "$OPENCLAW_BASE/media" ] && echo "$OPENCLAW_BASE/media" >> "$BACKUP_LIST"
+  fi
+
+  PATH_COUNT=$(wc -l < "$BACKUP_LIST" | tr -d ' ')
+  info "Compactando $PATH_COUNT path(s) → $(basename "$BACKUP_FILE")"
+
+  # Roda tar em background para emitir heartbeats periódicos
+  (
+    tar --exclude="node_modules" \
+        --exclude=".next" \
+        --exclude="data/backups" \
+        --exclude=".git" \
+        --exclude="*.tar.gz" \
+        --exclude="*.log" \
+        -czf "$BACKUP_FILE" \
+        -T "$BACKUP_LIST" 2>&1
+  ) &
+  TAR_PID=$!
+
+  # Emite progresso enquanto tar roda
+  PROGRESS_COUNTER=0
+  while kill -0 $TAR_PID 2>/dev/null; do
+    sleep 3
+    PROGRESS_COUNTER=$((PROGRESS_COUNTER + 3))
+    if [ -f "$BACKUP_FILE" ]; then
+      SIZE=$(du -h "$BACKUP_FILE" 2>/dev/null | cut -f1)
+      info "Backup em andamento... ${PROGRESS_COUNTER}s (atual: $SIZE)"
+    else
+      info "Backup em andamento... ${PROGRESS_COUNTER}s"
+    fi
+    heartbeat
+  done
+
+  wait $TAR_PID
+  TAR_EXIT=$?
+  rm -f "$BACKUP_LIST"
+
+  if [ $TAR_EXIT -eq 0 ] && [ -f "$BACKUP_FILE" ]; then
+    chmod 600 "$BACKUP_FILE" 2>/dev/null || true
+    SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
+    ok "Backup concluído: $(basename "$BACKUP_FILE") ($SIZE)"
+    record "Backup pré-update" "ok" "$(elapsed $T)"
+    phase_status "backup" "ok" "$(elapsed $T)"
+
+    # Aplica retenção: mantém últimos 5 backups
+    cd "$BACKUP_DIR"
+    ls -1t openclaw-backup_*.tar.gz 2>/dev/null | tail -n +6 | while IFS= read -r old; do
+      rm -f "$old"
+      info "Retenção: removido $old"
+    done
+  else
+    err "Backup falhou (exit $TAR_EXIT)"
+    record "Backup pré-update" "fail" "$(elapsed $T)"
+    phase_status "backup" "fail" "$(elapsed $T)" "tar exit $TAR_EXIT"
+    exit 1
+  fi
+fi
+
 # ══════════════════════════════════════════════════════════════════════════════
 # FASE 1 — CREDENCIAIS DO GITHUB
 # ══════════════════════════════════════════════════════════════════════════════
 step "Verificando credenciais do GitHub..."
 T=$(now)
+phase_status "credentials" "running"
 
 # Identidade git sempre configurada com os valores fixos do projeto
 git config --global credential.helper store
@@ -152,11 +307,13 @@ HAS_CREDS=$([ -f ~/.git-credentials ] && grep -q 'github.com' ~/.git-credentials
 if [[ "$HAS_CREDS" == "yes" ]]; then
   ok "Credenciais já configuradas ($GH_GIT_EMAIL)"
   record "Credenciais GitHub" "ok" "$(elapsed $T)"
+  phase_status "credentials" "ok" "$(elapsed $T)"
 else
   if $HEADLESS; then
     warn "Credenciais não encontradas — modo headless, pulando prompt interativo."
     warn "Configure ~/.git-credentials manualmente antes de executar em modo headless."
     record "Credenciais GitHub" "skip" "$(elapsed $T)"
+    phase_status "credentials" "skip" "$(elapsed $T)"
   else
     warn "Credenciais não encontradas — informe login e PAT"
     echo ""
@@ -172,6 +329,7 @@ else
 
     ok "Credenciais salvas (~/.git-credentials)"
     record "Credenciais GitHub" "ok" "$(elapsed $T)"
+    phase_status "credentials" "ok" "$(elapsed $T)"
   fi
 fi
 
@@ -180,6 +338,7 @@ fi
 # ══════════════════════════════════════════════════════════════════════════════
 step "Atualizando código..."
 T=$(now)
+phase_status "git-pull" "running"
 
 if [ -d "$VPS_DIR/.git" ]; then
   cd "$VPS_DIR"
@@ -200,6 +359,7 @@ if [ -d "$VPS_DIR/.git" ]; then
           err "Conflito durante rebase — abortando para preservar o estado"
           git rebase --abort 2>/dev/null || true
           record "Sync bidirecional" "fail" "$(elapsed $T)"
+          phase_status "git-pull" "fail" "$(elapsed $T)" "rebase conflict"
           exit 1
         fi
         git push origin "$BRANCH"
@@ -259,12 +419,14 @@ else
 fi
 
 record "Git clone/pull" "ok" "$(elapsed $T)"
+phase_status "git-pull" "ok" "$(elapsed $T)"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FASE 3 — DEPENDÊNCIAS
 # ══════════════════════════════════════════════════════════════════════════════
 step "Verificando dependências..."
 T=$(now)
+phase_status "npm-install" "running"
 
 cd "$VPS_DIR"
 
@@ -286,9 +448,32 @@ if $NEEDS_INSTALL; then
     ok "npm install concluído"
   fi
   record "npm install" "ok" "$(elapsed $T)"
+  phase_status "npm-install" "ok" "$(elapsed $T)"
 else
   ok "Sem novas dependências"
   record "npm install" "skip" "$(elapsed $T)"
+  phase_status "npm-install" "skip" "$(elapsed $T)"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FASE 3.5 — SETUP DA MEMÓRIA (Xenova model + SQLite indexes)
+# ══════════════════════════════════════════════════════════════════════════════
+step "Setup do subsistema de memória..."
+T=$(now)
+phase_status "setup-memory" "running"
+
+cd "$VPS_DIR"
+
+# Idempotente: cria DBs vazios (se não existirem) e pré-aquece o modelo de
+# embeddings (~30MB Xenova/all-MiniLM-L6-v2). Erros não interrompem o deploy.
+if npm run setup:memory --silent 2>&1 | tee -a /tmp/setup-memory.log | tail -20; then
+  ok "Setup da memória concluído"
+  record "Setup memória" "ok" "$(elapsed $T)"
+  phase_status "setup-memory" "ok" "$(elapsed $T)"
+else
+  warn "Setup da memória teve avisos (não bloqueia o deploy)"
+  record "Setup memória" "skip" "$(elapsed $T)"
+  phase_status "setup-memory" "skip" "$(elapsed $T)"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -296,6 +481,7 @@ fi
 # ══════════════════════════════════════════════════════════════════════════════
 step "Build..."
 T=$(now)
+phase_status "build" "running"
 
 cd "$VPS_DIR"
 
@@ -305,15 +491,38 @@ if [ -d ".next" ]; then
   info "Cache .next removido"
 fi
 
-npm run build
+# Build em background para emitir heartbeats periódicos
+(npm run build 2>&1) &
+BUILD_PID=$!
+
+PROGRESS_COUNTER=0
+while kill -0 $BUILD_PID 2>/dev/null; do
+  sleep 5
+  PROGRESS_COUNTER=$((PROGRESS_COUNTER + 5))
+  info "Build em andamento... ${PROGRESS_COUNTER}s"
+  heartbeat
+done
+
+wait $BUILD_PID
+BUILD_EXIT=$?
+
+if [ $BUILD_EXIT -ne 0 ]; then
+  err "Build falhou (exit $BUILD_EXIT)"
+  record "Build" "fail" "$(elapsed $T)"
+  phase_status "build" "fail" "$(elapsed $T)" "build exit $BUILD_EXIT"
+  exit 1
+fi
+
 ok "Build concluído"
 record "Build" "ok" "$(elapsed $T)"
+phase_status "build" "ok" "$(elapsed $T)"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FASE 5 — PM2
 # ══════════════════════════════════════════════════════════════════════════════
 step "Gerenciando processo ($APP_NAME)..."
 T=$(now)
+phase_status "pm2-restart" "running"
 
 if ! command -v pm2 &>/dev/null; then
   warn "PM2 não encontrado — instalando..."
@@ -363,12 +572,14 @@ else
 fi
 
 record "PM2 restart" "ok" "$(elapsed $T)"
+phase_status "pm2-restart" "ok" "$(elapsed $T)"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FASE 6 — HEALTH CHECK: DASHBOARD
 # ══════════════════════════════════════════════════════════════════════════════
 step "Health check — aguardando dashboard ($APP_URL)..."
 T=$(now)
+phase_status "health-check" "running"
 DASH_OK=false
 LAST_CODE="000"
 
@@ -386,6 +597,10 @@ for i in $(seq 1 $HEALTH_TIMEOUT); do
 
   printf "\r  ${DIM}Aguardando... [%2ds / %ds]  HTTP: %s${NC}   " \
     "$i" "$HEALTH_TIMEOUT" "$LAST_CODE"
+  # Heartbeat every 5 seconds during health check
+  if (( i % 5 == 0 )); then
+    heartbeat
+  fi
   sleep 1
 done
 
@@ -395,6 +610,9 @@ if ! $DASH_OK; then
   err "Dashboard não respondeu após ${HEALTH_TIMEOUT}s (último HTTP: $LAST_CODE)"
   warn "Veja os logs: pm2 logs $APP_NAME --lines 80"
   record "Dashboard" "fail" "$(elapsed $T)"
+  phase_status "health-check" "fail" "$(elapsed $T)" "dashboard timeout (HTTP $LAST_CODE)"
+else
+  phase_status "health-check" "ok" "$(elapsed $T)"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -495,7 +713,7 @@ if ! command -v fail2ban-client &>/dev/null; then
     if [[ "$INSTALL_F2B" =~ ^[Yy]$ ]]; then
       info "Instalando fail2ban..."
       sudo apt-get update -qq && sudo apt-get install -y fail2ban
-      
+
       if [ ! -f /etc/fail2ban/jail.local ]; then
         cat <<EOF | sudo tee /etc/fail2ban/jail.local > /dev/null
 [DEFAULT]
@@ -568,6 +786,10 @@ echo ""
 if print_report; then
   echo -e "\n  ${GREEN}${BOLD}🚀 Update concluído com sucesso!${NC}"
   echo -e "  ${DIM}Dashboard: ${APP_URL}${NC}\n"
+  phase_status "done" "ok" "$(elapsed $TOTAL_START)"
+  exit 0
 else
   echo -e "\n  ${YELLOW}${BOLD}⚠ Update com problemas — veja o relatório acima.${NC}\n"
+  phase_status "done" "fail" "$(elapsed $TOTAL_START)"
+  exit 1
 fi

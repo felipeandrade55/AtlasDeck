@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { format } from "date-fns";
+import { ptBR } from "date-fns/locale";
 import { Wind, Droplets, Thermometer } from "lucide-react";
 
 interface Forecast {
@@ -41,11 +42,41 @@ export function WeatherWidget() {
         .catch(() => setLoading(false));
     };
 
+    // Try to use saved coordinates first
+    const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('atlasdeck-weather-coords') : null;
+    if (saved) {
+      try {
+        const { lat, lon } = JSON.parse(saved);
+        setGeoStatus('ok');
+        fetchWeather(lat, lon);
+        // Still try to get fresh position in background
+        if (typeof navigator !== 'undefined' && navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              const newLat = pos.coords.latitude;
+              const newLon = pos.coords.longitude;
+              localStorage.setItem('atlasdeck-weather-coords', JSON.stringify({ lat: newLat, lon: newLon }));
+              fetchWeather(newLat, newLon);
+            },
+            () => {},
+            { timeout: 5000, enableHighAccuracy: false }
+          );
+        }
+        const timer = setInterval(() => setNow(new Date()), 1000);
+        return () => clearInterval(timer);
+      } catch {
+        // fallback to normal flow
+      }
+    }
+
     if (typeof navigator !== 'undefined' && navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
           setGeoStatus('ok');
-          fetchWeather(pos.coords.latitude, pos.coords.longitude);
+          const lat = pos.coords.latitude;
+          const lon = pos.coords.longitude;
+          localStorage.setItem('atlasdeck-weather-coords', JSON.stringify({ lat, lon }));
+          fetchWeather(lat, lon);
         },
         (err) => {
           setGeoStatus(err.code === 1 ? 'denied' : 'unavailable');
@@ -73,7 +104,7 @@ export function WeatherWidget() {
         minHeight: "120px",
         display: "flex", alignItems: "center", justifyContent: "center",
       }}>
-        <span style={{ color: "var(--text-muted)", fontSize: "0.875rem" }}>Loading weather...</span>
+        <span style={{ color: "var(--text-muted)", fontSize: "0.875rem" }}>Carregando clima...</span>
       </div>
     );
   }
@@ -106,7 +137,7 @@ export function WeatherWidget() {
             {format(now, "HH:mm")}
           </div>
           <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "0.125rem" }}>
-            {format(now, "EEEE, d MMM")}
+            {format(now, "EEEE, d 'de' MMMM", { locale: ptBR })}
           </div>
         </div>
 
@@ -126,7 +157,7 @@ export function WeatherWidget() {
       <div style={{ display: "flex", gap: "1rem", marginBottom: "0.875rem", paddingTop: "0.75rem", borderTop: "1px solid var(--border)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.375rem", fontSize: "0.8rem", color: "var(--text-secondary)" }}>
           <Thermometer className="w-3.5 h-3.5" style={{ color: "var(--accent)" }} />
-          Feels {weather.feels_like}°C
+          Sensação {weather.feels_like}°C
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "0.375rem", fontSize: "0.8rem", color: "var(--text-secondary)" }}>
           <Droplets className="w-3.5 h-3.5" style={{ color: "#60a5fa" }} />
@@ -141,7 +172,7 @@ export function WeatherWidget() {
       {/* 3-day forecast */}
       <div style={{ display: "flex", gap: "0.5rem" }}>
         {weather.forecast.map((day, i) => {
-          const dayName = i === 0 ? "Today" : i === 1 ? "Tmrw" : format(new Date(day.day), "EEE");
+          const dayName = i === 0 ? "Hoje" : i === 1 ? "Amanhã" : format(new Date(day.day), "EEE", { locale: ptBR });
           return (
             <div
               key={day.day}

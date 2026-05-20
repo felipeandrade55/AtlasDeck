@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import { format, addDays, startOfDay, isSameDay } from "date-fns";
+import { ptBR } from "date-fns/locale";
 import { Clock, Repeat, CalendarX } from "lucide-react";
 import { getNextRuns, isValidCron } from "@/lib/cron-parser";
 import type { CronJob } from "./CronJobCard";
@@ -157,8 +158,8 @@ export function CronWeeklyTimeline({ jobs }: CronWeeklyTimelineProps) {
 
       columns.push({
         date,
-        label: isToday ? "Today" : format(date, "EEE d"),
-        subLabel: isToday ? format(date, "EEE d") : format(date, "MMM"),
+        label: isToday ? "Hoje" : format(date, "EEE d", { locale: ptBR }),
+        subLabel: isToday ? format(date, "EEE d", { locale: ptBR }) : format(date, "MMM", { locale: ptBR }),
         isToday,
         events: dayEvents,
         intervalJobs: dayIntervalJobs,
