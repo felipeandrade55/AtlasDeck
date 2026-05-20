@@ -195,12 +195,14 @@ export async function GET() {
     }
 
     const agents = config.agents.list.map((agent: any) => {
-      const agentInfo = AGENT_CONFIG[agent.id as keyof typeof AGENT_CONFIG] || {
-        emoji: "🤖",
-        color: "#666",
-        name: agent.name || agent.id,
-        role: "Agent",
+      const fallbackConfig = AGENT_CONFIG[agent.id as keyof typeof AGENT_CONFIG];
+      const agentInfo = {
+        emoji: agent.ui?.emoji || fallbackConfig?.emoji || "🤖",
+        color: agent.ui?.color || fallbackConfig?.color || "#666666",
+        name: agent.name || fallbackConfig?.name || agent.id,
+        role: fallbackConfig?.role || "Sub-agente",
       };
+
 
       // Get status from gateway, or fallback to files
       let status = gatewayStatus[agent.id];

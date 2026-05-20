@@ -18,14 +18,13 @@ import PlantPot from './PlantPot';
 import WallClock from './WallClock';
 import FirstPersonControls from './FirstPersonControls';
 import MovingAvatar from './MovingAvatar';
-
 export default function Office3D() {
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [interactionModal, setInteractionModal] = useState<string | null>(null);
   const [controlMode, setControlMode] = useState<'orbit' | 'fps'>('orbit');
   const [avatarPositions, setAvatarPositions] = useState<Map<string, any>>(new Map());
-  
   const [agentStates, setAgentStates] = useState<Record<string, AgentState>>({});
+  const [dynamicAgents, setDynamicAgents] = useState<any[]>(AGENTS);
 
   useEffect(() => {
     const fetchAgents = async () => {
@@ -36,8 +35,43 @@ export default function Office3D() {
           const newStates: Record<string, AgentState> = {};
           
           if (data.agents && Array.isArray(data.agents)) {
+            // Preset positions in the 3D office
+            const presetPositions: [number, number, number][] = [
+              [0, 0, 0],    // Center
+              [-4, 0, -3],  // Desk 2
+              [4, 0, -3],   // Desk 3
+              [-4, 0, 3],   // Desk 4
+              [4, 0, 3],    // Desk 5
+              [0, 0, 6],    // Desk 6
+            ];
+
+            const mapped = data.agents.map((agent: any, idx: number) => {
+              let posIndex = idx;
+              if (agent.id === 'main') {
+                posIndex = 0;
+              } else if (idx === 0) {
+                posIndex = 1;
+              }
+
+              const position = presetPositions[posIndex % presetPositions.length] || [
+                Math.sin(idx * 2) * 6,
+                0,
+                Math.cos(idx * 2) * 6
+              ];
+
+              return {
+                id: agent.id,
+                name: agent.name,
+                emoji: agent.emoji,
+                color: agent.color,
+                role: agent.role,
+                position: position,
+              };
+            });
+
+            setDynamicAgents(mapped);
+
             data.agents.forEach((agent: any) => {
-              // Parse status from currentTask prefix if available
               let status: 'working' | 'idle' | 'thinking' | 'error' = agent.isActive ? 'working' : 'idle';
               if (agent.currentTask && typeof agent.currentTask === 'string') {
                 if (agent.currentTask.includes('ERROR')) status = 'error';
@@ -97,8 +131,8 @@ export default function Office3D() {
 
   // Definir obstáculos (muebles)
   const obstacles = [
-    // Escritorios (6)
-    ...AGENTS.map(agent => ({
+    // Escritorios
+    ...dynamicAgents.map(agent => ({
       position: new Vector3(agent.position[0], 0, agent.position[2]),
       radius: 1.5
     })),
@@ -143,7 +177,7 @@ export default function Office3D() {
           <Walls />
 
           {/* Escritorios de agentes (sin avatares) */}
-          {AGENTS.map((agent) => (
+          {dynamicAgents.map((agent) => (
             <AgentDesk
               key={agent.id}
               agent={agent}
@@ -154,7 +188,7 @@ export default function Office3D() {
           ))}
 
           {/* Avatares móviles */}
-          {AGENTS.map((agent) => (
+          {dynamicAgents.map((agent) => (
             <MovingAvatar
               key={`avatar-${agent.id}`}
               agent={agent}
@@ -209,7 +243,7 @@ export default function Office3D() {
       {/* Panel lateral cuando se selecciona un agente */}
       {selectedAgent && (
         <AgentPanel
-          agent={AGENTS.find(a => a.id === selectedAgent)!}
+          agent={dynamicAgents.find(a => a.id === selectedAgent)!}
           state={agentStates[selectedAgent]}
           onClose={handleClosePanel}
         />
