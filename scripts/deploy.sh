@@ -309,8 +309,24 @@ if [[ -n "$ORPHAN_PID" ]]; then
 fi
 
 if pm2 list 2>/dev/null | grep -q "$APP_NAME"; then
-  pm2 restart "$APP_NAME" --update-env
-  ok "PM2: processo reiniciado"
+  # Verifica se CWD do processo PM2 bate com $VPS_DIR. Se não bater (ou não der
+  # pra ler), faz delete + start para garantir que o servidor enxergue o .next
+  # gerado no diretório correto. pm2 restart não atualiza o CWD do processo.
+  EXISTING_CWD=$(pm2 jlist 2>/dev/null \
+    | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const a=JSON.parse(s);const p=a.find(x=>x.name==='$APP_NAME');process.stdout.write(p?.pm2_env?.pm_cwd||'')}catch{}})" \
+    2>/dev/null || echo "")
+
+  if [[ "$EXISTING_CWD" != "$VPS_DIR" ]]; then
+    warn "PM2 CWD divergente (atual: '${EXISTING_CWD:-desconhecido}', esperado: '$VPS_DIR') — recriando processo"
+    pm2 delete "$APP_NAME" 2>/dev/null || true
+    cd "$VPS_DIR"
+    pm2 start npm --name "$APP_NAME" -- start
+    pm2 save 2>/dev/null || true
+    ok "PM2: processo recriado a partir de $VPS_DIR"
+  else
+    pm2 restart "$APP_NAME" --update-env
+    ok "PM2: processo reiniciado"
+  fi
 else
   cd "$VPS_DIR"
   pm2 start npm --name "$APP_NAME" -- start
