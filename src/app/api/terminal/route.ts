@@ -9,6 +9,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { checkIsCostLocked } from '@/lib/usage-queries';
+import { initDatabase } from '@/lib/usage-collector';
+import path from 'path';
 
 const execAsync = promisify(exec);
 
@@ -89,6 +92,22 @@ export async function POST(request: NextRequest) {
 
     if (!command) {
       return NextResponse.json({ error: 'No command provided' }, { status: 400 });
+    }
+
+    // Intercept openclaw commands if the cost safety lock is active
+    if (command.includes('openclaw')) {
+      const DB_PATH = path.join(process.cwd(), "data", "usage-tracking.db");
+      const db = initDatabase(DB_PATH);
+      try {
+        if (checkIsCostLocked(db)) {
+          return NextResponse.json({
+            error: "Execução suspensa: O limite máximo de custos definido foi atingido e a trava de segurança está ativa.",
+            hint: "A trava de segurança está ativa para comandos do OpenClaw. Você pode ajustar os limites de orçamento ou desativar a trava no painel de Custos (/costs).",
+          }, { status: 403 });
+        }
+      } finally {
+        db.close();
+      }
     }
 
     if (!isCommandAllowed(command)) {

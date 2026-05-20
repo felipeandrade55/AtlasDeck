@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { execSync } from "child_process";
 import { insertCronRun } from "@/lib/cron-runs-db";
 import { addNotification } from "@/lib/notifications";
+import { checkIsCostLocked } from "@/lib/usage-queries";
+import { initDatabase } from "@/lib/usage-collector";
+import path from "path";
 
 async function createNotification(title: string, message: string, type: "info" | "success" | "warning" | "error" = "info") {
   try {
@@ -13,6 +16,19 @@ async function createNotification(title: string, message: string, type: "info" |
 
 // POST: Trigger a cron job immediately
 export async function POST(request: NextRequest) {
+  const DB_PATH = path.join(process.cwd(), "data", "usage-tracking.db");
+  const db = initDatabase(DB_PATH);
+  try {
+    if (checkIsCostLocked(db)) {
+      return NextResponse.json({
+        success: false,
+        error: "Execução suspensa: O limite máximo de custos definido foi atingido e a trava de segurança está ativa."
+      }, { status: 403 });
+    }
+  } finally {
+    db.close();
+  }
+
   let id: string | undefined;
   const startedAt = new Date().toISOString();
   try {

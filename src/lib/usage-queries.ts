@@ -77,6 +77,12 @@ export interface UsageTotals {
 export interface CostSettings {
   budget: number;
   alertThreshold: number;
+  limitTimeframe: 'daily' | 'weekly' | 'monthly';
+  limitUsd: number;
+  behaviorMode: 'alert_only' | 'alert_and_lock';
+  lastAlertState: 'none' | 'warning' | 'exceeded';
+  telegramBotToken: string;
+  telegramChatId: string;
 }
 
 export interface CollectionMetadata {
@@ -387,9 +393,38 @@ export function getCostSettings(db: Database.Database): CostSettings {
     safeNumber(process.env.COST_ALERT_THRESHOLD_PERCENT, DEFAULT_ALERT_THRESHOLD)
   );
 
+  const limitTimeframeRaw = getSetting(db, "limit_timeframe") || "monthly";
+  const limitTimeframe = (["daily", "weekly", "monthly"].includes(limitTimeframeRaw)
+    ? limitTimeframeRaw
+    : "monthly") as "daily" | "weekly" | "monthly";
+
+  const limitUsd = safeNumber(
+    getSetting(db, "limit_usd"),
+    budget
+  );
+
+  const behaviorModeRaw = getSetting(db, "behavior_mode") || "alert_only";
+  const behaviorMode = (["alert_only", "alert_and_lock"].includes(behaviorModeRaw)
+    ? behaviorModeRaw
+    : "alert_only") as "alert_only" | "alert_and_lock";
+
+  const lastAlertStateRaw = getSetting(db, "last_alert_state") || "none";
+  const lastAlertState = (["none", "warning", "exceeded"].includes(lastAlertStateRaw)
+    ? lastAlertStateRaw
+    : "none") as "none" | "warning" | "exceeded";
+
+  const telegramBotToken = getSetting(db, "telegram_bot_token") || "";
+  const telegramChatId = getSetting(db, "telegram_chat_id") || "";
+
   return {
     budget: budget > 0 ? budget : DEFAULT_BUDGET,
     alertThreshold: Math.min(Math.max(alertThreshold, 1), 100),
+    limitTimeframe,
+    limitUsd: limitUsd > 0 ? limitUsd : budget,
+    behaviorMode,
+    lastAlertState,
+    telegramBotToken,
+    telegramChatId,
   };
 }
 
@@ -411,7 +446,101 @@ export function setCostSettings(
     setSetting(db, "alert_threshold_percent", String(settings.alertThreshold));
   }
 
+  if (settings.limitTimeframe !== undefined) {
+    if (!["daily", "weekly", "monthly"].includes(settings.limitTimeframe)) {
+      throw new Error("Invalid limit timeframe");
+    }
+    setSetting(db, "limit_timeframe", settings.limitTimeframe);
+  }
+
+  if (settings.limitUsd !== undefined) {
+    if (!Number.isFinite(settings.limitUsd) || settings.limitUsd <= 0) {
+      throw new Error("Limit USD must be a positive number");
+    }
+    setSetting(db, "limit_usd", String(settings.limitUsd));
+  }
+
+  if (settings.behaviorMode !== undefined) {
+    if (!["alert_only", "alert_and_lock"].includes(settings.behaviorMode)) {
+      throw new Error("Invalid behavior mode");
+    }
+    setSetting(db, "behavior_mode", settings.behaviorMode);
+  }
+
+  if (settings.lastAlertState !== undefined) {
+    if (!["none", "warning", "exceeded"].includes(settings.lastAlertState)) {
+      throw new Error("Invalid last alert state");
+    }
+    setSetting(db, "last_alert_state", settings.lastAlertState);
+  }
+
+  if (settings.telegramBotToken !== undefined) {
+    setSetting(db, "telegram_bot_token", settings.telegramBotToken);
+  }
+
+  if (settings.telegramChatId !== undefined) {
+    setSetting(db, "telegram_chat_id", settings.telegramChatId);
+  }
+
   return getCostSettings(db);
+}
+
+/**
+ * Get cost for the last N days.
+ */
+export function getCostForLastNDays(db: Database.Database, days: number): number {
+  const row = db.prepare(`
+    SELECT COALESCE(SUM(cost), 0) as total FROM usage_snapshots WHERE date >= ?
+  `).get(cutoffDate(days)) as { total: number };
+  return roundMoney(row.total);
+}
+
+/**
+ * Get current cost for a specific timeframe.
+ */
+export function getCurrentCostForTimeframe(
+  db: Database.Database,
+  timeframe: 'daily' | 'weekly' | 'monthly'
+): number {
+  const now = new Date();
+  
+  if (timeframe === 'daily') {
+    const today = dateString(now);
+    const row = db.prepare(`
+      SELECT COALESCE(SUM(cost), 0) as total FROM usage_snapshots WHERE date = ?
+    `).get(today) as { total: number };
+    return roundMoney(row.total);
+  }
+  
+  if (timeframe === 'weekly') {
+    return getCostForLastNDays(db, 7);
+  }
+  
+  // timeframe === 'monthly'
+  const thisMonthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+  const row = db.prepare(`
+    SELECT COALESCE(SUM(cost), 0) as total FROM usage_snapshots WHERE date >= ?
+  `).get(thisMonthStart) as { total: number };
+  return roundMoney(row.total);
+}
+
+/**
+ * Check if the budget lock is currently active.
+ */
+export function checkIsCostLocked(db: Database.Database): boolean {
+  try {
+    const settings = getCostSettings(db);
+    if (settings.behaviorMode !== 'alert_and_lock') return false;
+    
+    const timeframe = settings.limitTimeframe || 'monthly';
+    const limit = settings.limitUsd || settings.budget;
+    const current = getCurrentCostForTimeframe(db, timeframe);
+    
+    return current >= limit;
+  } catch (error) {
+    console.error("Error checking is cost locked:", error);
+    return false;
+  }
 }
 
 export function getCollectionMetadata(db: Database.Database): CollectionMetadata {

@@ -13,7 +13,9 @@ import {
   Save,
   TrendingDown,
   TrendingUp,
+  Lock,
 } from "lucide-react";
+import { BudgetLimitPanel } from "@/components/BudgetLimitPanel";
 import {
   Bar,
   BarChart,
@@ -38,6 +40,13 @@ interface CostData {
   projected: number;
   budget: number;
   alertThreshold: number;
+  limitTimeframe: "daily" | "weekly" | "monthly";
+  limitUsd: number;
+  behaviorMode: "alert_only" | "alert_and_lock";
+  telegramBotToken: string;
+  telegramChatId: string;
+  isLocked: boolean;
+  timeframeCost: number;
   totals: { cost: number; tokens: number; inputTokens: number; outputTokens: number };
   byAgent: Array<{ agent: string; cost: number; tokens: number; inputTokens: number; outputTokens: number; percentOfTotal: number }>;
   byModel: Array<{ model: string; cost: number; tokens: number; inputTokens: number; outputTokens: number; percentOfTotal: number }>;
@@ -190,12 +199,8 @@ export default function CostsPage() {
   const [costData, setCostData] = useState<CostData | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [savingSettings, setSavingSettings] = useState(false);
-  const [settingsDirty, setSettingsDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [timeframe, setTimeframe] = useState<"7d" | "30d" | "90d">("30d");
-  const [budgetDraft, setBudgetDraft] = useState("100");
-  const [alertDraft, setAlertDraft] = useState("80");
 
   const fetchCostData = useCallback(async (force = false) => {
     if (force) setRefreshing(true);
@@ -221,38 +226,6 @@ export default function CostsPage() {
     const interval = setInterval(() => fetchCostData(), 60_000);
     return () => clearInterval(interval);
   }, [fetchCostData]);
-
-  useEffect(() => {
-    if (!costData || settingsDirty) return;
-    setBudgetDraft(String(costData.budget));
-    setAlertDraft(String(costData.alertThreshold));
-  }, [costData, settingsDirty]);
-
-  const saveSettings = async () => {
-    setSavingSettings(true);
-    setError(null);
-
-    try {
-      const res = await fetch("/api/costs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          budget: Number(budgetDraft),
-          alertThreshold: Number(alertDraft),
-        }),
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok) {
-        throw new Error(data?.detail || data?.error || "Falha ao salvar orçamento");
-      }
-      setSettingsDirty(false);
-      await fetchCostData(true);
-    } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Falha ao salvar orçamento");
-    } finally {
-      setSavingSettings(false);
-    }
-  };
 
   const derived = useMemo(() => {
     if (!costData) return null;
@@ -359,6 +332,29 @@ export default function CostsPage() {
           </div>
         </div>
       </div>
+
+      {costData.isLocked && (
+        <div
+          className="flex flex-col gap-3 rounded-xl p-5 text-sm animate-pulse"
+          style={{
+            backgroundColor: "rgba(255, 59, 48, 0.08)",
+            border: "1px solid var(--error)",
+            boxShadow: "0 4px 20px rgba(255, 59, 48, 0.15)",
+          }}
+        >
+          <div className="flex items-center gap-2 font-bold" style={{ color: "var(--error)" }}>
+            <Lock className="w-4 h-4 flex-shrink-0 animate-bounce" />
+            Trava de Segurança de Custos Ativa
+          </div>
+          <p style={{ color: "var(--text-primary)" }}>
+            O consumo {costData.limitTimeframe === "daily" ? "diário" : costData.limitTimeframe === "weekly" ? "semanal" : "mensal"} de <b>${costData.timeframeCost.toFixed(2)}</b> atingiu o limite de custos de <b>${costData.limitUsd.toFixed(2)}</b>.
+            Todas as execuções de cron e comandos de terminal do OpenClaw estão suspensos para proteger seu orçamento.
+          </p>
+          <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+            Para liberar o sistema, aumente o limite de custos ou altere o comportamento da meta no painel abaixo.
+          </p>
+        </div>
+      )}
 
       {(error || costData.collection.error || !derived.hasUsage) && (
         <div
@@ -473,57 +469,10 @@ export default function CostsPage() {
         })}
       </div>
 
-      <div className="p-6 rounded-xl" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
-        <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-          <div>
-            <h3 className="text-lg font-semibold" style={{ color: "var(--text-primary)" }}>Controle de orçamento</h3>
-            <p className="text-sm mt-1" style={{ color: "var(--text-secondary)" }}>Configuração persistida no banco de custos.</p>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-[160px_150px_auto] gap-3 w-full md:w-auto">
-            <label className="text-xs font-medium" style={{ color: "var(--text-secondary)" }}>
-              Orçamento mensal
-              <input
-                type="number"
-                min="1"
-                step="1"
-                value={budgetDraft}
-                onChange={(event) => {
-                  setBudgetDraft(event.target.value);
-                  setSettingsDirty(true);
-                }}
-                className="mt-1 w-full rounded-lg px-3 py-2 text-sm outline-none"
-                style={{ backgroundColor: "var(--card-elevated)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-              />
-            </label>
-            <label className="text-xs font-medium" style={{ color: "var(--text-secondary)" }}>
-              Alerta (%)
-              <input
-                type="number"
-                min="1"
-                max="100"
-                step="1"
-                value={alertDraft}
-                onChange={(event) => {
-                  setAlertDraft(event.target.value);
-                  setSettingsDirty(true);
-                }}
-                className="mt-1 w-full rounded-lg px-3 py-2 text-sm outline-none"
-                style={{ backgroundColor: "var(--card-elevated)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-              />
-            </label>
-            <button
-              type="button"
-              onClick={saveSettings}
-              disabled={savingSettings || !settingsDirty}
-              className="inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-all disabled:opacity-50 sm:self-end"
-              style={{ backgroundColor: "var(--accent)", color: "white" }}
-            >
-              <Save className="w-4 h-4" />
-              Salvar
-            </button>
-          </div>
-        </div>
-      </div>
+      <BudgetLimitPanel
+        initialSettings={costData}
+        onSaveSuccess={() => fetchCostData(true)}
+      />
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         <div className="p-6 rounded-xl" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
