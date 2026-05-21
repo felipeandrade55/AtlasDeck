@@ -11,7 +11,7 @@ import {
   Activity,
   CheckCircle,
   XCircle,
-  Calendar,
+  CalendarDays,
   Circle,
   Bot,
   MessageSquare,
@@ -315,7 +315,8 @@ export default function DashboardPage() {
           </div>
           <div className="p-4 grid grid-cols-2 gap-2">
             {[
-              { href: "/cron", icon: Calendar, label: "Tarefas Agendadas", color: "#a78bfa" },
+              { href: "/calendar", icon: CalendarDays, label: "Calendário", color: "#FF3B30" },
+              { href: "/cron", icon: Clock, label: "Tarefas Agendadas", color: "#a78bfa" },
               { href: "/actions", icon: Zap, label: "Ações Rápidas", color: "var(--accent)" },
               { href: "/system", icon: Server, label: "Sistema", color: "var(--success)" },
               { href: "/logs", icon: Terminal, label: "Logs ao Vivo", color: "#60a5fa" },
