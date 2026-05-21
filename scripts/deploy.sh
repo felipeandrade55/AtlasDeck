@@ -856,37 +856,85 @@ fi
 # ══════════════════════════════════════════════════════════════════════════════
 # FASE 8 — OPENCLAW GATEWAY
 # ══════════════════════════════════════════════════════════════════════════════
+# O gateway do OpenClaw pode estar rodando de várias formas: systemd unit
+# (`openclaw-gateway.service`), processo gerenciado pelo PM2, `openclaw daemon`
+# manual, container, etc. Reachability HTTP é a única fonte de verdade — se a
+# porta responde, o gateway está vivo independente de como subiu. Systemd só é
+# usado como mecanismo opcional de auto-start, não como teste de saúde.
 step "OpenClaw Gateway..."
 T=$(now)
 
-GATEWAY_STATUS=$(systemctl is-active openclaw-gateway 2>/dev/null || echo "unknown")
+# Descobre a porta real do gateway lendo openclaw.json (com fallback 18789).
+GATEWAY_PORT=$(node -e '
+try {
+  const fs = require("fs");
+  const path = require("path");
+  const dir = process.env.OPENCLAW_DIR || "/root/.openclaw";
+  const cfg = JSON.parse(fs.readFileSync(path.join(dir, "openclaw.json"), "utf-8"));
+  process.stdout.write(String(cfg?.gateway?.port || 18789));
+} catch { process.stdout.write("18789"); }
+' 2>/dev/null || echo "18789")
 
-if [[ "$GATEWAY_STATUS" == "active" ]]; then
-  ok "openclaw-gateway: active"
+probe_gateway() {
+  # Retorna 0 se o gateway responde HTTP em qualquer rota (200/404/etc — qualquer
+  # resposta prova que o daemon tá escutando). Retorna 1 só em falha de conexão.
+  local code
+  for path in "/health" ""; do
+    code=$(curl -s -o /dev/null -w "%{http_code}" \
+      --connect-timeout 2 --max-time 4 \
+      "http://127.0.0.1:${GATEWAY_PORT}${path}" 2>/dev/null || echo "000")
+    if [[ "$code" != "000" ]]; then
+      echo "$code"
+      return 0
+    fi
+  done
+  return 1
+}
+
+GATEWAY_HTTP_CODE=$(probe_gateway || true)
+
+if [[ -n "$GATEWAY_HTTP_CODE" ]]; then
+  ok "openclaw-gateway online em :${GATEWAY_PORT} (HTTP $GATEWAY_HTTP_CODE)"
   record "OpenClaw Gateway" "ok" "$(elapsed $T)"
 else
-  warn "openclaw-gateway: $GATEWAY_STATUS — tentando iniciar..."
+  # HTTP não respondeu — verifica se há unit systemd que possa ser iniciada.
+  SYSTEMD_LOAD=$(systemctl show openclaw-gateway --property=LoadState --value 2>/dev/null || echo "")
 
-  if systemctl start openclaw-gateway 2>/dev/null; then
-    sleep 3
-    GATEWAY_STATUS=$(systemctl is-active openclaw-gateway 2>/dev/null || echo "unknown")
-
-    if [[ "$GATEWAY_STATUS" == "active" ]]; then
-      ok "openclaw-gateway iniciado com sucesso"
-      record "OpenClaw Gateway" "ok" "$(elapsed $T)"
+  if [[ "$SYSTEMD_LOAD" == "loaded" ]]; then
+    warn "Gateway não responde em :${GATEWAY_PORT} — tentando systemctl start openclaw-gateway"
+    if systemctl start openclaw-gateway 2>/dev/null; then
+      sleep 3
+      GATEWAY_HTTP_CODE=$(probe_gateway || true)
+      if [[ -n "$GATEWAY_HTTP_CODE" ]]; then
+        ok "openclaw-gateway iniciado e online em :${GATEWAY_PORT} (HTTP $GATEWAY_HTTP_CODE)"
+        record "OpenClaw Gateway" "ok" "$(elapsed $T)"
+      else
+        err "systemd reportou start ok, mas gateway segue offline em :${GATEWAY_PORT}"
+        info "Verifique: journalctl -u openclaw-gateway -n 30 --no-pager"
+        record "OpenClaw Gateway" "fail" "$(elapsed $T)"
+      fi
     else
-      err "openclaw-gateway não subiu após start (status: $GATEWAY_STATUS)"
+      err "Falha ao executar 'systemctl start openclaw-gateway'"
       info "Verifique: journalctl -u openclaw-gateway -n 30 --no-pager"
       record "OpenClaw Gateway" "fail" "$(elapsed $T)"
     fi
   else
-    err "Falha ao executar 'systemctl start openclaw-gateway'"
-    info "Verifique: journalctl -u openclaw-gateway -n 30 --no-pager"
-    record "OpenClaw Gateway" "fail" "$(elapsed $T)"
+    # Sem unit systemd. OpenClaw provavelmente é gerenciado fora do systemd
+    # (PM2, openclaw daemon manual, container). Se a CLI consegue listar
+    # status, consideramos isso suficiente — o usuário gerencia ele à parte.
+    if command -v openclaw &>/dev/null && openclaw status &>/dev/null; then
+      warn "openclaw-gateway não responde em :${GATEWAY_PORT} mas openclaw CLI funciona — gateway pode estar configurado em outra porta"
+      info "Verifique: openclaw status | grep -i dashboard"
+      record "OpenClaw Gateway" "skip" "$(elapsed $T)"
+    else
+      err "openclaw-gateway offline em :${GATEWAY_PORT} e sem unit systemd"
+      info "OpenClaw pode estar parado. Tente: 'openclaw daemon start' ou consulte a doc"
+      record "OpenClaw Gateway" "fail" "$(elapsed $T)"
+    fi
   fi
 fi
 
-# OpenClaw CLI status
+# OpenClaw CLI status (informativo)
 if command -v openclaw &>/dev/null; then
   OPENCLAW_OUT=$(openclaw status 2>/dev/null | grep -v '^$' | head -8 || echo "")
   if [[ -n "$OPENCLAW_OUT" ]]; then

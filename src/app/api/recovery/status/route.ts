@@ -13,11 +13,13 @@ import os from 'os';
 import path from 'path';
 
 import { OPENCLAW_DIR, OPENCLAW_CONFIG } from '@/lib/paths';
+import { getOpenClawGatewayInfo } from '@/lib/openclaw-config';
 
 const execAsync = promisify(exec);
 
-const GATEWAY_PORT = Number(process.env.OPENCLAW_GATEWAY_PORT || 4747);
-const GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL || `http://127.0.0.1:${GATEWAY_PORT}`;
+// Porta/URL do gateway são lidas do openclaw.json em runtime (não em
+// import-time) — o usuário pode trocar via /api/openclaw/config e a próxima
+// chamada já reflete. Defaults: 18789 (padrão do OpenClaw daemon).
 
 async function safeExec(cmd: string, timeoutMs = 4000): Promise<{ ok: boolean; out: string }> {
   try {
@@ -37,7 +39,8 @@ async function checkBinary(bin: string): Promise<{ installed: boolean; path: str
   return { installed: true, path: bpath, version: ver.ok ? ver.out.split('\n')[0] : null };
 }
 
-async function checkGatewayHttp(): Promise<{ reachable: boolean; status: number | null; latencyMs: number | null }> {
+async function checkGatewayHttp(): Promise<{ reachable: boolean; status: number | null; latencyMs: number | null; port: number; url: string }> {
+  const info = getOpenClawGatewayInfo();
   const started = Date.now();
   const tryFetch = async (url: string) => {
     const ctrl = new AbortController();
@@ -50,21 +53,21 @@ async function checkGatewayHttp(): Promise<{ reachable: boolean; status: number 
   };
 
   const urls = Array.from(new Set([
-    GATEWAY_URL,
-    GATEWAY_URL.replace('127.0.0.1', 'localhost'),
-    GATEWAY_URL.replace('127.0.0.1', '0.0.0.0')
+    info.url,
+    info.url.replace('127.0.0.1', 'localhost'),
+    info.url.replace('127.0.0.1', '0.0.0.0')
   ]));
 
   for (const base of urls) {
     try {
       const res = await tryFetch(`${base}/health`).catch(() => tryFetch(base));
-      return { reachable: true, status: res.status, latencyMs: Date.now() - started };
+      return { reachable: true, status: res.status, latencyMs: Date.now() - started, port: info.port, url: info.url };
     } catch {
       // ignore and try next
     }
   }
 
-  return { reachable: false, status: null, latencyMs: Date.now() - started };
+  return { reachable: false, status: null, latencyMs: Date.now() - started, port: info.port, url: info.url };
 }
 
 async function checkSystemdUnit(unit: string): Promise<{ exists: boolean; active: boolean; sub: string | null; since: string | null }> {
@@ -166,8 +169,6 @@ export async function GET() {
       directory: dirInfo,
       gateway: {
         ...gatewayHttp,
-        port: GATEWAY_PORT,
-        url: GATEWAY_URL,
         systemd: gatewayUnit,
       },
       processes: procs,

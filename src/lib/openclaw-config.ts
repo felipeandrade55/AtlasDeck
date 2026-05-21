@@ -105,3 +105,45 @@ export function getOpenClawWorkspace(): string {
 export function getOpenClawConfigPath(): string {
   return CONFIG_PATH;
 }
+
+/**
+ * Reads gateway port/token straight from the OpenClaw daemon's `openclaw.json`.
+ * That file is the only source of truth — different from `data/openclaw-config.json`
+ * (which is *AtlasDeck's* config about where OpenClaw lives, not the gateway settings).
+ *
+ * Used by health checks and external integrations that need to reach the gateway
+ * regardless of how it's being managed (systemd unit, PM2, manual `openclaw daemon`,
+ * Docker, etc.). HTTP reachability is the truth — systemd state is just one signal.
+ */
+export function getOpenClawGatewayInfo(): { port: number; token: string; url: string } {
+  const defaultPort = 18789;
+  let port = defaultPort;
+  let token = "";
+
+  const envPort = Number(process.env.OPENCLAW_GATEWAY_PORT);
+  if (Number.isFinite(envPort) && envPort > 0) port = envPort;
+
+  try {
+    const openclawDir = getOpenClawDir();
+    const raw = fs.readFileSync(path.join(openclawDir, "openclaw.json"), "utf8");
+    const parsed = JSON.parse(raw) as { gateway?: { port?: number; auth?: { token?: string } } };
+    if (parsed.gateway?.port && Number.isFinite(parsed.gateway.port)) {
+      port = parsed.gateway.port;
+    }
+    if (parsed.gateway?.auth?.token) {
+      token = parsed.gateway.auth.token;
+    }
+  } catch {
+    // openclaw.json may not exist yet (fresh install) — use env / defaults
+  }
+
+  if (!token && process.env.OPENCLAW_SERVICE_TOKEN) {
+    token = process.env.OPENCLAW_SERVICE_TOKEN;
+  }
+
+  return {
+    port,
+    token,
+    url: process.env.OPENCLAW_GATEWAY_URL || `http://127.0.0.1:${port}`,
+  };
+}

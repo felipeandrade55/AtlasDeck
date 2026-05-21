@@ -5,6 +5,7 @@
 import { NextResponse } from 'next/server';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { getOpenClawGatewayInfo } from '@/lib/openclaw-config';
 
 const execAsync = promisify(exec);
 
@@ -30,14 +31,65 @@ async function checkUrl(url: string, timeoutMs = 5000): Promise<{ status: 'up' |
   }
 }
 
-async function checkSystemdService(name: string): Promise<ServiceCheck> {
-  try {
-    const { stdout } = await execAsync(`systemctl is-active ${name} 2>/dev/null`);
-    const active = stdout.trim() === 'active';
-    return { name, status: active ? 'up' : 'down', details: stdout.trim() };
-  } catch {
-    return { name, status: 'down', details: 'service not found' };
+/**
+ * HTTP reachability is the ground truth for the OpenClaw gateway — it may run
+ * via systemd, PM2, manual `openclaw daemon`, Docker, etc. We probe the gateway
+ * on the port advertised by `openclaw.json` and fall back to a systemd-unit
+ * status check only as a secondary signal (and only to add detail, never to
+ * downgrade an "up" verdict from HTTP).
+ */
+async function checkOpenClawGateway(): Promise<ServiceCheck> {
+  const info = getOpenClawGatewayInfo();
+  const candidates = Array.from(
+    new Set([
+      info.url,
+      `${info.url.replace('127.0.0.1', 'localhost')}`,
+      `http://127.0.0.1:${info.port}`,
+    ])
+  );
+
+  const started = Date.now();
+  for (const base of candidates) {
+    const r = await checkUrl(`${base}/health`, 3000);
+    if (r.status === 'up') {
+      return {
+        name: 'OpenClaw Gateway',
+        status: 'up',
+        latency: r.latency,
+        url: `${base}/health`,
+        details: `reachable (http ${r.httpCode ?? 200})`,
+      };
+    }
+    // Some OpenClaw builds answer the gateway port without a /health route — a
+    // 404 still means the daemon is up and listening. Anything except network
+    // failure proves liveness.
+    const root = await checkUrl(base, 3000);
+    if (root.status === 'up') {
+      return {
+        name: 'OpenClaw Gateway',
+        status: 'up',
+        latency: root.latency,
+        url: base,
+        details: `reachable (http ${root.httpCode ?? 200})`,
+      };
+    }
   }
+
+  // HTTP unreachable — annotate with systemd state if available (best-effort)
+  let systemdDetail = '';
+  try {
+    const { stdout } = await execAsync('systemctl is-active openclaw-gateway 2>/dev/null');
+    systemdDetail = stdout.trim();
+  } catch {
+    systemdDetail = 'not-managed-by-systemd';
+  }
+  return {
+    name: 'OpenClaw Gateway',
+    status: 'down',
+    latency: Date.now() - started,
+    url: info.url,
+    details: `unreachable on port ${info.port}${systemdDetail ? ` (systemd: ${systemdDetail})` : ''}`,
+  };
 }
 
 async function checkPm2Service(name: string): Promise<ServiceCheck> {
@@ -59,10 +111,10 @@ export async function GET() {
   // Internal services
   const [atlasdeck, gateway] = await Promise.all([
     checkPm2Service('atlasdeck'),
-    checkSystemdService('openclaw-gateway'),
+    checkOpenClawGateway(),
   ]);
   checks.push({ ...atlasdeck, name: 'Mission Control' });
-  checks.push({ ...gateway, name: 'OpenClaw Gateway' });
+  checks.push(gateway);
 
   // External URLs
   const [anthropic] = await Promise.all([
