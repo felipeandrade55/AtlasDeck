@@ -17,6 +17,12 @@ import {
   Hammer,
   Timer,
   Brain,
+  CalendarDays,
+  Save,
+  Download,
+  RefreshCw,
+  Bot,
+  Settings as SettingsIcon,
 } from "lucide-react";
 import { RichDescription } from "./RichDescription";
 
@@ -52,6 +58,12 @@ const typeConfig: Record<string, {
   build: { icon: Hammer, color: 'var(--type-build)', bgColor: 'var(--type-build-bg)', label: 'Build' },
   cron: { icon: Timer, color: 'var(--type-cron)', bgColor: 'var(--type-cron-bg)', label: 'Cron' },
   memory: { icon: Brain, color: 'var(--info)', bgColor: 'var(--info-bg)', label: 'Memória' },
+  calendar: { icon: CalendarDays, color: '#FF3B30', bgColor: 'rgba(255, 59, 48, 0.12)', label: 'Calendário' },
+  backup: { icon: Save, color: '#4ade80', bgColor: 'rgba(74, 222, 128, 0.12)', label: 'Backup' },
+  restore: { icon: Download, color: '#fbbf24', bgColor: 'rgba(251, 191, 36, 0.12)', label: 'Restore' },
+  update: { icon: RefreshCw, color: '#60a5fa', bgColor: 'rgba(96, 165, 250, 0.12)', label: 'Update' },
+  agent: { icon: Bot, color: '#a78bfa', bgColor: 'rgba(167, 139, 250, 0.12)', label: 'Agente' },
+  config: { icon: SettingsIcon, color: 'var(--text-secondary)', bgColor: 'var(--card-elevated)', label: 'Config' },
   default: { icon: Zap, color: 'var(--text-secondary)', bgColor: 'var(--card-elevated)', label: 'Ação' },
 };
 

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getBookingById, updateBookingStatus } from "@/lib/calendar-db";
 import { addNotification } from "@/lib/notifications";
+import { logActivity } from "@/lib/activities-db";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +27,15 @@ export async function POST(request: NextRequest, context: RouteContext) {
     }
 
     updateBookingStatus(booking.id, "rejected");
+
+    try {
+      logActivity(
+        "calendar",
+        `Agendamento rejeitado: ${booking.name}${reason ? ` — ${reason}` : ""}`,
+        "success",
+        { metadata: { bookingId: booking.id, reason } }
+      );
+    } catch {}
 
     void addNotification(
       "❌ Agendamento rejeitado",

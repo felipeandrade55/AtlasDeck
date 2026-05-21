@@ -10,6 +10,7 @@ import {
 } from "@/lib/calendar-db";
 import { addNotification } from "@/lib/notifications";
 import { sendTelegramAlert } from "@/lib/telegram";
+import { logActivity } from "@/lib/activities-db";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -63,6 +64,15 @@ export async function POST(_request: NextRequest, context: RouteContext) {
     if ("error" in result) {
       return NextResponse.json({ error: result.error }, { status: 409 });
     }
+
+    try {
+      logActivity(
+        "calendar",
+        `Agendamento aprovado: ${booking.name} — ${new Date(booking.start_at).toLocaleString("pt-BR")}`,
+        "success",
+        { metadata: { bookingId: booking.id, eventId: result.event.id } }
+      );
+    } catch {}
 
     void Promise.allSettled([
       addNotification(

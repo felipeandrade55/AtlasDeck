@@ -18,6 +18,7 @@ import {
   readUpdateConfig,
   writeLiveStatus,
 } from "@/lib/update";
+import { logActivity } from "@/lib/activities-db";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 10;
@@ -126,6 +127,12 @@ export async function POST() {
   };
 
   writeLiveStatus(liveStatus);
+
+  try {
+    logActivity("update", `Update iniciado: ${fromSha} → ${toSha}`, "pending", {
+      metadata: { sessionId, historyId, fromSha, toSha, pid: child.pid },
+    });
+  } catch {}
 
   return NextResponse.json({
     sessionId,

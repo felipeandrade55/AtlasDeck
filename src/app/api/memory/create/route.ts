@@ -7,6 +7,7 @@ import {
   type MemoryType,
 } from "@/lib/memory-db";
 import { embedTexts } from "@/lib/embeddings";
+import { logActivity } from "@/lib/activities-db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -94,6 +95,13 @@ export async function POST(request: NextRequest) {
         console.warn("[memory/create] embedding failed:", err);
       }
     }
+
+    try {
+      logActivity("memory", `Memória criada: ${memory.title} (${memory.type})`, "success", {
+        agent: "manual",
+        metadata: { memoryId: memory.id, type: memory.type, embedded, workspace },
+      });
+    } catch {}
 
     return NextResponse.json({ memory, embedded });
   } catch (err) {

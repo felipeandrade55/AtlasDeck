@@ -4,6 +4,7 @@ import { listBlocksInRange } from "@/lib/calendar-db";
 import { createBlockWithConflicts } from "@/lib/calendar-blocks";
 import { addNotification } from "@/lib/notifications";
 import { sendTelegramAlert } from "@/lib/telegram";
+import { logActivity } from "@/lib/activities-db";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -45,6 +46,21 @@ export async function POST(request: NextRequest) {
       reason: body.reason ?? null,
       source,
     });
+
+    try {
+      const when = `${start.toLocaleString("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })} → ${end.toLocaleString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
+      logActivity(
+        "calendar",
+        result.conflicts.length > 0
+          ? `Bloqueio criado: ${when} — ${result.conflicts.length} compromisso(s) a remarcar`
+          : `Bloqueio criado: ${when}`,
+        result.conflicts.length > 0 ? "pending" : "success",
+        {
+          agent: source,
+          metadata: { blockId: result.block.id, conflicts: result.conflicts.length },
+        }
+      );
+    } catch {}
 
     void Promise.allSettled([
       addNotification(

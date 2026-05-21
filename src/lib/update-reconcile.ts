@@ -210,6 +210,23 @@ export async function reconcile(
       durationMs,
       updatedLive.error
     );
+
+    // Activity log
+    try {
+      const { logActivity } = await import("./activities-db");
+      const ok = updatedLive.status === "complete";
+      const desc = ok
+        ? `Update concluído: ${updatedLive.fromSha} → ${updatedLive.toSha}`
+        : `Update falhou: ${updatedLive.error || "erro desconhecido"}`;
+      logActivity("update", desc, ok ? "success" : "error", {
+        duration_ms: durationMs,
+        metadata: {
+          fromSha: updatedLive.fromSha,
+          toSha: updatedLive.toSha,
+          historyId: updatedLive.historyId,
+        },
+      });
+    } catch {}
   }
 
   return {

@@ -6,6 +6,7 @@ import {
   updateEvent,
 } from "@/lib/calendar-db";
 import type { CalendarEventInput } from "@/lib/calendar-types";
+import { logActivity } from "@/lib/activities-db";
 
 export const dynamic = "force-dynamic";
 
@@ -47,6 +48,11 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     if (!updated) {
       return NextResponse.json({ error: "Event not found" }, { status: 404 });
     }
+    try {
+      logActivity("calendar", `Evento atualizado: ${updated.title}`, "success", {
+        metadata: { eventId: id, fields: Object.keys(body) },
+      });
+    } catch {}
     return NextResponse.json({ event: updated, reminders: listRemindersForEvent(id) });
   } catch (error) {
     console.error("Failed to update event:", error);
@@ -57,10 +63,16 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 export async function DELETE(_request: NextRequest, context: RouteContext) {
   try {
     const { id } = await context.params;
+    const existing = getEventById(id);
     const ok = deleteEvent(id);
     if (!ok) {
       return NextResponse.json({ error: "Event not found" }, { status: 404 });
     }
+    try {
+      logActivity("calendar", `Evento excluído: ${existing?.title ?? id}`, "success", {
+        metadata: { eventId: id },
+      });
+    } catch {}
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("Failed to delete event:", error);

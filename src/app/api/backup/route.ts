@@ -6,6 +6,7 @@ import {
   readBackupConfig,
   writeBackupConfig,
 } from "@/lib/backup";
+import { logActivity } from "@/lib/activities-db";
 
 // GET: List backups and stats
 export async function GET() {
@@ -24,11 +25,27 @@ export async function POST() {
   try {
     const result = await runBackup();
     if (!result.success) {
+      try {
+        logActivity("backup", `Backup falhou: ${result.entry?.error || "erro desconhecido"}`, "error", {
+          metadata: { backupId: result.entry?.id, logPath: result.logPath },
+        });
+      } catch {}
       return NextResponse.json(
         { error: "Backup failed", entry: result.entry, logPath: result.logPath },
         { status: 500 }
       );
     }
+    try {
+      logActivity(
+        "backup",
+        `Backup criado${result.entry?.sizeHuman ? ` (${result.entry.sizeHuman})` : ""}`,
+        "success",
+        {
+          duration_ms: result.entry?.durationMs ?? null,
+          metadata: { backupId: result.entry?.id, archivePath: result.archivePath },
+        }
+      );
+    } catch {}
     return NextResponse.json({
       success: true,
       entry: result.entry,
@@ -54,6 +71,9 @@ export async function DELETE(request: NextRequest) {
     if (!ok) {
       return NextResponse.json({ error: "Backup not found" }, { status: 404 });
     }
+    try {
+      logActivity("backup", `Backup excluído`, "success", { metadata: { backupId: id } });
+    } catch {}
     return NextResponse.json({ success: true });
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Unknown error";

@@ -8,6 +8,7 @@ import {
 } from "@/lib/calendar-db";
 import { expandEvents } from "@/lib/calendar-recurrence";
 import type { CalendarEventInput, EventException } from "@/lib/calendar-types";
+import { logActivity } from "@/lib/activities-db";
 
 export const dynamic = "force-dynamic";
 
@@ -90,6 +91,14 @@ export async function POST(request: NextRequest) {
       parent_booking_id: body.parent_booking_id ?? null,
       reminders: body.reminders ?? [],
     });
+
+    try {
+      const when = start.toLocaleString("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+      logActivity("calendar", `Evento criado: ${event.title} — ${when}`, "success", {
+        agent: body.source ?? "ui",
+        metadata: { eventId: event.id, start_at: event.start_at, recurring: !!event.recurrence_json },
+      });
+    } catch {}
 
     return NextResponse.json({ event }, { status: 201 });
   } catch (error) {

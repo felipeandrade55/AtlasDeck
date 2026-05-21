@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { execSync } from "child_process";
+import { logActivity } from "@/lib/activities-db";
 
 function getGatewayConfig() {
   try {
@@ -105,6 +106,12 @@ export async function PUT(request: NextRequest) {
       { timeout: 10000, encoding: "utf-8" }
     );
 
+    try {
+      logActivity("cron", `Tarefa agendada ${enabled ? "ativada" : "desativada"}: ${id}`, "success", {
+        metadata: { jobId: id, enabled },
+      });
+    } catch {}
+
     return NextResponse.json({ success: true, id, enabled });
   } catch (error) {
     console.error("Error updating cron job:", error);
@@ -129,6 +136,10 @@ export async function DELETE(request: NextRequest) {
       timeout: 10000,
       encoding: "utf-8",
     });
+
+    try {
+      logActivity("cron", `Tarefa agendada removida: ${id}`, "success", { metadata: { jobId: id } });
+    } catch {}
 
     return NextResponse.json({ success: true, deleted: id });
   } catch (error) {
