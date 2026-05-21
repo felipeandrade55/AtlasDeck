@@ -88,6 +88,7 @@ export async function POST() {
 
   // Detached: cria novo grupo de processos, desliga do parent.
   // Sobrevive ao PM2 restart que o próprio script vai disparar.
+  // (O próprio deploy.sh ignora HUP/PIPE — vide trap no topo do script.)
   const child = spawn("bash", [scriptPath, ...args], {
     cwd: process.cwd(),
     env: { ...process.env, ATLASDECK_UPDATE_SESSION: sessionId },

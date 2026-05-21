@@ -810,7 +810,7 @@ export function UpdatePanel() {
                   versão anterior. Verifique os logs abaixo ou o histórico para mais detalhes.
                 </p>
                 <button
-                  onClick={() => fetchCheck(true)}
+                  onClick={() => void startUpdate()}
                   className="px-4 py-2 rounded-lg text-sm font-medium bg-red-900/50 hover:bg-red-900 text-white transition-colors border border-red-700 mb-4"
                 >
                   Tentar Novamente

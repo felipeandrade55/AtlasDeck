@@ -13,6 +13,18 @@
 
 set -eo pipefail
 
+# ─── DEFESA EM PROFUNDIDADE ──────────────────────────────────────────────────
+# Quando o script é disparado pela UI (spawn detached do Next.js), o parent
+# pode morrer no meio da execução — seja porque PM2 reinicia o atlasdeck,
+# seja porque o próprio script reinicia (fase pm2-restart). Detached + setsid
+# já isolam o grupo de processos, mas:
+#   - SIGHUP pode chegar se algum reaper de sessão decidir limpar órfãos
+#   - SIGPIPE chega se algum descritor herdado virar broken pipe
+# Ignorar ambos garante que o script só morre por escolha própria (erro de
+# comando, exit explícito) ou por SIGTERM/SIGKILL externo intencional.
+trap '' HUP PIPE
+# ─────────────────────────────────────────────────────────────────────────────
+
 # Quick pre-scan for flags
 _HEADLESS_PRESCAN=false
 _STATUS_FILE=""
@@ -617,49 +629,146 @@ phase_status "pm2-restart" "running"
 
 if ! command -v pm2 &>/dev/null; then
   warn "PM2 não encontrado — instalando..."
-  npm install -g pm2
+  npm install -g pm2 < /dev/null
   ok "PM2 instalado"
 fi
 
-# Libera a porta se estiver ocupada por processo órfão (fora do PM2)
-ORPHAN_PID=$(lsof -ti :"$APP_PORT" 2>/dev/null | head -1 || true)
-if [[ -n "$ORPHAN_PID" ]]; then
-  PM2_PIDS=$(pm2 list 2>/dev/null | grep -oP '\d+(?=\s+\|)' || true)
-  if ! echo "$PM2_PIDS" | grep -qw "$ORPHAN_PID"; then
-    warn "Porta $APP_PORT ocupada pelo PID $ORPHAN_PID (fora do PM2) — liberando..."
-    kill -9 "$ORPHAN_PID" 2>/dev/null || true
+# ─── INSPECT PM2 STATE ───────────────────────────────────────────────────────
+# Usamos `pm2 jlist` (JSON) como única fonte de verdade. O `pm2 list` é
+# tabela humana com caracteres Unicode `│` (U+2502) — qualquer regex sobre
+# ele falha silenciosamente e levou a matar o processo legítimo do AtlasDeck
+# como se fosse órfão (bug histórico que rompia o update via UI).
+#
+# Sobre PIDs: PM2 gerencia o wrapper (npm start), e o wrapper spawna o
+# servidor Node (next start) — quem realmente segura a porta 3000. Por
+# isso comparamos com TODOS os PIDs relacionados: o pm_id-pid + child_pids.
+PM2_JLIST=$(pm2 jlist 2>/dev/null || echo "[]")
+
+# Extrai info da app + lista de PIDs relacionados (parent + filhos)
+ATLAS_INFO=$(printf '%s' "$PM2_JLIST" | node -e '
+let s = "";
+process.stdin.on("data", d => s += d);
+process.stdin.on("end", () => {
+  try {
+    const arr = JSON.parse(s);
+    const p = arr.find(x => x.name === process.env.APP_NAME);
+    if (!p) { process.stdout.write("MISSING|||"); return; }
+    const pids = new Set();
+    if (p.pid) pids.add(p.pid);
+    if (Array.isArray(p.pm2_env?.child_pids)) {
+      for (const c of p.pm2_env.child_pids) if (c) pids.add(c);
+    }
+    process.stdout.write(
+      "PRESENT|" +
+      (p.pm2_env?.pm_cwd || "") + "|" +
+      ((p.pm2_env?.args || []).join(" ")) + "|" +
+      [...pids].join(",")
+    );
+  } catch (e) {
+    process.stdout.write("ERROR|||");
+  }
+});
+' APP_NAME="$APP_NAME" 2>/dev/null || echo "ERROR|||")
+
+ATLAS_STATE="${ATLAS_INFO%%|*}"
+_REST="${ATLAS_INFO#*|}"
+EXISTING_CWD="${_REST%%|*}"
+_REST="${_REST#*|}"
+EXISTING_ARGS="${_REST%%|*}"
+PM2_KNOWN_PIDS="${_REST#*|}"
+
+# Adiciona os filhos atuais (descendentes) de cada PID PM2-managed.
+# Cobre o caso "atlasdeck → npm → next → node" mesmo quando child_pids
+# do PM2 lista só o filho imediato.
+if [[ -n "$PM2_KNOWN_PIDS" ]]; then
+  EXTRA_DESC=""
+  IFS=',' read -ra _PIDS <<< "$PM2_KNOWN_PIDS"
+  for _p in "${_PIDS[@]}"; do
+    [[ -z "$_p" ]] && continue
+    _DESC=$(pgrep -P "$_p" 2>/dev/null | paste -sd ',' - || true)
+    [[ -n "$_DESC" ]] && EXTRA_DESC="${EXTRA_DESC:+$EXTRA_DESC,}$_DESC"
+  done
+  [[ -n "$EXTRA_DESC" ]] && PM2_KNOWN_PIDS="$PM2_KNOWN_PIDS,$EXTRA_DESC"
+fi
+
+is_pm2_managed_pid() {
+  local pid="$1"
+  [[ -z "$pid" || -z "$PM2_KNOWN_PIDS" ]] && return 1
+  # Match exato dentro da lista comma-separated
+  case ",${PM2_KNOWN_PIDS}," in
+    *",${pid},"*) return 0 ;;
+  esac
+  # Sobe a cadeia de pais (até 5 níveis): se um ancestral é PM2-managed,
+  # então este pid também é parte do processo legítimo.
+  local check="$pid"
+  for _ in 1 2 3 4 5; do
+    local parent
+    parent=$(ps -o ppid= -p "$check" 2>/dev/null | tr -d ' ')
+    [[ -z "$parent" || "$parent" == "1" || "$parent" == "0" ]] && return 1
+    case ",${PM2_KNOWN_PIDS}," in
+      *",${parent},"*) return 0 ;;
+    esac
+    check="$parent"
+  done
+  return 1
+}
+
+# ─── LIBERA PORTA SÓ SE FOR ÓRFÃO REAL ───────────────────────────────────────
+PORT_PID=$(lsof -ti :"$APP_PORT" 2>/dev/null | head -1 || true)
+if [[ -n "$PORT_PID" ]]; then
+  if is_pm2_managed_pid "$PORT_PID"; then
+    info "Porta $APP_PORT ocupada pelo PID $PORT_PID (gerenciado pelo PM2 — pm2 restart cuidará disso)"
+  else
+    warn "Porta $APP_PORT ocupada pelo PID $PORT_PID (fora do PM2) — liberando..."
+    kill -9 "$PORT_PID" 2>/dev/null || true
     sleep 1
     ok "Porta $APP_PORT liberada"
   fi
 fi
 
-if pm2 list 2>/dev/null | grep -q "$APP_NAME"; then
-  # Verifica se CWD do processo PM2 bate com $VPS_DIR e se está em modo de produção.
-  # Se não bater, faz delete + start para garantir que o servidor enxergue o .next correto.
-  EXISTING_INFO=$(pm2 jlist 2>/dev/null \
-    | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const a=JSON.parse(s);const p=a.find(x=>x.name==='$APP_NAME');process.stdout.write((p?.pm2_env?.pm_cwd||'') + '|' + (p?.pm2_env?.args||[]).join(' '))}catch{}})" \
-    2>/dev/null || echo "|")
-
-  EXISTING_CWD="${EXISTING_INFO%%|*}"
-  EXISTING_ARGS="${EXISTING_INFO#*|}"
-
+# ─── START / RESTART PM2 ─────────────────────────────────────────────────────
+# pm2 restart pode propagar exit code não-zero quando a app sai com sinal
+# durante o restart (Next.js + SIGINT = exit 130). Isso colidia com set -e
+# e abortava o script ANTES do health check. Agora a fase só falha se o
+# health check confirmar que a app não está respondendo.
+PM2_ACTION_EXIT=0
+if [[ "$ATLAS_STATE" == "PRESENT" ]]; then
   if [[ "$EXISTING_CWD" != "$VPS_DIR" ]] || [[ "$EXISTING_ARGS" == *"dev"* ]]; then
     warn "PM2 configurado incorretamente (CWD divergente ou modo Dev detectado) — recriando processo para Produção"
-    pm2 delete "$APP_NAME" 2>/dev/null || true
+    pm2 delete "$APP_NAME" < /dev/null 2>/dev/null || true
     cd "$VPS_DIR"
-    pm2 start npm --name "$APP_NAME" -- start
-    pm2 save 2>/dev/null || true
-    ok "PM2: processo de produção recriado a partir de $VPS_DIR"
+    pm2 start npm --name "$APP_NAME" -- start < /dev/null || PM2_ACTION_EXIT=$?
+    pm2 save < /dev/null 2>/dev/null || true
+    if [[ $PM2_ACTION_EXIT -eq 0 ]]; then
+      ok "PM2: processo de produção recriado a partir de $VPS_DIR"
+    else
+      warn "PM2: comando 'start' retornou exit $PM2_ACTION_EXIT — validando via health check"
+    fi
   else
-    pm2 restart "$APP_NAME" --update-env
-    ok "PM2: processo reiniciado"
+    # Tolera exit não-zero — set +e local; o health check decide o destino real.
+    set +e
+    pm2 restart "$APP_NAME" --update-env < /dev/null
+    PM2_ACTION_EXIT=$?
+    set -e
+    if [[ $PM2_ACTION_EXIT -eq 0 ]]; then
+      ok "PM2: processo reiniciado"
+    else
+      warn "PM2: 'restart' retornou exit $PM2_ACTION_EXIT (app pode ter saído com sinal durante restart) — validando via health check"
+    fi
   fi
 else
   cd "$VPS_DIR"
-  pm2 start npm --name "$APP_NAME" -- start
-  pm2 save 2>/dev/null || true
-  pm2 startup 2>/dev/null | grep -E "^sudo|^env" | bash 2>/dev/null || true
-  ok "PM2: processo iniciado"
+  set +e
+  pm2 start npm --name "$APP_NAME" -- start < /dev/null
+  PM2_ACTION_EXIT=$?
+  set -e
+  pm2 save < /dev/null 2>/dev/null || true
+  pm2 startup < /dev/null 2>/dev/null | grep -E "^sudo|^env" | bash 2>/dev/null || true
+  if [[ $PM2_ACTION_EXIT -eq 0 ]]; then
+    ok "PM2: processo iniciado"
+  else
+    warn "PM2: 'start' retornou exit $PM2_ACTION_EXIT — validando via health check"
+  fi
 fi
 
 record "PM2 restart" "ok" "$(elapsed $T)"
