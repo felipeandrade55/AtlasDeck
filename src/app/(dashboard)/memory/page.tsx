@@ -9,17 +9,20 @@ import {
   Plus,
   FileText,
   Settings as SettingsIcon,
+  Sparkles,
 } from "lucide-react";
 import { FileTree, FileNode } from "@/components/FileTree";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { MarkdownPreview } from "@/components/MarkdownPreview";
 import { MemoryList } from "@/components/memory/MemoryList";
 import { MemorySettings } from "@/components/memory/MemorySettings";
+import { HealthCheckPanel } from "@/components/memory/HealthCheckPanel";
+import { OnboardingWizard } from "@/components/memory/OnboardingWizard";
 import { useToast } from "@/components/Toast";
 import { PROTECTED_FILES, MEMORY_DIR } from "@/lib/memory-files";
 
 type ViewMode = "edit" | "preview";
-type Tab = "files" | "memories" | "settings";
+type Tab = "files" | "memories" | "setup" | "settings";
 
 interface Workspace {
   id: string;
@@ -377,6 +380,12 @@ export default function MemoryPage() {
             onClick={() => setActiveTab("memories")}
           />
           <TabButton
+            label="Setup"
+            icon={<Sparkles size={14} />}
+            active={activeTab === "setup"}
+            onClick={() => setActiveTab("setup")}
+          />
+          <TabButton
             label="Configurações"
             icon={<SettingsIcon size={14} />}
             active={activeTab === "settings"}
@@ -556,6 +565,32 @@ export default function MemoryPage() {
           {activeTab === "memories" &&
             (selectedWorkspace ? (
               <MemoryList workspace={selectedWorkspace} />
+            ) : (
+              <div
+                style={{
+                  flex: 1,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  color: "var(--text-muted)",
+                  fontSize: 14,
+                }}
+              >
+                Selecione um workspace
+              </div>
+            ))}
+
+          {activeTab === "setup" &&
+            (selectedWorkspace ? (
+              <div style={{ flex: 1, overflowY: "auto", padding: 24 }}>
+                <div style={{ maxWidth: 880, marginInline: "auto", display: "flex", flexDirection: "column", gap: 20 }}>
+                  <HealthCheckPanel workspace={selectedWorkspace} />
+                  <OnboardingWizard
+                    workspace={selectedWorkspace}
+                    onSwitchToFilesTab={() => setActiveTab("files")}
+                  />
+                </div>
+              </div>
             ) : (
               <div
                 style={{

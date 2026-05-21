@@ -736,6 +736,13 @@ export interface MemorySettings {
   extraction_enabled: boolean;
   extractor_provider: ExtractorProvider;
   ollama_model: string;
+  welcome_notification_shown: boolean;
+  llm_choice_made: boolean;
+  home_lat: number | null;
+  home_lon: number | null;
+  home_label: string | null;
+  home_timezone: string | null;
+  home_updated_at: string | null;
 }
 
 const DEFAULT_SETTINGS: MemorySettings = {
@@ -747,7 +754,25 @@ const DEFAULT_SETTINGS: MemorySettings = {
   extraction_enabled: true,
   extractor_provider: "openclaw",
   ollama_model: "qwen2.5:7b",
+  welcome_notification_shown: false,
+  llm_choice_made: false,
+  home_lat: null,
+  home_lon: null,
+  home_label: null,
+  home_timezone: null,
+  home_updated_at: null,
 };
+
+function parseNullableFloat(value: string | undefined): number | null {
+  if (value === undefined || value === "" || value === "null") return null;
+  const n = parseFloat(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseNullableString(value: string | undefined): string | null {
+  if (value === undefined || value === "" || value === "null") return null;
+  return value;
+}
 
 function parseExtractorProvider(value: string | undefined): ExtractorProvider {
   if (value === "ollama" || value === "heuristic" || value === "openclaw") {
@@ -781,6 +806,14 @@ export function getSettings(): MemorySettings {
     extraction_enabled: (map.get("extraction_enabled") ?? "true") === "true",
     extractor_provider: parseExtractorProvider(map.get("extractor_provider")),
     ollama_model: map.get("ollama_model") ?? DEFAULT_SETTINGS.ollama_model,
+    welcome_notification_shown:
+      (map.get("welcome_notification_shown") ?? "false") === "true",
+    llm_choice_made: (map.get("llm_choice_made") ?? "false") === "true",
+    home_lat: parseNullableFloat(map.get("home_lat")),
+    home_lon: parseNullableFloat(map.get("home_lon")),
+    home_label: parseNullableString(map.get("home_label")),
+    home_timezone: parseNullableString(map.get("home_timezone")),
+    home_updated_at: parseNullableString(map.get("home_updated_at")),
   };
 }
 
@@ -795,7 +828,7 @@ export function setSettings(patch: Partial<MemorySettings>): MemorySettings {
     for (const [k, v] of entries) stmt.run(k, v);
   });
   const entries: Array<[string, string]> = Object.entries(patch).map(
-    ([k, v]) => [k, String(v)],
+    ([k, v]) => [k, v === null || v === undefined ? "" : String(v)],
   );
   tx(entries);
   return getSettings();

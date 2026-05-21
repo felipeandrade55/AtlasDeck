@@ -11,9 +11,17 @@
  * if there are no sessions or no memories yet. Kill-switch via the
  * MEMORY_SCHEDULER_DISABLED=1 env var.
  */
-import { getSettings, archiveLowImportance, reviewProbationExpired } from "@/lib/memory-db";
+import {
+  getSettings,
+  setSettings,
+  archiveLowImportance,
+  reviewProbationExpired,
+  getStats,
+} from "@/lib/memory-db";
 import { extractRecentSessions } from "@/lib/memory-extractor";
 import { injectAllWorkspaces } from "@/lib/memory-injector";
+import { addNotification } from "@/lib/notifications";
+import { getOllamaStatus } from "@/lib/ollama-client";
 
 const EXTRACTION_INTERVAL_MS = Number.parseInt(
   process.env.MEMORY_EXTRACTION_INTERVAL_MS || `${15 * 60 * 1000}`,
@@ -100,6 +108,107 @@ async function runHousekeep(): Promise<void> {
   }
 }
 
+async function maybeShowWelcomeNotification(): Promise<void> {
+  try {
+    const settings = getSettings();
+    if (settings.welcome_notification_shown) return;
+
+    const stats = getStats();
+    // Show only on a truly fresh install (no memories yet). Avoids
+    // surprising notifications on existing instances that upgrade.
+    if (stats.total > 0) {
+      setSettings({ welcome_notification_shown: true });
+      return;
+    }
+
+    const ollama = await getOllamaStatus().catch(() => null);
+    const ollamaHint = !ollama || !ollama.installed
+      ? "Dica: ative Ollama para zero custo (instruções no guia)."
+      : ollama.running
+      ? "Ollama detectado e rodando — pronto pra entrevista."
+      : "Ollama instalado mas parado — confira o status no guia.";
+
+    const message = [
+      "Abra o guia completo para conhecer o sistema menu por menu, fazer o setup da memória adaptativa e personalizar a identidade do seu agente.",
+      "",
+      ollamaHint,
+    ].join("\n");
+
+    await addNotification(
+      "👋 Comece por aqui — guia de boas-vindas",
+      message,
+      "info",
+      "/welcome",
+      { source: "memory-onboarding" },
+    );
+
+    setSettings({ welcome_notification_shown: true });
+
+    if (process.env.MEMORY_DEBUG === "1") {
+      console.log("[memory-scheduler] welcome notification posted");
+    }
+  } catch (err) {
+    console.warn("[memory-scheduler] welcome notification failed:", err);
+  }
+}
+
+/**
+ * Nudge users who chose "decide later" in the LLM-choice step. Fires
+ * once per boot if the wizard recorded a deferred choice and the user
+ * still hasn't picked a real provider. Identified by metadata.source
+ * so we never queue more than one of these.
+ */
+async function maybeNudgeDeferredLLMChoice(): Promise<void> {
+  try {
+    const settings = getSettings();
+    // Only nudge when: user opened the wizard, chose "later", and the
+    // active extractor is still the default heuristic-ish openclaw with
+    // no openclaw binary actually working. Conservative — skip if they
+    // already configured something.
+    if (!settings.llm_choice_made) return;
+
+    const ollama = await getOllamaStatus().catch(() => null);
+    const ollamaReady = ollama?.installed && ollama?.running;
+    const usingOllama = settings.extractor_provider === "ollama";
+    const usingOpenClaw = settings.extractor_provider === "openclaw";
+
+    // If user picked Ollama and it's actually running, nothing to nudge.
+    if (usingOllama && ollamaReady) return;
+    // If user picked OpenClaw, trust the choice (we can't easily probe
+    // the CLI without spawning it). Don't nag.
+    if (usingOpenClaw) return;
+
+    // Anything else means: chose "later" (or chose Ollama but it's not
+    // ready). Drop a friendly reminder once per boot.
+    const { loadNotifications } = await import("@/lib/notifications");
+    const existing = await loadNotifications();
+    const already = existing.some(
+      (n) =>
+        n.metadata &&
+        (n.metadata as { source?: string }).source === "llm-choice-nudge",
+    );
+    if (already) return;
+
+    await addNotification(
+      "💡 Configure a LLM para liberar a memória adaptativa",
+      [
+        "Você ainda não escolheu uma LLM para o AtlasDeck. A memória adaptativa fica parada até você configurar.",
+        "",
+        "Ollama (local, grátis) é o caminho recomendado pra começar sem custo. Abra o wizard em Memória → Setup.",
+      ].join("\n"),
+      "info",
+      "/memory",
+      { source: "llm-choice-nudge" },
+    );
+
+    if (process.env.MEMORY_DEBUG === "1") {
+      console.log("[memory-scheduler] LLM-choice nudge posted");
+    }
+  } catch (err) {
+    console.warn("[memory-scheduler] LLM-choice nudge failed:", err);
+  }
+}
+
 let started = false;
 
 export function startMemoryScheduler(): void {
@@ -109,6 +218,13 @@ export function startMemoryScheduler(): void {
     return;
   }
   started = true;
+
+  // Welcome notification: fires once per fresh install, off the hot
+  // path. Doesn't block the scheduler boot.
+  setTimeout(() => {
+    void maybeShowWelcomeNotification();
+    void maybeNudgeDeferredLLMChoice();
+  }, 5_000);
 
   // Kick off with a short delay so we don't race the server boot
   setTimeout(() => {

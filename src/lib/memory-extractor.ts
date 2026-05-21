@@ -321,8 +321,19 @@ export async function extractMemoriesForSession(
     let llmOut: ExtractionCandidate[] | null = null;
     if (provider === "ollama") {
       llmOut = await tryOllamaExtraction(rendered, ollamaModel);
+      // Auto-fallback: if Ollama is the preferred provider but failed
+      // (not running, model missing, timeout), try OpenClaw so we don't
+      // lose this extraction batch.
+      if (!llmOut) {
+        llmOut = await tryOpenClawExtraction(rendered);
+      }
     } else {
       llmOut = await tryOpenClawExtraction(rendered);
+      // Auto-fallback the other direction: premium provider failed
+      // (no tokens, network), keep extracting via the local model.
+      if (!llmOut) {
+        llmOut = await tryOllamaExtraction(rendered, ollamaModel);
+      }
     }
     if (llmOut && llmOut.length > 0) {
       candidates = llmOut;

@@ -477,6 +477,52 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
+# FASE 3.6 — OLLAMA (opcional, soft-fail)
+# ══════════════════════════════════════════════════════════════════════════════
+# Garante que Ollama está instalado para servir como LLM local gratuita
+# (alternativa ao OpenClaw). O script oficial já faz systemctl enable +
+# start, então fica habilitado no boot automaticamente.
+#
+# Não baixa modelo aqui — Qwen 2.5 7B são ~5 GB e isso inflaria o deploy
+# desnecessariamente. O usuário baixa pelo wizard de boas-vindas quando
+# escolher Ollama como provider.
+#
+# Soft-fail: se o install falhar (sem internet, plataforma não suportada,
+# etc.), apenas avisa. O AtlasDeck funciona sem Ollama (OpenClaw cobre).
+step "Ollama (LLM local opcional)..."
+T=$(now)
+phase_status "ollama-install" "running"
+
+if command -v ollama &>/dev/null; then
+  OLLAMA_VER=$(ollama --version 2>/dev/null | head -1 | tr -d '\n' || echo "desconhecida")
+  ok "Ollama já instalado ($OLLAMA_VER)"
+  record "Ollama install" "skip" "$(elapsed $T)"
+  phase_status "ollama-install" "skip" "$(elapsed $T)"
+elif [[ "$(uname -s)" != "Linux" ]]; then
+  warn "Auto-install do Ollama só suportado em Linux — pulando (instale pela UI ou manualmente em ollama.com/download)"
+  record "Ollama install" "skip" "$(elapsed $T)"
+  phase_status "ollama-install" "skip" "$(elapsed $T)"
+else
+  info "Instalando Ollama via script oficial (curl | sh)..."
+  if curl -fsSL https://ollama.com/install.sh | sh 2>&1 | tee -a /tmp/ollama-install.log | tail -10; then
+    if command -v ollama &>/dev/null; then
+      ok "Ollama instalado e habilitado no boot (systemd)"
+      info "Modelos são baixados sob demanda pela UI (Memória → Extrator)"
+      record "Ollama install" "ok" "$(elapsed $T)"
+      phase_status "ollama-install" "ok" "$(elapsed $T)"
+    else
+      warn "Script rodou mas comando 'ollama' não está no PATH — verifique /tmp/ollama-install.log"
+      record "Ollama install" "fail" "$(elapsed $T)"
+      phase_status "ollama-install" "fail" "$(elapsed $T)" "binary not found in PATH after install"
+    fi
+  else
+    warn "Falha ao instalar Ollama — continuando sem ele (AtlasDeck funciona com OpenClaw)"
+    record "Ollama install" "fail" "$(elapsed $T)"
+    phase_status "ollama-install" "fail" "$(elapsed $T)" "install script exit $?"
+  fi
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
 # FASE 4 — BUILD
 # ══════════════════════════════════════════════════════════════════════════════
 step "Build..."

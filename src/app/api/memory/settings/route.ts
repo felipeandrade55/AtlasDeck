@@ -46,6 +46,12 @@ export async function POST(request: NextRequest) {
   if (typeof body.ollama_model === "string" && body.ollama_model.trim()) {
     patch.ollama_model = body.ollama_model.trim();
   }
+  if (typeof body.llm_choice_made === "boolean") {
+    patch.llm_choice_made = body.llm_choice_made;
+  }
+  if (typeof body.welcome_notification_shown === "boolean") {
+    patch.welcome_notification_shown = body.welcome_notification_shown;
+  }
 
   return NextResponse.json(setSettings(patch));
 }

@@ -13,7 +13,19 @@
  * install + pull buttons.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Brain, Cpu, Download, Loader2, RefreshCw, ShieldCheck, Zap } from "lucide-react";
+import {
+  Brain,
+  Cpu,
+  Download,
+  Loader2,
+  Pause,
+  Play,
+  PowerOff,
+  RefreshCw,
+  RotateCw,
+  ShieldCheck,
+  Zap,
+} from "lucide-react";
 import { useToast } from "@/components/Toast";
 
 export type ExtractorProvider = "openclaw" | "ollama" | "heuristic";
@@ -43,7 +55,14 @@ interface OllamaStatusPayload {
   platform: string;
   installHint: string;
   recommended: RecommendedModel[];
+  service: {
+    supported: boolean;
+    active: boolean;
+    enabled: boolean;
+  };
 }
+
+type ServiceAction = "start" | "stop" | "restart" | "enable" | "disable";
 
 interface PullState {
   id: string;
@@ -90,6 +109,7 @@ export function ExtractorPanel({ provider, ollamaModel, onSettingsChange }: Prop
   const [loadingStatus, setLoadingStatus] = useState(false);
   const [install, setInstall] = useState<InstallState | null>(null);
   const [pulls, setPulls] = useState<Record<string, PullState>>({});
+  const [serviceAction, setServiceAction] = useState<ServiceAction | null>(null);
   const pollers = useRef<Record<string, ReturnType<typeof setInterval>>>({});
 
   const refreshStatus = useCallback(async () => {
@@ -205,6 +225,49 @@ export function ExtractorPanel({ provider, ollamaModel, onSettingsChange }: Prop
     [refreshStatus, toast],
   );
 
+  const runServiceAction = useCallback(
+    async (action: ServiceAction) => {
+      // Hard-to-reverse confirmation: stopping the daemon kills the
+      // extractor mid-run. Quick guard so it's intentional.
+      if (action === "stop" && provider === "ollama") {
+        if (
+          !window.confirm(
+            "Parar o Ollama vai cortar a extração de memória até você iniciar de novo. Continuar?",
+          )
+        ) {
+          return;
+        }
+      }
+      try {
+        setServiceAction(action);
+        const res = await fetch("/api/memory/ollama/service", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action }),
+        });
+        const data = await res.json();
+        if (!res.ok || data.ok === false) {
+          toast.error(data.message || data.error || "Falha no systemctl");
+        } else {
+          const verb: Record<ServiceAction, string> = {
+            start: "iniciado",
+            stop: "parado",
+            restart: "reiniciado",
+            enable: "habilitado no boot",
+            disable: "desabilitado do boot",
+          };
+          toast.success(`Ollama ${verb[action]}`);
+        }
+        await refreshStatus();
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Falha");
+      } finally {
+        setServiceAction(null);
+      }
+    },
+    [provider, refreshStatus, toast],
+  );
+
   const localModelNames = new Set(
     ollama?.models.map((m) => m.name.replace(/:latest$/, "")) ?? [],
   );
@@ -281,7 +344,7 @@ export function ExtractorPanel({ provider, ollamaModel, onSettingsChange }: Prop
                 </>
               ) : ollama.installed && !ollama.running ? (
                 <>
-                  ⚠️ Ollama instalado mas não está respondendo em {ollama.baseUrl}. Verifique se o serviço está rodando.
+                  ⚠️ Ollama instalado mas não está respondendo em {ollama.baseUrl}. Use “Iniciar” abaixo ou verifique <code>journalctl -u ollama</code>.
                 </>
               ) : (
                 <>❌ Ollama não detectado. Instale para usar este modo.</>
@@ -304,6 +367,115 @@ export function ExtractorPanel({ provider, ollamaModel, onSettingsChange }: Prop
               )}
             </div>
           </div>
+
+          {/* Service control: start / stop / restart + enable-on-boot.
+              Only shows when Ollama is installed AND systemd is reachable
+              (Linux with the unit registered by the official installer). */}
+          {ollama && ollama.installed && ollama.service.supported && (
+            <div
+              style={{
+                padding: 10,
+                borderRadius: 6,
+                background: "var(--bg)",
+                border: "1px solid var(--border)",
+                display: "flex",
+                flexDirection: "column",
+                gap: 10,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                  Serviço <code style={{ color: "var(--text-primary)" }}>ollama.service</code>:{" "}
+                  <strong style={{ color: ollama.service.active ? "var(--success, #32D74B)" : "var(--warning, #FFD60A)" }}>
+                    {ollama.service.active ? "ativo" : "parado"}
+                  </strong>
+                  {" · "}
+                  no boot:{" "}
+                  <strong style={{ color: ollama.service.enabled ? "var(--success, #32D74B)" : "var(--text-muted)" }}>
+                    {ollama.service.enabled ? "habilitado" : "desabilitado"}
+                  </strong>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {ollama.service.active ? (
+                  <button
+                    type="button"
+                    onClick={() => runServiceAction("stop")}
+                    disabled={serviceAction !== null}
+                    style={smallButtonStyle}
+                    title="Parar o daemon (corta extração até reiniciar)"
+                  >
+                    {serviceAction === "stop" ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : (
+                      <Pause size={12} />
+                    )}
+                    Parar
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => runServiceAction("start")}
+                    disabled={serviceAction !== null}
+                    style={primaryButtonStyle}
+                  >
+                    {serviceAction === "start" ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : (
+                      <Play size={12} />
+                    )}
+                    Iniciar
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => runServiceAction("restart")}
+                  disabled={serviceAction !== null}
+                  style={smallButtonStyle}
+                  title="systemctl restart ollama"
+                >
+                  {serviceAction === "restart" ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <RotateCw size={12} />
+                  )}
+                  Reiniciar
+                </button>
+                {ollama.service.enabled ? (
+                  <button
+                    type="button"
+                    onClick={() => runServiceAction("disable")}
+                    disabled={serviceAction !== null}
+                    style={smallButtonStyle}
+                    title="Não subir junto com o servidor"
+                  >
+                    {serviceAction === "disable" ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : (
+                      <PowerOff size={12} />
+                    )}
+                    Não subir no boot
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => runServiceAction("enable")}
+                    disabled={serviceAction !== null}
+                    style={smallButtonStyle}
+                    title="Subir junto com o servidor"
+                  >
+                    {serviceAction === "enable" ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : (
+                      <Play size={12} />
+                    )}
+                    Subir no boot
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Install log (when running) */}
           {install && (

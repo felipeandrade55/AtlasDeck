@@ -284,6 +284,131 @@ export function getInstallStatus(id: string) {
 }
 
 /**
+ * Service control via systemd (Linux only). The official Ollama
+ * installer creates `ollama.service` and runs as root or via the
+ * service user; we shell out to `systemctl` directly. If AtlasDeck
+ * itself is running as a non-root user without sudoers entries for
+ * `systemctl <verb> ollama`, the calls will fail with permission
+ * errors — that's surfaced to the UI verbatim.
+ *
+ * macOS/Windows return { supported: false } since Ollama there is a
+ * GUI app, not a systemd unit.
+ */
+export type ServiceAction =
+  | "start"
+  | "stop"
+  | "restart"
+  | "enable"
+  | "disable"
+  | "status";
+
+export interface ServiceResult {
+  supported: boolean;
+  action: ServiceAction;
+  ok: boolean;
+  active?: boolean;
+  enabled?: boolean;
+  message: string;
+}
+
+async function runSystemctl(
+  verb: string,
+  unit = "ollama",
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  try {
+    const { stdout, stderr } = await exec(`systemctl ${verb} ${unit}`, {
+      timeout: 10_000,
+    });
+    return { ok: true, stdout: String(stdout).trim(), stderr: String(stderr).trim() };
+  } catch (err) {
+    const e = err as { stdout?: string; stderr?: string; message?: string };
+    return {
+      ok: false,
+      stdout: String(e.stdout ?? "").trim(),
+      stderr: String(e.stderr ?? e.message ?? "").trim(),
+    };
+  }
+}
+
+export async function controlService(action: ServiceAction): Promise<ServiceResult> {
+  if (process.platform !== "linux") {
+    return {
+      supported: false,
+      action,
+      ok: false,
+      message:
+        "Controle do serviço só está disponível em Linux (systemd). No macOS/Windows o Ollama é um app GUI — use o ícone do app pra iniciar/parar.",
+    };
+  }
+
+  // "status" is a read; the others are state-changing.
+  const verbMap: Record<ServiceAction, string> = {
+    start: "start",
+    stop: "stop",
+    restart: "restart",
+    enable: "enable",
+    disable: "disable",
+    status: "status",
+  };
+  const verb = verbMap[action];
+
+  const { ok, stdout, stderr } = await runSystemctl(verb);
+
+  // Always probe is-active + is-enabled after the action so the UI
+  // gets the new state without a second round-trip.
+  const activeRes = await runSystemctl("is-active");
+  const enabledRes = await runSystemctl("is-enabled");
+  const active = activeRes.stdout === "active";
+  const enabled = enabledRes.stdout === "enabled" || enabledRes.stdout === "alias";
+
+  if (!ok) {
+    const detail = stderr || stdout || "(systemctl não deu detalhe)";
+    return {
+      supported: true,
+      action,
+      ok: false,
+      active,
+      enabled,
+      message: `systemctl ${verb} ollama falhou: ${detail}`,
+    };
+  }
+
+  return {
+    supported: true,
+    action,
+    ok: true,
+    active,
+    enabled,
+    message:
+      action === "status"
+        ? `active=${active} enabled=${enabled}`
+        : `systemctl ${verb} ollama executado com sucesso`,
+  };
+}
+
+/**
+ * Read-only probe of systemd state. Used by getOllamaStatus so the
+ * status endpoint can report whether Ollama is configured to start on
+ * boot — separate from whether the daemon is currently running.
+ */
+export async function getServiceState(): Promise<{
+  supported: boolean;
+  active: boolean;
+  enabled: boolean;
+}> {
+  if (process.platform !== "linux") {
+    return { supported: false, active: false, enabled: false };
+  }
+  const activeRes = await runSystemctl("is-active");
+  const enabledRes = await runSystemctl("is-enabled");
+  return {
+    supported: true,
+    active: activeRes.stdout === "active",
+    enabled: enabledRes.stdout === "enabled" || enabledRes.stdout === "alias",
+  };
+}
+
+/**
  * Recommended models for memory extraction, with conservative RAM
  * estimates. Values are for Q4_K_M quantization.
  */

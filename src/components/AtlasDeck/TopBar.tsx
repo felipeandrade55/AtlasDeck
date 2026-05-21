@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Search, Bell, User, Command, LogOut, Settings, ChevronDown } from "lucide-react";
+import { Search, Bell, User, Command, LogOut, Settings, ChevronDown, HelpCircle } from "lucide-react";
 import { GlobalSearch } from "@/components/GlobalSearch";
 import { NotificationDropdown } from "@/components/NotificationDropdown";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 
 const OWNER_NAME = process.env.NEXT_PUBLIC_OWNER_NAME ?? "Usuário";
 const OWNER_INITIAL = OWNER_NAME.charAt(0).toUpperCase();
@@ -135,6 +136,35 @@ export function TopBar() {
               Buscar... ⌘K
             </span>
           </button>
+
+          {/* Help / Welcome guide */}
+          <Link
+            href="/welcome"
+            aria-label="Guia de boas-vindas"
+            title="Guia de boas-vindas — tour completo do sistema"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: "32px",
+              height: "32px",
+              borderRadius: "6px",
+              backgroundColor: "transparent",
+              color: "var(--text-muted)",
+              transition: "all 120ms ease",
+              textDecoration: "none",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = "var(--surface-elevated)";
+              e.currentTarget.style.color = "var(--accent)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = "transparent";
+              e.currentTarget.style.color = "var(--text-muted)";
+            }}
+          >
+            <HelpCircle style={{ width: "18px", height: "18px" }} />
+          </Link>
 
           {/* Notifications Dropdown */}
           <NotificationDropdown />
