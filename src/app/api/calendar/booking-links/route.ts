@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { createBookingLink, listBookingLinks } from "@/lib/calendar-db";
+import { logActivity } from "@/lib/activities-db";
 
 export const dynamic = "force-dynamic";
 
@@ -33,6 +34,14 @@ export async function POST(request: NextRequest) {
       max_uses: body.max_uses ?? null,
       active: body.active !== false,
     });
+    try {
+      logActivity(
+        "calendar",
+        `Link de agendamento criado: ${link.title} (${link.duration_minutes}min)`,
+        "success",
+        { metadata: { linkId: link.id, token: link.token } }
+      );
+    } catch {}
     return NextResponse.json({ link }, { status: 201 });
   } catch (error) {
     console.error("Failed to create booking link:", error);

@@ -10,6 +10,7 @@ import {
   writeOpenClawConfig,
   type OpenClawConfig,
 } from "@/lib/openclaw-config";
+import { logActivity } from "@/lib/activities-db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -212,6 +213,26 @@ export async function POST(request: NextRequest) {
       openclawWorkspace: body.openclawWorkspace,
     });
     const status = await buildStatus(config, body.test === true);
+
+    try {
+      const changed = [
+        body.openclawDir ? "dir" : null,
+        body.openclawBin ? "bin" : null,
+        body.openclawWorkspace ? "workspace" : null,
+      ].filter(Boolean).join(", ") || "config";
+      logActivity(
+        "config",
+        `Configuração OpenClaw atualizada (${changed})`,
+        "success",
+        {
+          metadata: {
+            openclawDir: config.openclawDir,
+            openclawBin: config.openclawBin,
+            openclawWorkspace: config.openclawWorkspace,
+          },
+        }
+      );
+    } catch {}
 
     return jsonNoStore({
       success: true,

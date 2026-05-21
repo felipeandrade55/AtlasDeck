@@ -10,6 +10,38 @@ import fs from "fs";
 import path from "path";
 import { readOpenClawConfig } from "./openclaw-config";
 
+function stripHtml(s: string): string {
+  return s.replace(/<[^>]+>/g, "").trim();
+}
+
+function previewMessage(s: string, max = 80): string {
+  const plain = stripHtml(s);
+  return plain.length > max ? plain.slice(0, max - 1).trimEnd() + "…" : plain;
+}
+
+// Logging is best-effort + dynamic import to avoid pulling sqlite into edge
+// contexts that import this helper for type info only.
+async function logTelegramActivity(
+  status: "success" | "error",
+  message: string,
+  detail?: string,
+): Promise<void> {
+  try {
+    const { logActivity } = await import("./activities-db");
+    const preview = previewMessage(message);
+    logActivity(
+      "message",
+      status === "success"
+        ? `Telegram: ${preview}`
+        : `Telegram falhou${detail ? ` (${detail})` : ""}: ${preview}`,
+      status,
+      { metadata: { channel: "telegram", preview } },
+    );
+  } catch {
+    // ignore — telegram path must never fail because of activity logging
+  }
+}
+
 export async function sendTelegramAlert(
   botTokenOverride: string,
   chatIdOverride: string,
@@ -37,6 +69,7 @@ export async function sendTelegramAlert(
 
   if (!botToken || !chatId) {
     console.warn("Telegram alert skipped: Bot Token or Chat ID not configured.");
+    void logTelegramActivity("error", message, "credenciais ausentes");
     return false;
   }
 
@@ -59,9 +92,15 @@ export async function sendTelegramAlert(
       );
     }
 
+    void logTelegramActivity("success", message);
     return true;
   } catch (error) {
     console.error("Failed to send Telegram alert:", error);
+    void logTelegramActivity(
+      "error",
+      message,
+      error instanceof Error ? error.message : String(error),
+    );
     return false;
   }
 }

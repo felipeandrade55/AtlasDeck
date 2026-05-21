@@ -13,6 +13,7 @@ import path from "path";
 import { resolveWorkspacePath } from "@/lib/workspace-resolver";
 import { ROOT_FILES, sanitizeWorkspaceRelativePath } from "@/lib/memory-files";
 import { indexFile } from "@/lib/memory-fts";
+import { logActivity } from "@/lib/activities-db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -76,6 +77,15 @@ export async function POST(request: NextRequest) {
 
     written.push({ file: safe, backup: backupPath, bytes: Buffer.byteLength(content, "utf-8") });
   }
+
+  try {
+    logActivity(
+      "memory",
+      `Wizard de memória aplicado: ${written.map((w) => w.file).join(", ")}`,
+      "success",
+      { agent: workspace, metadata: { written: written.map((w) => w.file) } }
+    );
+  } catch {}
 
   return NextResponse.json({
     success: true,

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { applyReschedule } from "@/lib/calendar-reschedule";
 import { addNotification } from "@/lib/notifications";
+import { logActivity } from "@/lib/activities-db";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -26,6 +27,15 @@ export async function POST(request: NextRequest, context: RouteContext) {
     if (!result.ok) {
       return NextResponse.json({ error: result.error }, { status: 400 });
     }
+
+    try {
+      logActivity(
+        "calendar",
+        `Compromisso remarcado para ${new Date(body.new_start_at).toLocaleString("pt-BR")}`,
+        "success",
+        { metadata: { queueId: id, newEventId: result.new_event_id } }
+      );
+    } catch {}
 
     void addNotification(
       "✅ Compromisso remarcado",

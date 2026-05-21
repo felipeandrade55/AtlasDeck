@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
-import { readFileSync, writeFileSync, statSync, existsSync, mkdirSync } from "fs";
-import { join, dirname } from "path";
-import { getOpenClawDir } from "@/lib/openclaw-config";
+import { readFileSync, writeFileSync, statSync } from "fs";
+import { join } from "path";
+import { resolveOpenClawAgentsConfigPath } from "@/lib/openclaw-config";
+import { logActivity } from "@/lib/activities-db";
 
 export const dynamic = "force-dynamic";
 
@@ -26,55 +27,6 @@ interface Agent {
   activeSessions: number;
 }
 
-const FALLBACK_CONFIG_PATH = join(process.cwd(), "data", "openclaw-fallback.json");
-
-const DEFAULT_MOCK_CONFIG = {
-  agents: {
-    defaults: {
-      model: {
-        primary: "openai/gpt-5.4-codex"
-      }
-    },
-    list: [
-      {
-        id: "main",
-        name: "Mission Control",
-        ui: { emoji: "🤖", color: "#ff6b35" },
-        model: { primary: "openai/gpt-5.4" },
-        workspace: "./workspace/mission-control",
-        subagents: { allowAgents: ["devops", "coder"] }
-      },
-      {
-        id: "devops",
-        name: "DevOps Sentinel",
-        ui: { emoji: "🛡️", color: "#10b981" },
-        model: { primary: "openai/gpt-5.4-mini" },
-        workspace: "./workspace/devops",
-        subagents: { allowAgents: [] }
-      },
-      {
-        id: "coder",
-        name: "Code Architect",
-        ui: { emoji: "💻", color: "#3b82f6" },
-        model: { primary: "openai/gpt-5.4-codex" },
-        workspace: "./workspace/coder",
-        subagents: { allowAgents: [] }
-      }
-    ]
-  },
-  channels: {
-    telegram: {
-      dmPolicy: "pairing",
-      accounts: {
-        main: {
-          botToken: "configured_mock_token",
-          dmPolicy: "pairing"
-        }
-      }
-    }
-  }
-};
-
 const DEFAULT_AGENT_CONFIG: Record<string, { emoji: string; color: string; name?: string }> = {
   main: {
     emoji: process.env.NEXT_PUBLIC_AGENT_EMOJI || "🤖",
@@ -96,33 +48,9 @@ function getAgentDisplayInfo(agentId: string, agentConfig: any): { emoji: string
   };
 }
 
-function resolveConfigPath(): { path: string; isFallback: boolean } {
-  const prodDir = getOpenClawDir();
-  const prodPath = join(prodDir, "openclaw.json");
-
-  if (existsSync(prodDir)) {
-    // If prod openclaw.json doesn't exist but directory does, initialize it
-    if (!existsSync(prodPath)) {
-      try {
-        writeFileSync(prodPath, JSON.stringify(DEFAULT_MOCK_CONFIG, null, 2), "utf-8");
-      } catch {}
-    }
-    return { path: prodPath, isFallback: false };
-  }
-
-  // Fallback to local data/openclaw-fallback.json
-  if (!existsSync(FALLBACK_CONFIG_PATH)) {
-    try {
-      mkdirSync(dirname(FALLBACK_CONFIG_PATH), { recursive: true });
-      writeFileSync(FALLBACK_CONFIG_PATH, JSON.stringify(DEFAULT_MOCK_CONFIG, null, 2), "utf-8");
-    } catch {}
-  }
-  return { path: FALLBACK_CONFIG_PATH, isFallback: true };
-}
-
 export async function GET() {
   try {
-    const { path: configPath } = resolveConfigPath();
+    const { path: configPath } = resolveOpenClawAgentsConfigPath();
     const config = JSON.parse(readFileSync(configPath, "utf-8"));
 
     if (!config.agents?.list?.length) {
@@ -193,7 +121,7 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
-    const { path: configPath } = resolveConfigPath();
+    const { path: configPath } = resolveOpenClawAgentsConfigPath();
     const config = JSON.parse(readFileSync(configPath, "utf-8"));
     const body = await request.json();
 
@@ -237,6 +165,12 @@ export async function POST(request: Request) {
     }
 
     writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+    try {
+      logActivity("agent", `Agente criado: ${newAgent.name} (${newAgent.id})`, "success", {
+        agent: newAgent.id,
+        metadata: { id: newAgent.id, model: newAgent.model?.primary, workspace: newAgent.workspace },
+      });
+    } catch {}
     return NextResponse.json({ success: true });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -245,7 +179,7 @@ export async function POST(request: Request) {
 
 export async function PUT(request: Request) {
   try {
-    const { path: configPath } = resolveConfigPath();
+    const { path: configPath } = resolveOpenClawAgentsConfigPath();
     const config = JSON.parse(readFileSync(configPath, "utf-8"));
     const body = await request.json();
 
@@ -283,6 +217,13 @@ export async function PUT(request: Request) {
     }
 
     writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+    try {
+      const changed = Object.keys(body).filter((k) => k !== "id");
+      logActivity("agent", `Agente atualizado: ${agent.name} (${body.id})`, "success", {
+        agent: body.id,
+        metadata: { id: body.id, fields: changed },
+      });
+    } catch {}
     return NextResponse.json({ success: true });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -291,7 +232,7 @@ export async function PUT(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
-    const { path: configPath } = resolveConfigPath();
+    const { path: configPath } = resolveOpenClawAgentsConfigPath();
     const config = JSON.parse(readFileSync(configPath, "utf-8"));
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
@@ -300,6 +241,7 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: "Missing id parameter" }, { status: 400 });
     }
 
+    const existingAgent = config.agents.list.find((a: any) => a.id === id);
     config.agents.list = config.agents.list.filter((a: any) => a.id !== id);
 
     // Clean telegram config
@@ -315,6 +257,12 @@ export async function DELETE(request: Request) {
     });
 
     writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+    try {
+      logActivity("agent", `Agente removido: ${existingAgent?.name ?? id}`, "success", {
+        agent: id,
+        metadata: { id },
+      });
+    } catch {}
     return NextResponse.json({ success: true });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });

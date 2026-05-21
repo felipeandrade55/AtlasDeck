@@ -1,6 +1,55 @@
 import fs from "fs";
 import path from "path";
 
+const FALLBACK_AGENTS_CONFIG_PATH = path.join(process.cwd(), "data", "openclaw-fallback.json");
+
+const DEFAULT_AGENTS_CONFIG = {
+  agents: {
+    defaults: {
+      model: {
+        primary: "openai/gpt-5.4-codex",
+      },
+    },
+    list: [
+      {
+        id: "main",
+        name: "Mission Control",
+        ui: { emoji: "🤖", color: "#ff6b35" },
+        model: { primary: "openai/gpt-5.4" },
+        workspace: "./workspace/mission-control",
+        subagents: { allowAgents: ["devops", "coder"] },
+      },
+      {
+        id: "devops",
+        name: "DevOps Sentinel",
+        ui: { emoji: "🛡️", color: "#10b981" },
+        model: { primary: "openai/gpt-5.4-mini" },
+        workspace: "./workspace/devops",
+        subagents: { allowAgents: [] },
+      },
+      {
+        id: "coder",
+        name: "Code Architect",
+        ui: { emoji: "💻", color: "#3b82f6" },
+        model: { primary: "openai/gpt-5.4-codex" },
+        workspace: "./workspace/coder",
+        subagents: { allowAgents: [] },
+      },
+    ],
+  },
+  channels: {
+    telegram: {
+      dmPolicy: "pairing",
+      accounts: {
+        main: {
+          botToken: "configured_mock_token",
+          dmPolicy: "pairing",
+        },
+      },
+    },
+  },
+};
+
 export interface OpenClawConfig {
   openclawDir: string;
   openclawBin: string;
@@ -104,6 +153,43 @@ export function getOpenClawWorkspace(): string {
 
 export function getOpenClawConfigPath(): string {
   return CONFIG_PATH;
+}
+
+/**
+ * Resolves the path to OpenClaw's `openclaw.json` (the runtime config with
+ * `agents.list`, `channels`, etc.). Used by `/api/office` and `/api/agents`,
+ * which both need a guaranteed-present file even on fresh installs or when
+ * the OpenClaw daemon hasn't run yet.
+ *
+ * Behavior:
+ *  - If the configured OpenClaw dir exists, returns `<dir>/openclaw.json` and
+ *    seeds it with `DEFAULT_AGENTS_CONFIG` when missing.
+ *  - Otherwise falls back to `data/openclaw-fallback.json` inside AtlasDeck,
+ *    seeding it on first read.
+ *
+ * This is *not* the same file as the AtlasDeck-side `data/openclaw-config.json`
+ * (which only records where OpenClaw lives).
+ */
+export function resolveOpenClawAgentsConfigPath(): { path: string; isFallback: boolean } {
+  const prodDir = getOpenClawDir();
+  const prodPath = path.join(prodDir, "openclaw.json");
+
+  if (fs.existsSync(prodDir)) {
+    if (!fs.existsSync(prodPath)) {
+      try {
+        fs.writeFileSync(prodPath, JSON.stringify(DEFAULT_AGENTS_CONFIG, null, 2), "utf8");
+      } catch {}
+    }
+    return { path: prodPath, isFallback: false };
+  }
+
+  if (!fs.existsSync(FALLBACK_AGENTS_CONFIG_PATH)) {
+    try {
+      fs.mkdirSync(path.dirname(FALLBACK_AGENTS_CONFIG_PATH), { recursive: true });
+      fs.writeFileSync(FALLBACK_AGENTS_CONFIG_PATH, JSON.stringify(DEFAULT_AGENTS_CONFIG, null, 2), "utf8");
+    } catch {}
+  }
+  return { path: FALLBACK_AGENTS_CONFIG_PATH, isFallback: true };
 }
 
 /**

@@ -8,6 +8,7 @@ import {
   updateMemory,
 } from "@/lib/memory-db";
 import { embedTexts } from "@/lib/embeddings";
+import { logActivity } from "@/lib/activities-db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -88,6 +89,16 @@ export async function PATCH(
     }
   }
 
+  try {
+    const changedFields = Object.keys(patch);
+    logActivity(
+      "memory",
+      `Memória editada: ${updated.title} (${changedFields.join(", ")})`,
+      "success",
+      { metadata: { memoryId: id, fields: changedFields } }
+    );
+  } catch {}
+
   return NextResponse.json({ memory: getMemoryById(id) });
 }
 
@@ -96,7 +107,16 @@ export async function DELETE(
   context: { params: Promise<{ id: string }> },
 ) {
   const { id } = await context.params;
+  const existing = getMemoryById(id);
   const ok = deleteMemory(id);
   if (!ok) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  try {
+    logActivity(
+      "memory",
+      `Memória excluída: ${existing?.title ?? id}`,
+      "success",
+      { metadata: { memoryId: id, type: existing?.type } }
+    );
+  } catch {}
   return NextResponse.json({ success: true });
 }
