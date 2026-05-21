@@ -8,9 +8,6 @@
 
 export const SKILL_NAME = "atlasdeck-calendar";
 
-export const CRON_REMINDERS_JOB_NAME = "atlasdeck-calendar-reminders";
-export const CRON_BOOKINGS_NUDGE_JOB_NAME = "atlasdeck-calendar-bookings-nudge";
-
 export const SKILL_MD_TEMPLATE = `---
 name: ${SKILL_NAME}
 description: Gerencia a agenda pessoal no AtlasDeck (criar/editar/listar/excluir eventos, bloquear horários, resolver remarcações, compartilhar links de booking). Use sempre que o usuário pedir algo sobre compromissos, reuniões, agenda, "bloqueia", "agenda", "marca", "remarca", "remarcar", "cancela compromisso", "envia meu link".
@@ -123,29 +120,3 @@ Body: { "linkId": "...", "chatId": "<telegram_chat_id>", "customText": "Oi, agen
 `;
 
 export const AGENTS_MD_SKILL_ENTRY = SKILL_NAME;
-
-/**
- * Build the `openclaw cron create` command for a given job.
- * Uses the `agentTurn` payload kind to fire a system message that triggers a
- * curl call from inside the workspace context.
- *
- * NOTE: the actual cron mechanism may vary by OpenClaw version. We model these
- * as systemEvent payloads that the gateway expands to a shell command.
- */
-export function buildReminderCronArgs(baseUrl: string, token: string) {
-  const url = `${baseUrl.replace(/\/$/, "")}/api/calendar/reminders/dispatch`;
-  return {
-    name: CRON_REMINDERS_JOB_NAME,
-    schedule: "* * * * *",
-    command: `curl -fsS -X POST -H "x-openclaw-token: ${token}" "${url}" > /dev/null`,
-  };
-}
-
-export function buildBookingNudgeCronArgs(baseUrl: string, token: string) {
-  const url = `${baseUrl.replace(/\/$/, "")}/api/calendar/bookings/scan-pending`;
-  return {
-    name: CRON_BOOKINGS_NUDGE_JOB_NAME,
-    schedule: "*/30 * * * *",
-    command: `curl -fsS -X POST -H "x-openclaw-token: ${token}" "${url}" > /dev/null`,
-  };
-}

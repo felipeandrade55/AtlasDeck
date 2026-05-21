@@ -743,6 +743,7 @@ export interface MemorySettings {
   home_label: string | null;
   home_timezone: string | null;
   home_updated_at: string | null;
+  morning_briefing_enabled: boolean;
 }
 
 const DEFAULT_SETTINGS: MemorySettings = {
@@ -761,6 +762,7 @@ const DEFAULT_SETTINGS: MemorySettings = {
   home_label: null,
   home_timezone: null,
   home_updated_at: null,
+  morning_briefing_enabled: false,
 };
 
 function parseNullableFloat(value: string | undefined): number | null {
@@ -814,6 +816,7 @@ export function getSettings(): MemorySettings {
     home_label: parseNullableString(map.get("home_label")),
     home_timezone: parseNullableString(map.get("home_timezone")),
     home_updated_at: parseNullableString(map.get("home_updated_at")),
+    morning_briefing_enabled: (map.get("morning_briefing_enabled") ?? "false") === "true",
   };
 }
 

@@ -12,17 +12,13 @@
 
 import fs from "fs";
 import path from "path";
-import { execSync } from "child_process";
 import { randomBytes } from "crypto";
 import {
   AGENTS_MD_SKILL_ENTRY,
-  CRON_BOOKINGS_NUDGE_JOB_NAME,
-  CRON_REMINDERS_JOB_NAME,
   SKILL_MD_TEMPLATE,
   SKILL_NAME,
-  buildBookingNudgeCronArgs,
-  buildReminderCronArgs,
 } from "./calendar-installer-templates";
+import { isCalendarSchedulerStarted, startCalendarScheduler } from "./calendar-scheduler";
 
 export type StepStatus = "ok" | "missing" | "error" | "skipped";
 
@@ -214,37 +210,25 @@ function checkServiceToken(config: InstallerConfig): StepResult {
   };
 }
 
-function listOpenclawCrons(): Array<{ id: string; name?: string }> | null {
-  try {
-    const output = execSync("openclaw cron list --json --all 2>/dev/null", {
-      timeout: 8000,
-      encoding: "utf-8",
-    });
-    const data = JSON.parse(output) as { jobs?: Array<{ id: string; name?: string }> };
-    return data.jobs ?? [];
-  } catch {
-    return null;
-  }
+function checkScheduler(): StepResult {
+  const running = isCalendarSchedulerStarted();
+  return {
+    key: "scheduler",
+    label: "Agendador interno (lembretes + booking + briefing)",
+    status: running ? "ok" : "missing",
+    detail: running
+      ? "Disparando reminders 1min, nudge 30min, briefing 07:00"
+      : "Será iniciado ao executar a instalação",
+  };
 }
 
-function checkCron(config: InstallerConfig, jobName: string, label: string): StepResult {
-  const jobs = listOpenclawCrons();
-  if (jobs === null) {
-    return {
-      key: `cron_${jobName}`,
-      label,
-      status: "error",
-      detail: "CLI `openclaw` indisponível neste host (ok se rodando fora do servidor do OpenClaw)",
-      requires_filesystem: true,
-    };
-  }
-  const found = jobs.some((j) => j.name === jobName || j.id === jobName);
+function ensureSchedulerRunning(): StepResult {
+  startCalendarScheduler();
   return {
-    key: `cron_${jobName}`,
-    label,
-    status: found ? "ok" : "missing",
-    detail: found ? `Job ${jobName} ativo` : `Falta criar job ${jobName}`,
-    requires_filesystem: true,
+    key: "scheduler",
+    label: "Agendador interno (lembretes + booking + briefing)",
+    status: "ok",
+    detail: "Reminders 1min · nudge 30min · briefing 07:00 (TZ do usuário)",
   };
 }
 
@@ -373,56 +357,6 @@ function ensureServiceToken(config: InstallerConfig): StepResult {
   }
 }
 
-function createCron(args: { name: string; schedule: string; command: string }): StepResult {
-  const stepKey = `cron_${args.name}`;
-  const label =
-    args.name === CRON_REMINDERS_JOB_NAME
-      ? "Cron de lembretes (1 minuto)"
-      : "Cron de nudge de pendentes (30 minutos)";
-  try {
-    const jobs = listOpenclawCrons();
-    if (jobs === null) {
-      return {
-        key: stepKey,
-        label,
-        status: "error",
-        detail: "CLI `openclaw` indisponível neste host",
-        requires_filesystem: true,
-      };
-    }
-    if (jobs.some((j) => j.name === args.name)) {
-      return { key: stepKey, label, status: "ok", detail: "Já existia", requires_filesystem: true };
-    }
-    const cmd = [
-      "openclaw",
-      "cron",
-      "create",
-      "--name",
-      JSON.stringify(args.name),
-      "--cron",
-      JSON.stringify(args.schedule),
-      "--shell",
-      JSON.stringify(args.command),
-    ].join(" ");
-    execSync(cmd, { timeout: 15000, encoding: "utf-8" });
-    return {
-      key: stepKey,
-      label,
-      status: "ok",
-      detail: `Criado (${args.schedule})`,
-      requires_filesystem: true,
-    };
-  } catch (err) {
-    return {
-      key: stepKey,
-      label,
-      status: "error",
-      detail: err instanceof Error ? err.message : String(err),
-      requires_filesystem: true,
-    };
-  }
-}
-
 /* ─────────────────────────  public API  ───────────────────────── */
 
 export function getInstallStatus(overrides: Partial<InstallerConfig> = {}): InstallReport {
@@ -431,8 +365,7 @@ export function getInstallStatus(overrides: Partial<InstallerConfig> = {}): Inst
     checkSkillFile(config),
     checkAgentsMd(config),
     checkServiceToken(config),
-    checkCron(config, CRON_REMINDERS_JOB_NAME, "Cron de lembretes (1 minuto)"),
-    checkCron(config, CRON_BOOKINGS_NUDGE_JOB_NAME, "Cron de nudge de pendentes (30 minutos)"),
+    checkScheduler(),
   ];
   return {
     ready: steps.every((s) => s.status === "ok"),
@@ -445,18 +378,12 @@ export function getInstallStatus(overrides: Partial<InstallerConfig> = {}): Inst
 
 export function runInstall(overrides: Partial<InstallerConfig> = {}): InstallReport {
   const config = resolveConfig(overrides);
-  const tokenInfo = getServiceToken(config.openclawDir, config.envFilePath);
-  const token = tokenInfo.token;
-
-  const reminderArgs = buildReminderCronArgs(config.baseUrl, token);
-  const nudgeArgs = buildBookingNudgeCronArgs(config.baseUrl, token);
 
   const steps: StepResult[] = [
     writeSkillFile(config),
     updateAgentsMd(config),
     ensureServiceToken(config),
-    createCron(reminderArgs),
-    createCron(nudgeArgs),
+    ensureSchedulerRunning(),
   ];
 
   return {

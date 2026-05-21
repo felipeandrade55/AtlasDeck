@@ -142,9 +142,9 @@ export function InstallBanner() {
 
             <div className="p-6 space-y-4">
               <p style={{ color: "var(--text-secondary)", fontSize: "0.9rem" }}>
-                Este botão registra a skill <code>atlasdeck-calendar</code> no OpenClaw, agenda os crons de
-                lembretes/booking e garante que o token de serviço esteja configurado. Tudo é idempotente — pode
-                rodar quantas vezes quiser.
+                Este botão registra a skill <code>atlasdeck-calendar</code> no OpenClaw, garante que o token de
+                serviço esteja configurado e inicia o agendador interno (lembretes, nudge de booking e briefing
+                matinal). Tudo é idempotente — pode rodar quantas vezes quiser.
               </p>
 
               <div

@@ -1,110 +1,42 @@
 /**
- * Install/uninstall/status for the morning briefing cron job on the OpenClaw gateway.
+ * Install/uninstall/status for the morning briefing.
  *
- * GET    — returns whether the job exists
- * POST   — creates the job (idempotent)
- * DELETE — removes the job
+ * The actual schedule is owned by the in-process calendar-scheduler (which
+ * checks `morning_briefing_enabled` every minute and fires at 07:00 in the
+ * user's timezone). This endpoint just toggles the flag and starts the
+ * scheduler the first time it's enabled.
+ *
+ * GET    — returns whether the briefing is enabled
+ * POST   — enables it (idempotent)
+ * DELETE — disables it
  */
-import { NextRequest, NextResponse } from "next/server";
-import { execSync } from "child_process";
-import { getServiceToken } from "@/lib/openclaw-auth";
+import { NextResponse } from "next/server";
+import { getSettings, setSettings } from "@/lib/memory-db";
+import { startCalendarScheduler, isCalendarSchedulerStarted } from "@/lib/calendar-scheduler";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const JOB_NAME = "atlasdeck-morning-briefing";
-const SCHEDULE = "0 7 * * *"; // 07:00 every day
-const TZ = "America/Sao_Paulo";
-
-function listJobs(): Array<{ id: string; name?: string }> | null {
-  try {
-    const out = execSync("openclaw cron list --json --all 2>/dev/null", { timeout: 10000, encoding: "utf-8" });
-    const data = JSON.parse(out) as { jobs?: Array<{ id: string; name?: string }> };
-    return data.jobs ?? [];
-  } catch {
-    return null;
-  }
-}
-
-function findJob(): { id: string; name?: string } | null {
-  const jobs = listJobs();
-  if (!jobs) return null;
-  return jobs.find((j) => j.name === JOB_NAME) ?? null;
-}
-
-function getBaseUrl(request: NextRequest): string {
-  return process.env.ATLASDECK_BASE_URL || new URL(request.url).origin;
-}
+const SCHEDULE = "0 7 * * *";
 
 export async function GET() {
-  const jobs = listJobs();
-  if (jobs === null) {
-    return NextResponse.json({ installed: false, available: false, error: "openclaw CLI indisponível neste host" });
-  }
-  const found = jobs.find((j) => j.name === JOB_NAME);
+  const settings = getSettings();
   return NextResponse.json({
-    installed: !!found,
+    installed: !!settings.morning_briefing_enabled,
     available: true,
-    job: found ?? null,
     schedule: SCHEDULE,
-    timezone: TZ,
+    timezone: settings.home_timezone || "America/Sao_Paulo",
+    scheduler_running: isCalendarSchedulerStarted(),
   });
 }
 
-export async function POST(request: NextRequest) {
-  const token = getServiceToken();
-  if (!token) {
-    return NextResponse.json(
-      { error: "OPENCLAW_SERVICE_TOKEN não configurado. Rode a instalação do calendário primeiro ou defina a variável de ambiente." },
-      { status: 400 }
-    );
-  }
-
-  const existing = findJob();
-  if (existing) {
-    return NextResponse.json({ installed: true, already_existed: true, job: existing });
-  }
-
-  const url = `${getBaseUrl(request).replace(/\/$/, "")}/api/agent/morning-briefing`;
-  const shell = `curl -fsS -X POST -H "x-openclaw-token: ${token}" "${url}" > /dev/null`;
-
-  const cmd = [
-    "openclaw",
-    "cron",
-    "create",
-    "--name",
-    JSON.stringify(JOB_NAME),
-    "--cron",
-    JSON.stringify(SCHEDULE),
-    "--tz",
-    JSON.stringify(TZ),
-    "--shell",
-    JSON.stringify(shell),
-  ].join(" ");
-
-  try {
-    execSync(cmd, { timeout: 15000, encoding: "utf-8" });
-    return NextResponse.json({ installed: true, schedule: SCHEDULE, timezone: TZ });
-  } catch (err) {
-    return NextResponse.json(
-      { error: "Falha ao criar cron via openclaw CLI", detail: err instanceof Error ? err.message : String(err) },
-      { status: 500 }
-    );
-  }
+export async function POST() {
+  setSettings({ morning_briefing_enabled: true });
+  startCalendarScheduler();
+  return NextResponse.json({ installed: true, schedule: SCHEDULE });
 }
 
 export async function DELETE() {
-  const existing = findJob();
-  if (!existing) {
-    return NextResponse.json({ removed: false, reason: "not_installed" });
-  }
-  try {
-    execSync(`openclaw cron remove ${JSON.stringify(existing.id)} 2>/dev/null`, { timeout: 10000, encoding: "utf-8" });
-    return NextResponse.json({ removed: true });
-  } catch (err) {
-    return NextResponse.json(
-      { error: "Falha ao remover cron", detail: err instanceof Error ? err.message : String(err) },
-      { status: 500 }
-    );
-  }
+  setSettings({ morning_briefing_enabled: false });
+  return NextResponse.json({ removed: true });
 }
