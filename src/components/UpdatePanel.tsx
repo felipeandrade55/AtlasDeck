@@ -297,11 +297,11 @@ export function UpdatePanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-scroll logs
+  // Auto-scroll logs — limitado ao container do terminal para não puxar a
+  // página inteira para baixo enquanto o usuário tenta ler o card de status.
   useEffect(() => {
-    if (logsEndRef.current) {
-      logsEndRef.current.scrollIntoView({ behavior: "smooth" });
-    }
+    const container = logsEndRef.current?.closest<HTMLElement>(".overflow-y-auto");
+    if (container) container.scrollTop = container.scrollHeight;
   }, [logs]);
 
   // Ticker para mostrar elapsed na fase atual (animação visual)
