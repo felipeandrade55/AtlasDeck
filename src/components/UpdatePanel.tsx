@@ -35,6 +35,24 @@ function formatElapsed(ms: number): string {
   return `${s}s`;
 }
 
+function heartbeatAgeColor(ageMs: number): string {
+  if (ageMs < 10_000) return "#22c55e"; // green: fresh
+  if (ageMs < 30_000) return "#eab308"; // yellow: getting old
+  return "#ef4444"; // red: stale, build may be dead
+}
+
+function formatHeartbeatAge(ageMs: number): string {
+  const sec = Math.floor(ageMs / 1000);
+  if (sec < 60) return `${sec}s atrás`;
+  const min = Math.floor(sec / 60);
+  const remSec = sec % 60;
+  return `${min}m ${remSec}s atrás`;
+}
+
+// Stuck threshold: build phase produces a heartbeat every 5s. If no
+// heartbeat for 2x that during build, something is wrong.
+const STUCK_THRESHOLD_MS = 60_000;
+
 export function UpdatePanel() {
   const [status, setStatus] = useState<Status>("loading");
   const [checkResult, setCheckResult] = useState<UpdateCheckResult | null>(null);
@@ -339,6 +357,30 @@ export function UpdatePanel() {
   const currentPhaseName = phases.find((p) => p.status === "running")?.name;
   const currentPhaseLabel = phases.find((p) => p.status === "running")?.label;
   const currentPhaseElapsed = phaseStartedAt ? Date.now() - phaseStartedAt + elapsedTick * 0 : 0;
+
+  // Heartbeat age (re-computed every tick because elapsedTick fires every 1s)
+  const heartbeatAgeMs = liveStatus?.lastHeartbeat
+    ? Date.now() - new Date(liveStatus.lastHeartbeat).getTime() + elapsedTick * 0
+    : 0;
+  const buildStuck =
+    currentPhaseName === "build" &&
+    !!liveStatus?.lastHeartbeat &&
+    heartbeatAgeMs > STUCK_THRESHOLD_MS;
+
+  const cancelUpdate = async () => {
+    if (!window.confirm("Cancelar o update? O processo será encerrado e o sistema fica no estado atual.")) {
+      return;
+    }
+    try {
+      const res = await fetch("/api/update/cancel", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || "Falha ao cancelar");
+      setStatus("error");
+      setErrorMsg(data?.message || "Update cancelado pelo usuário.");
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : "Falha ao cancelar");
+    }
+  };
 
   return (
     <div
@@ -650,17 +692,63 @@ export function UpdatePanel() {
 
             {liveStatus && (
               <div
-                className="mt-3 text-xs flex items-center gap-3"
+                className="mt-3 text-xs flex items-center gap-3 flex-wrap"
                 style={{ color: "var(--text-muted)" }}
               >
                 <span>PID: {liveStatus.pid}</span>
                 <span>·</span>
-                <span>
+                <span className="flex items-center gap-1">
                   Heartbeat:{" "}
-                  {new Date(liveStatus.lastHeartbeat).toLocaleTimeString()}
+                  <span
+                    className="inline-block w-2 h-2 rounded-full"
+                    style={{ backgroundColor: heartbeatAgeColor(heartbeatAgeMs) }}
+                  />
+                  <span style={{ color: heartbeatAgeColor(heartbeatAgeMs), fontWeight: 600 }}>
+                    {formatHeartbeatAge(heartbeatAgeMs)}
+                  </span>
                 </span>
                 <span>·</span>
                 <span>{liveStatus.fromSha} → {liveStatus.toSha}</span>
+              </div>
+            )}
+
+            {/* Stuck-build banner: build phase + no heartbeat for >STUCK_THRESHOLD_MS.
+                The deploy.sh emits heartbeats every 5s during build, so 60s+ of
+                silence almost certainly means the build process is dead or hung.
+                Surfaces a cancel button so user isn't stuck waiting forever. */}
+            {buildStuck && (
+              <div
+                className="mt-3 p-3 rounded-lg flex items-start gap-3"
+                style={{
+                  backgroundColor: "rgba(239, 68, 68, 0.1)",
+                  border: "1px solid rgba(239, 68, 68, 0.4)",
+                }}
+              >
+                <AlertTriangle
+                  className="w-5 h-5 mt-0.5 flex-shrink-0"
+                  style={{ color: "#ef4444" }}
+                />
+                <div className="flex-1">
+                  <div className="text-sm font-semibold mb-1" style={{ color: "#ef4444" }}>
+                    Build parece travado
+                  </div>
+                  <div className="text-xs mb-2" style={{ color: "var(--text-secondary)" }}>
+                    Nenhum heartbeat há {formatHeartbeatAge(heartbeatAgeMs)}. Normalmente o
+                    build emite sinal a cada 5s. Verifique no servidor com{" "}
+                    <code className="font-mono">ps aux | grep next-build</code> e{" "}
+                    <code className="font-mono">tail data/update-current.log</code>.
+                  </div>
+                  <button
+                    onClick={cancelUpdate}
+                    className="text-xs px-3 py-1 rounded font-medium"
+                    style={{
+                      backgroundColor: "#ef4444",
+                      color: "#fff",
+                    }}
+                  >
+                    Cancelar update
+                  </button>
+                </div>
               </div>
             )}
           </div>

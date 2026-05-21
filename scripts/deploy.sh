@@ -151,6 +151,33 @@ heartbeat() {
 }
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─── EXIT TRAP ────────────────────────────────────────────────────────────────
+# Se o script morrer sem passar pela fase "done" (sigkill por OOM, panic do
+# kernel, /tmp limpo, deploy disparado por engano em paralelo, etc.) escrevemos
+# um evento terminal de falha. Sem isso a UI fica eternamente em "Compilando…".
+_TERMINAL_EMITTED=false
+emit_terminal() {
+  if [[ "$_TERMINAL_EMITTED" == "true" ]] || [[ -z "$STATUS_FILE" ]]; then
+    return 0
+  fi
+  _TERMINAL_EMITTED=true
+  local code="$1"
+  if [[ "$code" == "0" ]]; then
+    phase_status "done" "ok" "$(elapsed $TOTAL_START)"
+  else
+    phase_status "done" "fail" "$(elapsed $TOTAL_START)" \
+      "deploy.sh saiu com exit code $code antes de chegar ao fim (sinal externo, panic ou erro fatal)"
+  fi
+}
+
+# Captura EXIT (saída normal + erros) e os sinais comuns de terminação.
+# bash não dispara o trap EXIT para SIGKILL — esse caso fica órfão e é
+# coberto pela detecção de heartbeat stale na UI (>60s).
+trap 'emit_terminal $?' EXIT
+trap 'emit_terminal 130' INT
+trap 'emit_terminal 143' TERM
+# ─────────────────────────────────────────────────────────────────────────────
+
 print_report() {
   local total=$(elapsed $TOTAL_START)
   local all_ok=true
@@ -440,12 +467,17 @@ elif git diff HEAD@{1} HEAD --name-only 2>/dev/null | grep -qE "package.*json"; 
 fi
 
 if $NEEDS_INSTALL; then
-  if npm ci 2>/dev/null; then
-    ok "npm ci concluído"
+  # IMPORTANTE: --include=dev é obrigatório. O deploy.sh é chamado pelo
+  # Next.js gerenciado por PM2, que define NODE_ENV=production. Sem o
+  # flag, npm ci omite devDependencies — e o build precisa delas (tsx,
+  # @tailwindcss/postcss, @types/*). Causava "Cannot find module" no
+  # build phase e o app ficava sem .next (apagado antes do build).
+  if npm ci --include=dev 2>/dev/null; then
+    ok "npm ci concluído (com devDependencies)"
   else
     warn "npm ci falhou (lock file desatualizado?) — usando npm install..."
-    npm install
-    ok "npm install concluído"
+    npm install --include=dev
+    ok "npm install concluído (com devDependencies)"
   fi
   record "npm install" "ok" "$(elapsed $T)"
   phase_status "npm-install" "ok" "$(elapsed $T)"
@@ -531,10 +563,14 @@ phase_status "build" "running"
 
 cd "$VPS_DIR"
 
-# Limpa cache do Next.js para garantir build limpo
+# Swap atômico do .next: preservamos o build anterior em .next.prev. Se
+# o novo build falhar, restauramos pra que o app continue servindo a
+# versão antiga (sem 500 nos chunks). Antes a gente apagava .next aqui
+# e, se o build falhasse, a app ficava sem build → 500 em todo chunk.
 if [ -d ".next" ]; then
-  rm -rf .next
-  info "Cache .next removido"
+  rm -rf .next.prev 2>/dev/null || true
+  mv .next .next.prev
+  info ".next anterior preservado em .next.prev (restaurado se build falhar)"
 fi
 
 # Build em background para emitir heartbeats periódicos
@@ -554,10 +590,19 @@ BUILD_EXIT=$?
 
 if [ $BUILD_EXIT -ne 0 ]; then
   err "Build falhou (exit $BUILD_EXIT)"
+  # Restaura o build anterior pra app não ficar quebrada
+  if [ -d ".next.prev" ]; then
+    rm -rf .next 2>/dev/null || true
+    mv .next.prev .next
+    warn ".next anterior restaurado — app continua servindo a versão antiga"
+  fi
   record "Build" "fail" "$(elapsed $T)"
   phase_status "build" "fail" "$(elapsed $T)" "build exit $BUILD_EXIT"
   exit 1
 fi
+
+# Build OK — descarta backup do .next anterior
+rm -rf .next.prev 2>/dev/null || true
 
 ok "Build concluído"
 record "Build" "ok" "$(elapsed $T)"
@@ -829,13 +874,13 @@ fi
 # RELATÓRIO FINAL
 # ══════════════════════════════════════════════════════════════════════════════
 echo ""
+# Não emitimos phase_status "done" aqui — o trap EXIT cuida disso baseado no
+# exit code, evitando duplicação e cobrindo também saídas inesperadas.
 if print_report; then
   echo -e "\n  ${GREEN}${BOLD}🚀 Update concluído com sucesso!${NC}"
   echo -e "  ${DIM}Dashboard: ${APP_URL}${NC}\n"
-  phase_status "done" "ok" "$(elapsed $TOTAL_START)"
   exit 0
 else
   echo -e "\n  ${YELLOW}${BOLD}⚠ Update com problemas — veja o relatório acima.${NC}\n"
-  phase_status "done" "fail" "$(elapsed $TOTAL_START)"
   exit 1
 fi
