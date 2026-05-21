@@ -14,6 +14,15 @@ export const dynamic = "force-dynamic";
 
 const FIRST_QUESTION = "Pra começar, qual é o seu nome e o que você faz no dia a dia?";
 
+// Fallback questions used when no LLM provider is available.
+// Index 0 = question asked when history.length === 1 (after FIRST_QUESTION).
+const STATIC_FOLLOWUPS = [
+  "Qual é a sua stack técnica? Quais linguagens, frameworks e ferramentas você usa no dia a dia?",
+  "Como você prefere se comunicar com o agente? Respostas curtas ou detalhadas? Tom formal ou informal?",
+  "Pensa num nome e numa 'vibe' pro seu agente — como você quer que ele seja: direto, analítico, criativo? Tem algum limite que ele não deve cruzar?",
+  "Qual é o seu projeto principal agora? O que você está construindo e qual é o foco atual?",
+];
+
 export async function POST(request: NextRequest) {
   let body: { history?: WizardTurn[] };
   try {
@@ -49,14 +58,25 @@ export async function POST(request: NextRequest) {
       provider,
       model,
     });
-  } catch (err) {
-    return NextResponse.json(
-      {
-        error: err instanceof Error ? err.message : "Wizard failed",
-        hint:
-          "Verifique se o Ollama está rodando (Memória → Configurações → Extrator de memórias) ou se o OpenClaw CLI está acessível.",
-      },
-      { status: 503 },
-    );
+  } catch {
+    // LLM unavailable — fall back to the static question list so the
+    // wizard never gets stuck showing the same question twice.
+    const fallbackIndex = history.length - 1;
+    if (fallbackIndex < STATIC_FOLLOWUPS.length) {
+      return NextResponse.json({
+        complete: false,
+        next_question: STATIC_FOLLOWUPS[fallbackIndex],
+        covered: [],
+        provider: "bootstrap",
+        model: "static",
+      });
+    }
+    // All static topics covered — signal completion.
+    return NextResponse.json({
+      complete: true,
+      summary: "Coletei informações suficientes para configurar sua memória.",
+      provider: "bootstrap",
+      model: "static",
+    });
   }
 }
