@@ -6,6 +6,7 @@
       "Bash(git remote *)",
       "Bash(git fetch *)",
       "Bash(git checkout *)",
+      "Bash(git push *)",
       "Bash(xargs ls *)"
     ]
   }
