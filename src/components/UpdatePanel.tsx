@@ -49,9 +49,11 @@ function formatHeartbeatAge(ageMs: number): string {
   return `${min}m ${remSec}s atrás`;
 }
 
-// Stuck threshold: build phase produces a heartbeat every 5s. If no
-// heartbeat for 2x that during build, something is wrong.
-const STUCK_THRESHOLD_MS = 60_000;
+// Stuck threshold: build phase produces a heartbeat every 5s, but `next build`
+// can monopolize the event loop for tens of seconds at a time. lastHeartbeat is
+// merged with the artifact file mtime server-side (getActiveUpdate), so this
+// only fires when the bash subprocess itself has actually stopped writing.
+const STUCK_THRESHOLD_MS = 180_000;
 
 export function UpdatePanel() {
   const [status, setStatus] = useState<Status>("loading");

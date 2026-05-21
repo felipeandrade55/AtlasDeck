@@ -186,21 +186,54 @@ export function clearLiveStatus() {
 }
 
 /**
- * Returns the active update if there's one running with a fresh heartbeat.
- * If the heartbeat is stale (>60s), considers the process dead and reconciles.
+ * Returns mtime (ms since epoch) of the most recently modified update artifact.
+ * Used as a reliable proof-of-life signal: bash writes heartbeat/log lines via
+ * `>>` (bypasses stdio buffering), so the file mtime reflects subprocess
+ * activity even if the Next.js process was too CPU-starved to run the
+ * reconciler. Returns 0 if nothing is found.
  */
+function freshestArtifactMs(): number {
+  let latest = 0;
+  for (const p of [phaseEventsPath(), liveLogPath()]) {
+    try {
+      const st = fs.statSync(p);
+      if (st.mtimeMs > latest) latest = st.mtimeMs;
+    } catch {}
+  }
+  return latest;
+}
+
+/**
+ * Returns the active update if there's one running with a fresh heartbeat.
+ *
+ * The "heartbeat" is the max of the persisted lastHeartbeat (refreshed by
+ * the reconciler when it picks up new phase/log events) and the artifact
+ * file mtimes (refreshed whenever bash appends — never delayed by the
+ * Node.js event loop). If both are stale beyond DEAD_THRESHOLD_MS *and*
+ * the PID is dead, the update is reconciled into an error state.
+ */
+const DEAD_THRESHOLD_MS = 300_000; // 5 min — generous to absorb CPU spikes during `next build`
+
 export function getActiveUpdate(): UpdateLiveStatus | null {
   const status = readLiveStatus();
   if (!status) return null;
 
   if (status.status !== "running") return status;
 
-  const heartbeat = new Date(status.lastHeartbeat).getTime();
-  const now = Date.now();
-  const ageMs = now - heartbeat;
+  const persistedHb = new Date(status.lastHeartbeat).getTime();
+  const artifactHb = freshestArtifactMs();
+  const effectiveHb = Math.max(persistedHb, artifactHb);
 
-  // If heartbeat is older than 90s, consider the process dead and mark as error
-  if (ageMs > 90_000) {
+  // Reflect the freshest signal back to the UI so the "no heartbeat for Xs"
+  // counter doesn't lag behind the actual subprocess activity.
+  if (artifactHb > persistedHb) {
+    status.lastHeartbeat = new Date(artifactHb).toISOString();
+  }
+
+  const now = Date.now();
+  const ageMs = now - effectiveHb;
+
+  if (ageMs > DEAD_THRESHOLD_MS) {
     // Check if PID is alive
     let alive = false;
     if (status.pid > 0) {
@@ -216,7 +249,7 @@ export function getActiveUpdate(): UpdateLiveStatus | null {
       const reconciled: UpdateLiveStatus = {
         ...status,
         status: "error",
-        error: "Processo de update encerrou inesperadamente (sem heartbeat há mais de 90s).",
+        error: `Processo de update encerrou inesperadamente (sem heartbeat há mais de ${Math.round(DEAD_THRESHOLD_MS / 1000)}s).`,
         completedAt: new Date().toISOString(),
       };
       writeLiveStatus(reconciled);
