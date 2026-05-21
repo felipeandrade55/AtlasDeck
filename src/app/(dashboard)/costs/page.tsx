@@ -64,6 +64,11 @@ interface CostData {
     lastSnapshotAt: number | null;
     storedSnapshots: number;
     trackedSessions: number;
+    jsonlEntriesIngested: number;
+    jsonlSnapshotsTotal: number;
+    jsonlFilesTracked: number;
+    jsonlFilesUpdatedLast: number;
+    jsonlError: string | null;
     autoCollectIntervalMs: number;
     lastRun: {
       collectedAt: number;
@@ -74,6 +79,19 @@ interface CostData {
       outputTokens: number;
       totalTokens: number;
       cost: number;
+      jsonl?: {
+        scannedAt: number;
+        filesScanned: number;
+        filesUpdated: number;
+        entriesIngested: number;
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadTokens: number;
+        cacheCreationTokens: number;
+        cost: number;
+        openclawDir: string;
+      } | null;
+      cliError?: string | null;
     } | null;
   };
 }
@@ -467,6 +485,65 @@ export default function CostsPage() {
             </div>
           );
         })}
+      </div>
+
+      <div className="p-6 rounded-xl" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-lg font-semibold" style={{ color: "var(--text-primary)" }}>Fontes de coleta</h3>
+            <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
+              JSONL lê o consumo direto dos transcripts do OpenClaw (preciso por mensagem). O CLI `sessions list` roda em paralelo como fallback para sessões sem transcript.
+            </p>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="p-3 rounded-lg" style={{ backgroundColor: "var(--card-elevated)" }}>
+            <div className="text-xs" style={{ color: "var(--text-muted)" }}>JSONL — mensagens ingestadas</div>
+            <div className="text-xl font-bold mt-1" style={{ color: "var(--text-primary)" }}>
+              {compactNumber(costData.collection.jsonlSnapshotsTotal)}
+            </div>
+            <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
+              {costData.collection.jsonlEntriesIngested} nova(s) na última coleta
+            </p>
+          </div>
+          <div className="p-3 rounded-lg" style={{ backgroundColor: "var(--card-elevated)" }}>
+            <div className="text-xs" style={{ color: "var(--text-muted)" }}>JSONL — transcripts rastreados</div>
+            <div className="text-xl font-bold mt-1" style={{ color: "var(--text-primary)" }}>
+              {costData.collection.jsonlFilesTracked}
+            </div>
+            <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
+              {costData.collection.jsonlFilesUpdatedLast} arquivo(s) atualizados na última coleta
+            </p>
+          </div>
+          <div className="p-3 rounded-lg" style={{ backgroundColor: "var(--card-elevated)" }}>
+            <div className="text-xs" style={{ color: "var(--text-muted)" }}>CLI — última fonte</div>
+            <div className="text-sm font-bold mt-1 truncate" style={{ color: "var(--text-primary)" }}>
+              {costData.collection.lastCollectionSource || "—"}
+            </div>
+            <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
+              {costData.collection.lastSessionsSeen} sessões vistas
+            </p>
+          </div>
+          <div className="p-3 rounded-lg" style={{ backgroundColor: "var(--card-elevated)" }}>
+            <div className="text-xs" style={{ color: "var(--text-muted)" }}>Estado das fontes</div>
+            <div className="text-sm font-bold mt-1" style={{
+              color: costData.collection.jsonlError
+                ? "var(--warning)"
+                : costData.collection.jsonlSnapshotsTotal > 0
+                  ? "var(--success)"
+                  : "var(--text-muted)"
+            }}>
+              {costData.collection.jsonlError
+                ? "JSONL com erro"
+                : costData.collection.jsonlSnapshotsTotal > 0
+                  ? "JSONL ativo"
+                  : "Apenas CLI"}
+            </div>
+            <p className="text-xs mt-1 truncate" style={{ color: "var(--text-muted)" }} title={costData.collection.jsonlError || undefined}>
+              {costData.collection.jsonlError ? costData.collection.jsonlError : "Fontes em paralelo, sem double-count"}
+            </p>
+          </div>
+        </div>
       </div>
 
       <BudgetLimitPanel

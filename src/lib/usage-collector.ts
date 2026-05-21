@@ -13,6 +13,7 @@ import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
 import { readOpenClawConfig } from "./openclaw-config";
+import { collectFromJsonl, type JsonlCollectionResult } from "./usage-collector-jsonl";
 
 const execFileAsync = promisify(execFile);
 const OPENCLAW_TIMEOUT_MS = 15_000;
@@ -94,13 +95,15 @@ export interface UsageSnapshot {
 
 export interface CollectionResult {
   collectedAt: number;
-  source: "sessions-list" | "status";
+  source: "sessions-list" | "status" | "jsonl-only";
   sessionsSeen: number;
   snapshotsInserted: number;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
   cost: number;
+  jsonl?: JsonlCollectionResult | null;
+  cliError?: string | null;
 }
 
 interface StoredSessionState {
@@ -442,6 +445,9 @@ export function initDatabase(dbPath: string): Database.Database {
       total_tokens INTEGER NOT NULL,
       cost REAL NOT NULL,
       source TEXT NOT NULL DEFAULT 'delta',
+      message_id TEXT,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER DEFAULT (strftime('%s', 'now'))
     );
 
@@ -463,11 +469,24 @@ export function initDatabase(dbPath: string): Database.Database {
       value TEXT NOT NULL,
       updated_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS jsonl_cursors (
+      file_path TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      last_size INTEGER NOT NULL DEFAULT 0,
+      last_mtime_ms INTEGER NOT NULL DEFAULT 0,
+      last_message_id TEXT,
+      updated_at INTEGER NOT NULL
+    );
   `);
 
   ensureColumn(db, "usage_snapshots", "session_key", "TEXT");
   ensureColumn(db, "usage_snapshots", "session_id", "TEXT");
   ensureColumn(db, "usage_snapshots", "source", "TEXT NOT NULL DEFAULT 'delta'");
+  ensureColumn(db, "usage_snapshots", "message_id", "TEXT");
+  ensureColumn(db, "usage_snapshots", "cache_read_tokens", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "usage_snapshots", "cache_creation_tokens", "INTEGER NOT NULL DEFAULT 0");
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_date ON usage_snapshots(date);
@@ -475,6 +494,9 @@ export function initDatabase(dbPath: string): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_model ON usage_snapshots(model);
     CREATE INDEX IF NOT EXISTS idx_timestamp ON usage_snapshots(timestamp);
     CREATE INDEX IF NOT EXISTS idx_session_key ON usage_snapshots(session_key);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_message_id
+      ON usage_snapshots(session_key, message_id)
+      WHERE message_id IS NOT NULL;
   `);
 
   return db;
@@ -520,6 +542,16 @@ export function saveSnapshot(
   );
 }
 
+function hasJsonlTranscript(openclawDir: string, agentId: string, sessionId: string): boolean {
+  if (!sessionId) return false;
+  const filePath = path.join(openclawDir, "agents", agentId, "sessions", `${sessionId}.jsonl`);
+  try {
+    return fs.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function buildDeltaSnapshots(
   db: Database.Database,
   sessions: SessionData[],
@@ -527,6 +559,7 @@ function buildDeltaSnapshots(
   source: CollectionResult["source"]
 ): UsageSnapshot[] {
   const { date, hour } = dateParts(timestamp);
+  const openclawDir = readOpenClawConfig().openclawDir;
   const selectState = db.prepare(`
     SELECT session_key, agent_id, session_id, model, input_tokens, output_tokens, total_tokens
     FROM usage_session_state
@@ -552,6 +585,12 @@ function buildDeltaSnapshots(
   const snapshots: UsageSnapshot[] = [];
 
   for (const session of sessions) {
+    // If the session has a JSONL transcript, the JSONL collector is the source
+    // of truth — skip CLI delta tracking entirely to avoid double-counting.
+    if (hasJsonlTranscript(openclawDir, session.agentId, session.sessionId)) {
+      continue;
+    }
+
     const previous = selectState.get(session.sessionKey) as StoredSessionState | undefined;
     const counterReset = previous
       ? session.inputTokens < previous.input_tokens ||
@@ -611,41 +650,125 @@ function buildDeltaSnapshots(
 
 /**
  * Collect and save current usage data.
+ *
+ * Two collectors run in parallel:
+ *
+ *  1. JSONL collector (primary, accurate) — reads `usage` blocks from each
+ *     assistant message in `~/.openclaw/agents/<agent>/sessions/<id>.jsonl`.
+ *     Idempotent via (session_key, message_id) unique index.
+ *
+ *  2. CLI collector (fallback) — runs `openclaw sessions list --json` and
+ *     records deltas. Skips any session that has a JSONL transcript on
+ *     disk to avoid double-counting (see `buildDeltaSnapshots`).
+ *
+ * A failure in the CLI collector does NOT fail the whole call — its error
+ * is recorded and returned alongside whatever JSONL managed to ingest.
  */
 export async function collectUsage(dbPath: string): Promise<CollectionResult> {
   const db = initDatabase(dbPath);
   const timestamp = Date.now();
 
   try {
-    const { sessions, source } = await getOpenClawUsageSessions();
+    // 1. JSONL — primary source of truth, runs even if OpenClaw CLI is down.
+    let jsonlResult: JsonlCollectionResult | null = null;
+    try {
+      jsonlResult = collectFromJsonl(db);
+    } catch (error) {
+      jsonlResult = null;
+      upsertSetting(
+        db,
+        "last_jsonl_error",
+        error instanceof Error ? error.message : String(error),
+        timestamp
+      );
+    }
 
-    const snapshots = db.transaction(() => {
-      const deltas = buildDeltaSnapshots(db, sessions, timestamp, source);
-      for (const snapshot of deltas) {
-        saveSnapshot(db, snapshot);
-      }
+    // 2. CLI — fallback for sessions without a JSONL transcript yet.
+    let cliSnapshots: UsageSnapshot[] = [];
+    let cliSessionsSeen = 0;
+    let cliSource: CollectionResult["source"] = "jsonl-only";
+    let cliError: string | null = null;
 
-      upsertSetting(db, "last_collected_at", String(timestamp), timestamp);
-      upsertSetting(db, "last_collection_source", source, timestamp);
-      upsertSetting(db, "last_sessions_seen", String(sessions.length), timestamp);
-      upsertSetting(db, "last_snapshots_inserted", String(deltas.length), timestamp);
-      upsertSetting(db, "last_collection_error", "", timestamp);
+    try {
+      const { sessions, source } = await getOpenClawUsageSessions();
+      cliSessionsSeen = sessions.length;
+      cliSource = source;
 
-      return deltas;
-    })();
+      cliSnapshots = db.transaction(() => {
+        const deltas = buildDeltaSnapshots(db, sessions, timestamp, source);
+        for (const snapshot of deltas) {
+          saveSnapshot(db, snapshot);
+        }
+        return deltas;
+      })();
+    } catch (error) {
+      cliError = error instanceof Error ? error.message : String(error);
+    }
 
-    const result: CollectionResult = {
+    const totalSnapshotsInserted =
+      cliSnapshots.length + (jsonlResult?.entriesIngested ?? 0);
+    const totalInputTokens =
+      cliSnapshots.reduce((sum, s) => sum + s.inputTokens, 0) +
+      (jsonlResult?.inputTokens ?? 0);
+    const totalOutputTokens =
+      cliSnapshots.reduce((sum, s) => sum + s.outputTokens, 0) +
+      (jsonlResult?.outputTokens ?? 0);
+    const totalCacheTokens =
+      (jsonlResult?.cacheReadTokens ?? 0) +
+      (jsonlResult?.cacheCreationTokens ?? 0);
+    const totalTokens =
+      cliSnapshots.reduce((sum, s) => sum + s.totalTokens, 0) +
+      (jsonlResult?.inputTokens ?? 0) +
+      (jsonlResult?.outputTokens ?? 0) +
+      totalCacheTokens;
+    const totalCost =
+      cliSnapshots.reduce((sum, s) => sum + s.cost, 0) +
+      (jsonlResult?.cost ?? 0);
+
+    upsertSetting(db, "last_collected_at", String(timestamp), timestamp);
+    upsertSetting(db, "last_collection_source", cliSource, timestamp);
+    upsertSetting(db, "last_sessions_seen", String(cliSessionsSeen), timestamp);
+    upsertSetting(
+      db,
+      "last_snapshots_inserted",
+      String(totalSnapshotsInserted),
+      timestamp
+    );
+    upsertSetting(db, "last_collection_error", cliError ?? "", timestamp);
+    if (jsonlResult) {
+      upsertSetting(
+        db,
+        "last_jsonl_entries",
+        String(jsonlResult.entriesIngested),
+        timestamp
+      );
+      upsertSetting(
+        db,
+        "last_jsonl_files_updated",
+        String(jsonlResult.filesUpdated),
+        timestamp
+      );
+      upsertSetting(db, "last_jsonl_error", "", timestamp);
+    }
+
+    // If both collectors failed, surface the CLI error to the caller so the
+    // existing UI banners ("OpenClaw indisponível") still fire correctly.
+    if (cliError && (!jsonlResult || jsonlResult.entriesIngested === 0)) {
+      throw new Error(cliError);
+    }
+
+    return {
       collectedAt: timestamp,
-      source,
-      sessionsSeen: sessions.length,
-      snapshotsInserted: snapshots.length,
-      inputTokens: snapshots.reduce((sum, s) => sum + s.inputTokens, 0),
-      outputTokens: snapshots.reduce((sum, s) => sum + s.outputTokens, 0),
-      totalTokens: snapshots.reduce((sum, s) => sum + s.totalTokens, 0),
-      cost: snapshots.reduce((sum, s) => sum + s.cost, 0),
+      source: cliSource,
+      sessionsSeen: cliSessionsSeen,
+      snapshotsInserted: totalSnapshotsInserted,
+      inputTokens: totalInputTokens,
+      outputTokens: totalOutputTokens,
+      totalTokens,
+      cost: totalCost,
+      jsonl: jsonlResult,
+      cliError,
     };
-
-    return result;
   } catch (error) {
     upsertSetting(
       db,

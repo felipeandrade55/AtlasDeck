@@ -94,6 +94,11 @@ export interface CollectionMetadata {
   lastSnapshotAt: number | null;
   storedSnapshots: number;
   trackedSessions: number;
+  jsonlEntriesIngested: number;
+  jsonlSnapshotsTotal: number;
+  jsonlFilesTracked: number;
+  jsonlFilesUpdatedLast: number;
+  jsonlError: string | null;
 }
 
 function safeNumber(value: unknown, fallback = 0): number {
@@ -556,6 +561,23 @@ export function getCollectionMetadata(db: Database.Database): CollectionMetadata
     trackedSessions: number;
   };
 
+  let jsonlSnapshotsTotal = 0;
+  let jsonlFilesTracked = 0;
+  try {
+    const row = db.prepare(`
+      SELECT COUNT(*) as c FROM usage_snapshots WHERE source = 'jsonl'
+    `).get() as { c: number };
+    jsonlSnapshotsTotal = row.c;
+  } catch {
+    jsonlSnapshotsTotal = 0;
+  }
+  try {
+    const row = db.prepare(`SELECT COUNT(*) as c FROM jsonl_cursors`).get() as { c: number };
+    jsonlFilesTracked = row.c;
+  } catch {
+    jsonlFilesTracked = 0;
+  }
+
   return {
     lastCollectedAt: safeNumber(getSetting(db, "last_collected_at"), 0) || null,
     lastCollectionSource: getSetting(db, "last_collection_source"),
@@ -565,5 +587,10 @@ export function getCollectionMetadata(db: Database.Database): CollectionMetadata
     lastSnapshotAt: snapshotRow.lastSnapshotAt,
     storedSnapshots: snapshotRow.storedSnapshots,
     trackedSessions: snapshotRow.trackedSessions,
+    jsonlEntriesIngested: safeNumber(getSetting(db, "last_jsonl_entries"), 0),
+    jsonlSnapshotsTotal,
+    jsonlFilesTracked,
+    jsonlFilesUpdatedLast: safeNumber(getSetting(db, "last_jsonl_files_updated"), 0),
+    jsonlError: getSetting(db, "last_jsonl_error") || null,
   };
 }
