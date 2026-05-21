@@ -5,6 +5,7 @@ import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { Wind, Droplets, Thermometer, CloudRain, Settings } from "lucide-react";
 import { LocationPicker } from "./LocationPicker";
+import { shortCityName } from "@/lib/location-display";
 
 interface Forecast {
   day: string;
@@ -149,7 +150,7 @@ export function WeatherWidget() {
               'Clique para configurar sua localização'
             }
           >
-            {geoStatus === 'home' ? '🏠' : geoStatus === 'denied' ? '🔒' : '📍'} {weather.city}
+            {geoStatus === 'home' ? '🏠' : geoStatus === 'denied' ? '🔒' : '📍'} {shortCityName(weather.city) || weather.city}
             {(geoStatus === 'denied' || geoStatus === 'unavailable') && (
               <span style={{ fontSize: "0.65rem", marginLeft: "4px", opacity: 0.7 }}>(padrão)</span>
             )}

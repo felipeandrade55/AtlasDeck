@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
 import { Search, MapPin, Crosshair, Save, Trash2, X, Sun, Send } from "lucide-react";
+import { cityFromAddress, shortCityName, NominatimAddress } from "@/lib/location-display";
 
 const MapView = dynamic(() => import("./LocationPickerMap"), {
   ssr: false,
@@ -17,6 +18,7 @@ interface NominatimResult {
   display_name: string;
   lat: string;
   lon: string;
+  address?: NominatimAddress;
 }
 
 interface SavedLocation {
@@ -122,7 +124,7 @@ export function LocationPicker({ open, onClose, onSaved }: Props) {
     debounceRef.current = window.setTimeout(async () => {
       setSearching(true);
       try {
-        const url = `https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(query)}`;
+        const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=5&q=${encodeURIComponent(query)}`;
         const res = await fetch(url, { headers: { "Accept-Language": "pt-BR" } });
         const data = (await res.json()) as NominatimResult[];
         setResults(data);
@@ -147,13 +149,14 @@ export function LocationPicker({ open, onClose, onSaved }: Props) {
         setLat(pos.coords.latitude);
         setLon(pos.coords.longitude);
         setError(null);
-        // Reverse-geocode for a friendly label
-        fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${pos.coords.latitude}&lon=${pos.coords.longitude}`, {
+        // Reverse-geocode for a friendly label (apenas nome da cidade)
+        fetch(`https://nominatim.openstreetmap.org/reverse?format=json&addressdetails=1&lat=${pos.coords.latitude}&lon=${pos.coords.longitude}`, {
           headers: { "Accept-Language": "pt-BR" },
         })
           .then((r) => r.json())
-          .then((d: { display_name?: string }) => {
-            if (d.display_name) setLabel(d.display_name);
+          .then((d: { display_name?: string; address?: NominatimAddress }) => {
+            const friendly = cityFromAddress(d.address) || shortCityName(d.display_name);
+            if (friendly) setLabel(friendly);
           })
           .catch(() => {});
       },
@@ -165,7 +168,7 @@ export function LocationPicker({ open, onClose, onSaved }: Props) {
   const pickResult = (r: NominatimResult) => {
     setLat(parseFloat(r.lat));
     setLon(parseFloat(r.lon));
-    setLabel(r.display_name);
+    setLabel(cityFromAddress(r.address) || shortCityName(r.display_name));
     setResults([]);
     setQuery("");
   };
@@ -173,13 +176,14 @@ export function LocationPicker({ open, onClose, onSaved }: Props) {
   const handleMapClick = useCallback((nextLat: number, nextLon: number) => {
     setLat(nextLat);
     setLon(nextLon);
-    // Reverse geocode for label
-    fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${nextLat}&lon=${nextLon}`, {
+    // Reverse geocode for label (apenas nome da cidade)
+    fetch(`https://nominatim.openstreetmap.org/reverse?format=json&addressdetails=1&lat=${nextLat}&lon=${nextLon}`, {
       headers: { "Accept-Language": "pt-BR" },
     })
       .then((r) => r.json())
-      .then((d: { display_name?: string }) => {
-        if (d.display_name) setLabel(d.display_name);
+      .then((d: { display_name?: string; address?: NominatimAddress }) => {
+        const friendly = cityFromAddress(d.address) || shortCityName(d.display_name);
+        if (friendly) setLabel(friendly);
       })
       .catch(() => {});
   }, []);
@@ -371,7 +375,7 @@ export function LocationPicker({ open, onClose, onSaved }: Props) {
               type="text"
               value={label}
               onChange={(e) => setLabel(e.target.value)}
-              placeholder="Nome amigável (ex: Goiânia, GO — Setor X)"
+              placeholder="Nome da cidade (ex: Goiânia, GO)"
               style={{
                 width: "100%",
                 padding: "0.4rem 0.5rem",
