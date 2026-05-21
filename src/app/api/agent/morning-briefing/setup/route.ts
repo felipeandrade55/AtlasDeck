@@ -74,7 +74,7 @@ export async function POST(request: NextRequest) {
     "create",
     "--name",
     JSON.stringify(JOB_NAME),
-    "--schedule",
+    "--cron",
     JSON.stringify(SCHEDULE),
     "--tz",
     JSON.stringify(TZ),

@@ -88,7 +88,9 @@ function getDb(): Database.Database {
       end_time TEXT NOT NULL,
       slot_minutes INTEGER NOT NULL DEFAULT 30,
       timezone TEXT NOT NULL DEFAULT 'UTC',
-      active INTEGER NOT NULL DEFAULT 1
+      active INTEGER NOT NULL DEFAULT 1,
+      lunch_start TEXT,
+      lunch_end TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_rules_dow ON availability_rules(day_of_week);
@@ -174,6 +176,17 @@ function getDb(): Database.Database {
 
     CREATE INDEX IF NOT EXISTS idx_exceptions_parent ON event_exceptions(parent_event_id);
   `);
+
+  const ruleCols = db
+    .prepare(`PRAGMA table_info(availability_rules)`)
+    .all() as Array<{ name: string }>;
+  const ruleColNames = new Set(ruleCols.map((c) => c.name));
+  if (!ruleColNames.has("lunch_start")) {
+    db.exec(`ALTER TABLE availability_rules ADD COLUMN lunch_start TEXT`);
+  }
+  if (!ruleColNames.has("lunch_end")) {
+    db.exec(`ALTER TABLE availability_rules ADD COLUMN lunch_end TEXT`);
+  }
 
   globalRef.__atlasdeckCalendarDb = db;
   return db;
@@ -414,6 +427,8 @@ function rowToRule(row: Record<string, unknown>): AvailabilityRule {
     slot_minutes: row.slot_minutes as number,
     timezone: row.timezone as string,
     active: !!row.active,
+    lunch_start: (row.lunch_start as string | null) ?? null,
+    lunch_end: (row.lunch_end as string | null) ?? null,
   };
 }
 
@@ -430,8 +445,18 @@ export function createAvailabilityRule(input: Omit<AvailabilityRule, "id">): Ava
   const db = getDb();
   const id = randomUUID();
   db.prepare(
-    `INSERT INTO availability_rules (id, day_of_week, start_time, end_time, slot_minutes, timezone, active) VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, input.day_of_week, input.start_time, input.end_time, input.slot_minutes, input.timezone, input.active ? 1 : 0);
+    `INSERT INTO availability_rules (id, day_of_week, start_time, end_time, slot_minutes, timezone, active, lunch_start, lunch_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    input.day_of_week,
+    input.start_time,
+    input.end_time,
+    input.slot_minutes,
+    input.timezone,
+    input.active ? 1 : 0,
+    input.lunch_start,
+    input.lunch_end
+  );
   return { id, ...input };
 }
 
@@ -444,7 +469,9 @@ export function updateAvailabilityRule(id: string, patch: Partial<Omit<Availabil
        end_time = COALESCE(?, end_time),
        slot_minutes = COALESCE(?, slot_minutes),
        timezone = COALESCE(?, timezone),
-       active = COALESCE(?, active)
+       active = COALESCE(?, active),
+       lunch_start = CASE WHEN ? = 1 THEN ? ELSE lunch_start END,
+       lunch_end = CASE WHEN ? = 1 THEN ? ELSE lunch_end END
      WHERE id = ?`
   ).run(
     patch.day_of_week ?? null,
@@ -453,6 +480,10 @@ export function updateAvailabilityRule(id: string, patch: Partial<Omit<Availabil
     patch.slot_minutes ?? null,
     patch.timezone ?? null,
     patch.active === undefined ? null : patch.active ? 1 : 0,
+    "lunch_start" in patch ? 1 : 0,
+    "lunch_start" in patch ? patch.lunch_start ?? null : null,
+    "lunch_end" in patch ? 1 : 0,
+    "lunch_end" in patch ? patch.lunch_end ?? null : null,
     id
   );
   const row = db.prepare(`SELECT * FROM availability_rules WHERE id = ?`).get(id) as Record<string, unknown> | undefined;

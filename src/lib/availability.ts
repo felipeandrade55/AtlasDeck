@@ -116,7 +116,14 @@ export function computeFreeSlots(params: {
       const effectiveStart = ruleStart < lowerBound ? lowerBound : ruleStart;
       if (effectiveStart >= ruleEnd) continue;
 
-      const free = findFreeWindows(effectiveStart, ruleEnd, busy);
+      const ruleBusy = [...busy];
+      if (rule.lunch_start && rule.lunch_end) {
+        const lunchStart = parseTimeOnDate(day, rule.lunch_start);
+        const lunchEnd = parseTimeOnDate(day, rule.lunch_end);
+        if (lunchEnd > lunchStart) ruleBusy.push({ start: lunchStart, end: lunchEnd });
+      }
+
+      const free = findFreeWindows(effectiveStart, ruleEnd, ruleBusy);
       const step = rule.slot_minutes || durationMinutes;
 
       for (const window of free) {
@@ -147,7 +154,13 @@ export function isSlotStillAvailable(params: {
   const insideAnyRule = dayRules.some((rule) => {
     const ruleStart = parseTimeOnDate(start, rule.start_time);
     const ruleEnd = parseTimeOnDate(start, rule.end_time);
-    return start >= ruleStart && end <= ruleEnd;
+    if (!(start >= ruleStart && end <= ruleEnd)) return false;
+    if (rule.lunch_start && rule.lunch_end) {
+      const lunchStart = parseTimeOnDate(start, rule.lunch_start);
+      const lunchEnd = parseTimeOnDate(start, rule.lunch_end);
+      if (lunchEnd > lunchStart && rangesOverlap(start, end, lunchStart, lunchEnd)) return false;
+    }
+    return true;
   });
   if (!insideAnyRule) return false;
 

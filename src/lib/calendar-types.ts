@@ -78,6 +78,8 @@ export interface AvailabilityRule {
   slot_minutes: number;
   timezone: string;
   active: boolean;
+  lunch_start: string | null;
+  lunch_end: string | null;
 }
 
 export interface BookingLink {

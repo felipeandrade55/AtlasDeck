@@ -20,6 +20,9 @@ export default function CalendarSettingsPage() {
     start_time: "09:00",
     end_time: "18:00",
     slot_minutes: 30,
+    lunch_enabled: false,
+    lunch_start: "12:00",
+    lunch_end: "13:00",
   });
   const [newLink, setNewLink] = useState({
     title: "",
@@ -27,6 +30,7 @@ export default function CalendarSettingsPage() {
     description: "",
   });
   const [error, setError] = useState<string | null>(null);
+  const [copiedToken, setCopiedToken] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -48,10 +52,18 @@ export default function CalendarSettingsPage() {
   const createRule = async () => {
     setError(null);
     try {
+      const payload = {
+        day_of_week: newRule.day_of_week,
+        start_time: newRule.start_time,
+        end_time: newRule.end_time,
+        slot_minutes: newRule.slot_minutes,
+        lunch_start: newRule.lunch_enabled ? newRule.lunch_start : null,
+        lunch_end: newRule.lunch_enabled ? newRule.lunch_end : null,
+      };
       const res = await fetch("/api/calendar/availability/rules", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(newRule),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) throw new Error((await res.json()).error);
       await reload();
@@ -115,11 +127,45 @@ export default function CalendarSettingsPage() {
     }
   };
 
-  const linkUrl = (token: string) =>
-    typeof window === "undefined" ? `/book/${token}` : `${window.location.origin}/book/${token}`;
+  const linkUrl = (token: string) => {
+    const envBase = process.env.NEXT_PUBLIC_PUBLIC_BASE_URL?.replace(/\/$/, "");
+    if (envBase) return `${envBase}/book/${token}`;
+    if (typeof window === "undefined") return `/book/${token}`;
+    return `${window.location.origin}/book/${token}`;
+  };
 
   const copyLink = async (token: string) => {
-    await navigator.clipboard.writeText(linkUrl(token));
+    const url = linkUrl(token);
+    let ok = false;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(url);
+        ok = true;
+      }
+    } catch {
+      ok = false;
+    }
+    if (!ok) {
+      const ta = document.createElement("textarea");
+      ta.value = url;
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      ta.setAttribute("readonly", "");
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        ok = document.execCommand("copy");
+      } catch {
+        ok = false;
+      }
+      document.body.removeChild(ta);
+    }
+    if (ok) {
+      setCopiedToken(token);
+      setTimeout(() => setCopiedToken((cur) => (cur === token ? null : cur)), 1800);
+    } else {
+      setError("Não foi possível copiar — selecione o link manualmente.");
+    }
   };
 
   return (
@@ -201,7 +247,7 @@ export default function CalendarSettingsPage() {
             gridTemplateColumns: "1fr 110px 110px 90px auto",
             gap: "0.5rem",
             alignItems: "center",
-            marginBottom: "1rem",
+            marginBottom: "0.5rem",
           }}
         >
           <select
@@ -241,6 +287,44 @@ export default function CalendarSettingsPage() {
           </button>
         </div>
 
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "0.75rem",
+            marginBottom: "1rem",
+            fontSize: "0.82rem",
+            color: "var(--text-secondary)",
+            flexWrap: "wrap",
+          }}
+        >
+          <label style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem", cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={newRule.lunch_enabled}
+              onChange={(e) => setNewRule({ ...newRule, lunch_enabled: e.target.checked })}
+            />
+            Bloquear horário de almoço
+          </label>
+          <input
+            type="time"
+            value={newRule.lunch_start}
+            onChange={(e) => setNewRule({ ...newRule, lunch_start: e.target.value })}
+            className="input"
+            disabled={!newRule.lunch_enabled}
+            style={{ width: 110 }}
+          />
+          <span>até</span>
+          <input
+            type="time"
+            value={newRule.lunch_end}
+            onChange={(e) => setNewRule({ ...newRule, lunch_end: e.target.value })}
+            className="input"
+            disabled={!newRule.lunch_enabled}
+            style={{ width: 110 }}
+          />
+        </div>
+
         <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
           {rules.length === 0 && (
             <div style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>
@@ -264,6 +348,11 @@ export default function CalendarSettingsPage() {
               <div style={{ fontWeight: 600 }}>{WEEKDAYS[r.day_of_week]}</div>
               <div style={{ color: "var(--text-secondary)" }}>
                 {r.start_time} – {r.end_time}
+                {r.lunch_start && r.lunch_end && (
+                  <span style={{ color: "var(--text-muted)", fontSize: "0.78rem", marginLeft: 6 }}>
+                    (almoço {r.lunch_start}–{r.lunch_end})
+                  </span>
+                )}
               </div>
               <div style={{ color: "var(--text-secondary)", fontSize: "0.8rem" }}>
                 slots de {r.slot_minutes}min
@@ -397,7 +486,7 @@ export default function CalendarSettingsPage() {
                 style={{ padding: "0.4rem 0.7rem", fontSize: "0.78rem" }}
               >
                 <Copy className="w-3.5 h-3.5" />
-                Copiar
+                {copiedToken === link.token ? "Copiado!" : "Copiar"}
               </button>
               <button
                 type="button"

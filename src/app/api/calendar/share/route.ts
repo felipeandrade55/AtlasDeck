@@ -6,6 +6,8 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 function buildBaseUrl(request: NextRequest): string {
+  const envBase = (process.env.NEXT_PUBLIC_PUBLIC_BASE_URL ?? process.env.ATLASDECK_BASE_URL)?.replace(/\/$/, "");
+  if (envBase) return envBase;
   const proto = request.headers.get("x-forwarded-proto") ?? "https";
   const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? "localhost";
   return `${proto}://${host}`;

@@ -4,6 +4,7 @@ import { useMemo, useRef, useState } from "react";
 import { addDays, isSameDay, startOfWeek } from "date-fns";
 import type { ExpandedEvent, CalendarBlock } from "@/lib/calendar-types";
 import { HOURS, fmtHour, positionItemsInDay } from "./_utils";
+import { NowLine } from "./NowLine";
 
 const HOUR_HEIGHT_PX = 48;
 const WEEKDAYS_PT = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"];
@@ -190,6 +191,10 @@ function DayColumn({
       {HOURS.map((h) => (
         <div key={h} style={{ height: HOUR_HEIGHT_PX, borderTop: "1px solid var(--border)" }} />
       ))}
+
+      {isSameDay(day, new Date()) && (
+        <NowLine dayHeightPx={HOUR_HEIGHT_PX * 24} />
+      )}
 
       {drag && (() => {
         const top = Math.min(drag.startY, drag.currentY);

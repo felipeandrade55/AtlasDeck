@@ -28,6 +28,8 @@ export async function POST(request: NextRequest) {
     ) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
+    const lunchStart = typeof body.lunch_start === "string" && body.lunch_start ? body.lunch_start : null;
+    const lunchEnd = typeof body.lunch_end === "string" && body.lunch_end ? body.lunch_end : null;
     const rule = createAvailabilityRule({
       day_of_week: body.day_of_week,
       start_time: body.start_time,
@@ -35,6 +37,8 @@ export async function POST(request: NextRequest) {
       slot_minutes: body.slot_minutes ?? 30,
       timezone: body.timezone ?? "UTC",
       active: body.active !== false,
+      lunch_start: lunchStart && lunchEnd ? lunchStart : null,
+      lunch_end: lunchStart && lunchEnd ? lunchEnd : null,
     });
     return NextResponse.json({ rule }, { status: 201 });
   } catch (error) {

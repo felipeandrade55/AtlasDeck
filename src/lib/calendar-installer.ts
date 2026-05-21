@@ -399,7 +399,7 @@ function createCron(args: { name: string; schedule: string; command: string }): 
       "create",
       "--name",
       JSON.stringify(args.name),
-      "--schedule",
+      "--cron",
       JSON.stringify(args.schedule),
       "--shell",
       JSON.stringify(args.command),

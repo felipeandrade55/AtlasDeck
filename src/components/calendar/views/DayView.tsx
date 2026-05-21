@@ -1,8 +1,10 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
+import { isSameDay } from "date-fns";
 import type { ExpandedEvent, CalendarBlock } from "@/lib/calendar-types";
 import { HOURS, fmtHour, positionItemsInDay } from "./_utils";
+import { NowLine } from "./NowLine";
 
 interface Props {
   focusDate: Date;
@@ -115,6 +117,10 @@ export function DayView({ focusDate, events, blocks, onCreateAt, onSelectEvent, 
             }}
           />
         ))}
+
+        {isSameDay(dayStart, new Date()) && (
+          <NowLine dayHeightPx={HOUR_HEIGHT_PX * 24} showLabel />
+        )}
 
         {drag && (() => {
           const top = Math.min(drag.startY, drag.currentY);
