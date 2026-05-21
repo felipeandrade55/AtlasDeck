@@ -3,13 +3,16 @@
 import { useEffect, useState } from "react";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
-import { Wind, Droplets, Thermometer } from "lucide-react";
+import { Wind, Droplets, Thermometer, CloudRain, Settings } from "lucide-react";
+import { LocationPicker } from "./LocationPicker";
 
 interface Forecast {
   day: string;
   max: number;
   min: number;
   emoji: string;
+  rain_pct: number | null;
+  rain_mm: number | null;
 }
 
 interface WeatherData {
@@ -19,6 +22,7 @@ interface WeatherData {
   humidity: number;
   wind: number;
   precipitation: number;
+  rain_pct: number | null;
   condition: string;
   emoji: string;
   forecast: Forecast[];
@@ -29,70 +33,67 @@ export function WeatherWidget() {
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(new Date());
-  const [geoStatus, setGeoStatus] = useState<'ok' | 'denied' | 'unavailable' | 'default'>('default');
+  const [geoStatus, setGeoStatus] = useState<'home' | 'ok' | 'denied' | 'unavailable' | 'default'>('default');
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
-    const fetchWeather = (lat?: number, lon?: number) => {
+    let cancelled = false;
+
+    const fetchWeather = (lat?: number, lon?: number, label?: string) => {
       const url = lat != null && lon != null
         ? `/api/weather?lat=${lat}&lon=${lon}`
         : '/api/weather';
       fetch(url)
         .then((r) => r.json())
-        .then((d) => { setWeather(d); setLoading(false); })
-        .catch(() => setLoading(false));
+        .then((d) => {
+          if (cancelled) return;
+          if (label && d && !d.error) d.city = label;
+          setWeather(d);
+          setLoading(false);
+        })
+        .catch(() => !cancelled && setLoading(false));
     };
 
-    // Try to use saved coordinates first
-    const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('atlasdeck-weather-coords') : null;
-    if (saved) {
-      try {
-        const { lat, lon } = JSON.parse(saved);
-        setGeoStatus('ok');
-        fetchWeather(lat, lon);
-        // Still try to get fresh position in background
-        if (typeof navigator !== 'undefined' && navigator.geolocation) {
-          navigator.geolocation.getCurrentPosition(
-            (pos) => {
-              const newLat = pos.coords.latitude;
-              const newLon = pos.coords.longitude;
-              localStorage.setItem('atlasdeck-weather-coords', JSON.stringify({ lat: newLat, lon: newLon }));
-              fetchWeather(newLat, newLon);
-            },
-            () => {},
-            { timeout: 5000, enableHighAccuracy: false }
-          );
+    // Priority 1: server-saved home location
+    fetch('/api/user/location')
+      .then((r) => r.json())
+      .then((loc) => {
+        if (cancelled) return;
+        if (loc && typeof loc.lat === 'number' && typeof loc.lon === 'number') {
+          setGeoStatus('home');
+          fetchWeather(loc.lat, loc.lon, loc.label || undefined);
+          return;
         }
-        const timer = setInterval(() => setNow(new Date()), 1000);
-        return () => clearInterval(timer);
-      } catch {
-        // fallback to normal flow
+        tryBrowserGeo();
+      })
+      .catch(() => !cancelled && tryBrowserGeo());
+
+    function tryBrowserGeo() {
+      if (cancelled) return;
+      if (typeof navigator !== 'undefined' && navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            if (cancelled) return;
+            setGeoStatus('ok');
+            fetchWeather(pos.coords.latitude, pos.coords.longitude);
+          },
+          (err) => {
+            if (cancelled) return;
+            setGeoStatus(err.code === 1 ? 'denied' : 'unavailable');
+            fetchWeather();
+          },
+          { timeout: 5000 }
+        );
+      } else {
+        setGeoStatus('unavailable');
+        fetchWeather();
       }
     }
 
-    if (typeof navigator !== 'undefined' && navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          setGeoStatus('ok');
-          const lat = pos.coords.latitude;
-          const lon = pos.coords.longitude;
-          localStorage.setItem('atlasdeck-weather-coords', JSON.stringify({ lat, lon }));
-          fetchWeather(lat, lon);
-        },
-        (err) => {
-          setGeoStatus(err.code === 1 ? 'denied' : 'unavailable');
-          fetchWeather();
-        },
-        { timeout: 5000 }
-      );
-    } else {
-      setGeoStatus('unavailable');
-      fetchWeather();
-    }
-
-    // Update clock every second
     const timer = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [reloadKey]);
 
   if (loading) {
     return (
@@ -120,15 +121,35 @@ export function WeatherWidget() {
       borderRadius: "0.75rem",
       border: "1px solid var(--border)",
       background: "linear-gradient(135deg, var(--card) 0%, color-mix(in srgb, var(--accent) 5%, var(--card)) 100%)",
+      position: "relative",
     }}>
+      <button
+        onClick={() => setPickerOpen(true)}
+        title="Configurar minha localização"
+        aria-label="Configurar localização"
+        style={{
+          position: "absolute", top: 10, right: 10,
+          background: "none", border: "none", padding: 4,
+          color: "var(--text-muted)", cursor: "pointer",
+          borderRadius: 4,
+        }}
+      >
+        <Settings className="w-3.5 h-3.5" />
+      </button>
       {/* Header: city + clock */}
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "0.75rem" }}>
         <div>
           <div
-            style={{ fontSize: "0.75rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "0.125rem" }}
-            title={geoStatus === 'denied' ? 'Geolocalização bloqueada pelo navegador — usando localização padrão' : undefined}
+            onClick={() => setPickerOpen(true)}
+            style={{ fontSize: "0.75rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "0.125rem", cursor: "pointer" }}
+            title={
+              geoStatus === 'home' ? 'Localização salva — clique para editar' :
+              geoStatus === 'denied' ? 'Geolocalização bloqueada — clique para definir manualmente' :
+              geoStatus === 'unavailable' ? 'Geolocalização indisponível — clique para definir manualmente' :
+              'Clique para configurar sua localização'
+            }
           >
-            {geoStatus === 'denied' ? '🔒' : '📍'} {weather.city}
+            {geoStatus === 'home' ? '🏠' : geoStatus === 'denied' ? '🔒' : '📍'} {weather.city}
             {(geoStatus === 'denied' || geoStatus === 'unavailable') && (
               <span style={{ fontSize: "0.65rem", marginLeft: "4px", opacity: 0.7 }}>(padrão)</span>
             )}
@@ -154,7 +175,7 @@ export function WeatherWidget() {
       </div>
 
       {/* Stats row */}
-      <div style={{ display: "flex", gap: "1rem", marginBottom: "0.875rem", paddingTop: "0.75rem", borderTop: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", gap: "1rem", marginBottom: "0.875rem", paddingTop: "0.75rem", borderTop: "1px solid var(--border)", flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.375rem", fontSize: "0.8rem", color: "var(--text-secondary)" }}>
           <Thermometer className="w-3.5 h-3.5" style={{ color: "var(--accent)" }} />
           Sensação {weather.feels_like}°C
@@ -167,6 +188,20 @@ export function WeatherWidget() {
           <Wind className="w-3.5 h-3.5" style={{ color: "#94a3b8" }} />
           {weather.wind} km/h
         </div>
+        {weather.rain_pct != null && (
+          <div
+            style={{
+              display: "flex", alignItems: "center", gap: "0.375rem",
+              fontSize: "0.8rem",
+              color: weather.rain_pct >= 60 ? "#3b82f6" : "var(--text-secondary)",
+              fontWeight: weather.rain_pct >= 60 ? 600 : 400,
+            }}
+            title="Probabilidade de chuva agora"
+          >
+            <CloudRain className="w-3.5 h-3.5" style={{ color: "#3b82f6" }} />
+            {weather.rain_pct}%
+          </div>
+        )}
       </div>
 
       {/* 3-day forecast */}
@@ -187,10 +222,29 @@ export function WeatherWidget() {
               <div style={{ fontSize: "1.25rem", lineHeight: 1, marginBottom: "0.25rem" }}>{day.emoji}</div>
               <div style={{ fontSize: "0.75rem", fontWeight: 600, color: "var(--text-primary)" }}>{day.max}°</div>
               <div style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>{day.min}°</div>
+              {day.rain_pct != null && day.rain_pct > 0 && (
+                <div
+                  title={day.rain_mm != null ? `${day.rain_mm} mm previstos` : undefined}
+                  style={{
+                    fontSize: "0.65rem",
+                    color: day.rain_pct >= 60 ? "#3b82f6" : "var(--text-muted)",
+                    fontWeight: day.rain_pct >= 60 ? 600 : 400,
+                    marginTop: "0.25rem",
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: "2px",
+                  }}
+                >
+                  💧 {day.rain_pct}%
+                </div>
+              )}
             </div>
           );
         })}
       </div>
+      <LocationPicker
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        onSaved={() => setReloadKey((k) => k + 1)}
+      />
     </div>
   );
 }

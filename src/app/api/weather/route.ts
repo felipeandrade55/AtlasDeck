@@ -51,7 +51,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,precipitation&daily=temperature_2m_max,temperature_2m_min,weather_code&timezone=auto&forecast_days=3`;
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,precipitation,precipitation_probability&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max,precipitation_sum&timezone=auto&forecast_days=3`;
 
     const res = await fetch(url, { next: { revalidate: 600 } });
     const json = await res.json();
@@ -68,6 +68,7 @@ export async function GET(request: Request) {
       humidity: current.relative_humidity_2m,
       wind: Math.round(current.wind_speed_10m),
       precipitation: current.precipitation,
+      rain_pct: current.precipitation_probability ?? null,
       condition: wmo.label,
       emoji: wmo.emoji,
       forecast: daily.time.slice(0, 3).map((day: string, i: number) => ({
@@ -75,6 +76,8 @@ export async function GET(request: Request) {
         max: Math.round(daily.temperature_2m_max[i]),
         min: Math.round(daily.temperature_2m_min[i]),
         emoji: (WMO_CODES[daily.weather_code[i]] || { emoji: "🌡️" }).emoji,
+        rain_pct: daily.precipitation_probability_max?.[i] ?? null,
+        rain_mm: daily.precipitation_sum?.[i] ?? null,
       })),
       updated: new Date().toISOString(),
     };
