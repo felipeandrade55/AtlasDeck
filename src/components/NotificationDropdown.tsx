@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
 import { Bell, Check, CheckCheck, Trash2, X, Info, CheckCircle, AlertTriangle, XCircle } from "lucide-react";
 import { format, formatDistanceToNow } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -47,6 +48,7 @@ const typeConfig: Record<
 };
 
 export function NotificationDropdown() {
+  const router = useRouter();
   const [isOpen, setIsOpen] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -144,7 +146,14 @@ export function NotificationDropdown() {
       markAsRead(notification.id);
     }
     if (notification.link) {
-      window.location.href = notification.link;
+      setIsOpen(false);
+      const link = notification.link;
+      const isInternal = link.startsWith("/") && !link.startsWith("//");
+      if (isInternal) {
+        router.push(link);
+      } else {
+        window.location.href = link;
+      }
     }
   };
 
