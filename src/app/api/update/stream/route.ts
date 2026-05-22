@@ -18,7 +18,7 @@ export const maxDuration = 600;
  *   - phase:    nova mudança de fase
  *   - offset:   {logOffset, phaseOffset} — cliente persiste para reconectar de onde parou
  *   - complete: { success, error?, durationMs? }
- *   - error:    { message } — erro do próprio stream
+ *   - stream-error: { message } — erro do próprio stream
  */
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
@@ -106,7 +106,7 @@ export async function GET(req: NextRequest) {
             return;
           }
         } catch (err) {
-          send("error", { message: err instanceof Error ? err.message : String(err) });
+          send("stream-error", { message: err instanceof Error ? err.message : String(err) });
           safeClose();
           return;
         }
@@ -166,7 +166,7 @@ export async function GET(req: NextRequest) {
               safeClose();
             }
           } catch (err) {
-            send("error", { message: err instanceof Error ? err.message : String(err) });
+            send("stream-error", { message: err instanceof Error ? err.message : String(err) });
           }
         }, 500);
 

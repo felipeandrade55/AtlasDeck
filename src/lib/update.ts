@@ -35,9 +35,14 @@ export type UpdatePhaseName =
   | "credentials"
   | "git-pull"
   | "npm-install"
+  | "setup-memory"
+  | "ollama-install"
   | "build"
   | "pm2-restart"
-  | "health-check";
+  | "health-check"
+  | "openclaw-gateway"
+  | "fail2ban"
+  | "firewall";
 
 export interface UpdatePhase {
   name: string;
@@ -95,9 +100,14 @@ const PHASE_ORDER: UpdatePhaseName[] = [
   "credentials",
   "git-pull",
   "npm-install",
+  "setup-memory",
+  "ollama-install",
   "build",
   "pm2-restart",
   "health-check",
+  "openclaw-gateway",
+  "fail2ban",
+  "firewall",
 ];
 
 function configPath(): string {
@@ -407,7 +417,12 @@ export const PHASE_LABELS: Record<string, string> = {
   credentials: "Credenciais",
   "git-pull": "Git Pull",
   "npm-install": "Dependências",
+  "setup-memory": "Setup Memória",
+  "ollama-install": "Ollama",
   build: "Build",
   "pm2-restart": "Restart PM2",
   "health-check": "Health Check",
+  "openclaw-gateway": "OpenClaw Gateway",
+  fail2ban: "Fail2Ban",
+  firewall: "Firewall",
 };

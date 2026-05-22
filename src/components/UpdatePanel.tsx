@@ -22,10 +22,19 @@ const PHASE_DEF: { name: string; label: string }[] = [
   { name: "credentials", label: "Credenciais" },
   { name: "git-pull", label: "Git Pull" },
   { name: "npm-install", label: "Dependências" },
+  { name: "setup-memory", label: "Setup Memória" },
+  { name: "ollama-install", label: "Ollama" },
   { name: "build", label: "Build" },
   { name: "pm2-restart", label: "Restart PM2" },
   { name: "health-check", label: "Health Check" },
+  { name: "openclaw-gateway", label: "OpenClaw Gateway" },
+  { name: "fail2ban", label: "Fail2Ban" },
+  { name: "firewall", label: "Firewall" },
 ];
+
+function phaseLabel(name: string): string {
+  return PHASE_DEF.find((p) => p.name === name)?.label ?? name;
+}
 
 function formatElapsed(ms: number): string {
   const totalSec = Math.floor(ms / 1000);
@@ -112,16 +121,27 @@ export function UpdatePanel() {
   const applyPhaseUpdate = useCallback(
     (incoming: { phase: string; status: UpdatePhase["status"]; durationSec?: number; ts?: string; error?: string }) => {
       setPhases((prev) =>
-        prev.map((p) =>
-          p.name === incoming.phase
-            ? {
-                ...p,
+        prev.some((p) => p.name === incoming.phase)
+          ? prev.map((p) =>
+              p.name === incoming.phase
+                ? {
+                    ...p,
+                    status: incoming.status,
+                    durationSec: incoming.durationSec ?? p.durationSec,
+                    error: incoming.error ?? p.error,
+                  }
+                : p
+            )
+          : [
+              ...prev,
+              {
+                name: incoming.phase,
+                label: phaseLabel(incoming.phase),
                 status: incoming.status,
-                durationSec: incoming.durationSec ?? p.durationSec,
-                error: incoming.error ?? p.error,
-              }
-            : p
-        )
+                durationSec: incoming.durationSec,
+                error: incoming.error,
+              },
+            ]
       );
       if (incoming.status === "running") {
         setPhaseStartedAt(incoming.ts ? new Date(incoming.ts).getTime() : Date.now());
@@ -157,7 +177,13 @@ export function UpdatePanel() {
         setLiveStatus(data.liveStatus);
         // Re-sync phases from snapshot
         setPhases((current) => {
-          const merged = PHASE_DEF.map((def) => {
+          const dynamicDefs = [
+            ...PHASE_DEF,
+            ...data.liveStatus!.phases
+              .filter((phase) => !PHASE_DEF.some((def) => def.name === phase.name))
+              .map((phase) => ({ name: phase.name, label: phaseLabel(phase.name) })),
+          ];
+          const merged = dynamicDefs.map((def) => {
             const fromLive = data.liveStatus!.phases.find((p) => p.name === def.name);
             const fromCurrent = current.find((p) => p.name === def.name);
             return {
@@ -208,6 +234,16 @@ export function UpdatePanel() {
       }
       if (data.durationMs) setDuration(data.durationMs);
       void fetchHistory();
+      try {
+        es.close();
+      } catch {}
+      eventSourceRef.current = null;
+    });
+
+    es.addEventListener("stream-error", (e) => {
+      const data = JSON.parse((e as MessageEvent).data) as { message?: string };
+      setStatus("error");
+      setErrorMsg(data.message || "Erro no stream de atualização");
       try {
         es.close();
       } catch {}
@@ -599,6 +635,10 @@ export function UpdatePanel() {
                     <div className="text-xs" style={{ color: "var(--text-muted)" }}>
                       {currentPhaseName === "backup"
                         ? "Compactando dados, configurações e workspace. Isso pode levar 1–3 minutos…"
+                        : currentPhaseName === "setup-memory"
+                        ? "Preparando banco/modelo de memória. Avisos aqui não bloqueiam o deploy…"
+                        : currentPhaseName === "ollama-install"
+                        ? "Verificando instalação opcional do Ollama…"
                         : currentPhaseName === "build"
                         ? "Compilando Next.js para produção. Aguarde…"
                         : currentPhaseName === "npm-install"
@@ -607,6 +647,12 @@ export function UpdatePanel() {
                         ? "Baixando atualizações do GitHub…"
                         : currentPhaseName === "pm2-restart"
                         ? "Reiniciando o servidor. A conexão pode cair brevemente — vou reconectar automaticamente."
+                        : currentPhaseName === "openclaw-gateway"
+                        ? "Verificando gateway OpenClaw…"
+                        : currentPhaseName === "fail2ban"
+                        ? "Verificando proteção Fail2Ban…"
+                        : currentPhaseName === "firewall"
+                        ? "Verificando firewall…"
                         : "Aguarde…"}
                     </div>
                   </div>

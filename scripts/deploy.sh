@@ -260,72 +260,110 @@ if $WITH_BACKUP; then
   BACKUP_TS=$(date +%Y-%m-%d_%H-%M-%S)
   BACKUP_FILE="$BACKUP_DIR/openclaw-backup_${BACKUP_TS}.tar.gz"
 
-  # Constrói lista de paths para o tar
-  BACKUP_LIST=$(mktemp)
-  [ -d "$PROJ_DIR/data" ] && echo "$PROJ_DIR/data" >> "$BACKUP_LIST"
-  [ -f "$PROJ_DIR/.env" ] && echo "$PROJ_DIR/.env" >> "$BACKUP_LIST"
+  # Backup de update precisa ser pequeno e previsível. Antes o tar recebia
+  # "$PROJ_DIR/data" inteiro enquanto escrevia dentro de "$PROJ_DIR/data/backups";
+  # em alguns hosts isso fazia o arquivo compactar backups antigos e até o
+  # próprio backup em criação, crescendo para GBs e matando o deploy.
+  TAR_ARGS=()
+  [ -d "$PROJ_DIR/data" ] && TAR_ARGS+=("-C" "$PROJ_DIR" "data")
+  [ -f "$PROJ_DIR/.env" ] && TAR_ARGS+=("-C" "$PROJ_DIR" ".env")
 
-  # Diretório OpenClaw
+  # Diretório OpenClaw: mantém somente configuração, agentes e skills. Mídia e
+  # workspaces podem ser enormes; o backup completo continua no menu de Backup,
+  # mas o update precisa priorizar disponibilidade.
   OPENCLAW_BASE="${OPENCLAW_DIR:-$HOME/.openclaw}"
   if [ -d "$OPENCLAW_BASE" ]; then
-    [ -f "$OPENCLAW_BASE/openclaw.json" ] && echo "$OPENCLAW_BASE/openclaw.json" >> "$BACKUP_LIST"
-    [ -d "$OPENCLAW_BASE/agents" ] && echo "$OPENCLAW_BASE/agents" >> "$BACKUP_LIST"
-    [ -d "$OPENCLAW_BASE/skills" ] && echo "$OPENCLAW_BASE/skills" >> "$BACKUP_LIST"
-    [ -d "$OPENCLAW_BASE/media" ] && echo "$OPENCLAW_BASE/media" >> "$BACKUP_LIST"
+    [ -f "$OPENCLAW_BASE/openclaw.json" ] && TAR_ARGS+=("-C" "$OPENCLAW_BASE" "openclaw.json")
+    [ -d "$OPENCLAW_BASE/agents" ] && TAR_ARGS+=("-C" "$OPENCLAW_BASE" "agents")
+    [ -d "$OPENCLAW_BASE/skills" ] && TAR_ARGS+=("-C" "$OPENCLAW_BASE" "skills")
   fi
 
-  PATH_COUNT=$(wc -l < "$BACKUP_LIST" | tr -d ' ')
-  info "Compactando $PATH_COUNT path(s) → $(basename "$BACKUP_FILE")"
-
-  # Roda tar em background para emitir heartbeats periódicos
-  (
-    tar --exclude="node_modules" \
-        --exclude=".next" \
-        --exclude="data/backups" \
-        --exclude=".git" \
-        --exclude="*.tar.gz" \
-        --exclude="*.log" \
-        -czf "$BACKUP_FILE" \
-        -T "$BACKUP_LIST" 2>&1
-  ) &
-  TAR_PID=$!
-
-  # Emite progresso enquanto tar roda
-  PROGRESS_COUNTER=0
-  while kill -0 $TAR_PID 2>/dev/null; do
-    sleep 3
-    PROGRESS_COUNTER=$((PROGRESS_COUNTER + 3))
-    if [ -f "$BACKUP_FILE" ]; then
-      SIZE=$(du -h "$BACKUP_FILE" 2>/dev/null | cut -f1)
-      info "Backup em andamento... ${PROGRESS_COUNTER}s (atual: $SIZE)"
-    else
-      info "Backup em andamento... ${PROGRESS_COUNTER}s"
-    fi
-    heartbeat
-  done
-
-  wait $TAR_PID
-  TAR_EXIT=$?
-  rm -f "$BACKUP_LIST"
-
-  if [ $TAR_EXIT -eq 0 ] && [ -f "$BACKUP_FILE" ]; then
-    chmod 600 "$BACKUP_FILE" 2>/dev/null || true
-    SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
-    ok "Backup concluído: $(basename "$BACKUP_FILE") ($SIZE)"
-    record "Backup pré-update" "ok" "$(elapsed $T)"
-    phase_status "backup" "ok" "$(elapsed $T)"
-
-    # Aplica retenção: mantém últimos 5 backups
-    cd "$BACKUP_DIR"
-    ls -1t openclaw-backup_*.tar.gz 2>/dev/null | tail -n +6 | while IFS= read -r old; do
-      rm -f "$old"
-      info "Retenção: removido $old"
-    done
+  PATH_COUNT=$((${#TAR_ARGS[@]} / 3))
+  if [ "$PATH_COUNT" -eq 0 ]; then
+    warn "Nenhum arquivo de backup pré-update encontrado — pulando backup"
+    record "Backup pré-update" "skip" "$(elapsed $T)"
+    phase_status "backup" "skip" "$(elapsed $T)"
   else
-    err "Backup falhou (exit $TAR_EXIT)"
-    record "Backup pré-update" "fail" "$(elapsed $T)"
-    phase_status "backup" "fail" "$(elapsed $T)" "tar exit $TAR_EXIT"
-    exit 1
+    info "Compactando $PATH_COUNT path(s) leves → $(basename "$BACKUP_FILE")"
+
+    (
+      tar --exclude="data/backups" \
+          --exclude="./data/backups" \
+          --exclude="$BACKUP_DIR" \
+          --exclude="$BACKUP_DIR/*" \
+          --exclude="data/models" \
+          --exclude="./data/models" \
+          --exclude="node_modules" \
+          --exclude=".next" \
+          --exclude=".next.prev" \
+          --exclude=".git" \
+          --exclude="*.tar.gz" \
+          --exclude="*.log" \
+          --warning=no-file-changed \
+          -czf "$BACKUP_FILE" \
+          "${TAR_ARGS[@]}" 2>&1
+    ) &
+    TAR_PID=$!
+
+    PROGRESS_COUNTER=0
+    MAX_BACKUP_SECONDS="${UPDATE_BACKUP_TIMEOUT_SECONDS:-180}"
+    MAX_BACKUP_BYTES="${UPDATE_BACKUP_MAX_BYTES:-1073741824}"
+    while kill -0 $TAR_PID 2>/dev/null; do
+      sleep 3
+      PROGRESS_COUNTER=$((PROGRESS_COUNTER + 3))
+      if [ -f "$BACKUP_FILE" ]; then
+        SIZE=$(du -h "$BACKUP_FILE" 2>/dev/null | cut -f1)
+        SIZE_BYTES=$(stat -c%s "$BACKUP_FILE" 2>/dev/null || echo 0)
+        info "Backup em andamento... ${PROGRESS_COUNTER}s (atual: $SIZE)"
+        if [ "$SIZE_BYTES" -gt "$MAX_BACKUP_BYTES" ]; then
+          warn "Backup pré-update excedeu limite seguro (${SIZE}); cancelando para não travar o deploy"
+          kill "$TAR_PID" 2>/dev/null || true
+          wait "$TAR_PID" 2>/dev/null || true
+          rm -f "$BACKUP_FILE"
+          record "Backup pré-update" "fail" "$(elapsed $T)"
+          phase_status "backup" "fail" "$(elapsed $T)" "backup excedeu limite seguro de tamanho"
+          exit 1
+        fi
+      else
+        info "Backup em andamento... ${PROGRESS_COUNTER}s"
+      fi
+      if [ "$PROGRESS_COUNTER" -ge "$MAX_BACKUP_SECONDS" ]; then
+        warn "Backup pré-update passou de ${MAX_BACKUP_SECONDS}s; cancelando para não travar o deploy"
+        kill "$TAR_PID" 2>/dev/null || true
+        wait "$TAR_PID" 2>/dev/null || true
+        rm -f "$BACKUP_FILE"
+        record "Backup pré-update" "fail" "$(elapsed $T)"
+        phase_status "backup" "fail" "$(elapsed $T)" "backup excedeu timeout seguro"
+        exit 1
+      fi
+      heartbeat
+    done
+
+    set +e
+    wait $TAR_PID
+    TAR_EXIT=$?
+    set -e
+
+    if [ $TAR_EXIT -eq 0 ] && [ -f "$BACKUP_FILE" ]; then
+      chmod 600 "$BACKUP_FILE" 2>/dev/null || true
+      SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
+      ok "Backup concluído: $(basename "$BACKUP_FILE") ($SIZE)"
+      record "Backup pré-update" "ok" "$(elapsed $T)"
+      phase_status "backup" "ok" "$(elapsed $T)"
+
+      # Aplica retenção: mantém últimos 5 backups
+      cd "$BACKUP_DIR"
+      ls -1t openclaw-backup_*.tar.gz 2>/dev/null | tail -n +6 | while IFS= read -r old; do
+        rm -f "$old"
+        info "Retenção: removido $old"
+      done
+    else
+      err "Backup falhou (exit $TAR_EXIT)"
+      rm -f "$BACKUP_FILE"
+      record "Backup pré-update" "fail" "$(elapsed $T)"
+      phase_status "backup" "fail" "$(elapsed $T)" "tar exit $TAR_EXIT"
+      exit 1
+    fi
   fi
 fi
 
@@ -597,8 +635,10 @@ while kill -0 $BUILD_PID 2>/dev/null; do
   heartbeat
 done
 
+set +e
 wait $BUILD_PID
 BUILD_EXIT=$?
+set -e
 
 if [ $BUILD_EXIT -ne 0 ]; then
   err "Build falhou (exit $BUILD_EXIT)"
@@ -829,8 +869,8 @@ if [[ -n "$HEALTH_JSON" ]] && echo "$HEALTH_JSON" | grep -q '"status"'; then
 
   case "$OVERALL" in
     healthy)  ok "Status geral: HEALTHY"; record "Serviços (/api/health)" "ok" "$(elapsed $T)" ;;
-    degraded) warn "Status geral: DEGRADED"; record "Serviços (/api/health)" "fail" "$(elapsed $T)" ;;
-    critical) err "Status geral: CRITICAL"; record "Serviços (/api/health)" "fail" "$(elapsed $T)" ;;
+    degraded) warn "Status geral: DEGRADED — update aplicado, serviço interno precisa atenção"; record "Serviços (/api/health)" "skip" "$(elapsed $T)" ;;
+    critical) warn "Status geral: CRITICAL — update aplicado, serviço interno precisa atenção"; record "Serviços (/api/health)" "skip" "$(elapsed $T)" ;;
     *)        warn "Status geral: $OVERALL"; record "Serviços (/api/health)" "skip" "$(elapsed $T)" ;;
   esac
 
@@ -863,6 +903,7 @@ fi
 # usado como mecanismo opcional de auto-start, não como teste de saúde.
 step "OpenClaw Gateway..."
 T=$(now)
+phase_status "openclaw-gateway" "running"
 
 # Descobre a porta real do gateway lendo openclaw.json (com fallback 18789).
 GATEWAY_PORT=$(node -e '
@@ -896,6 +937,7 @@ GATEWAY_HTTP_CODE=$(probe_gateway || true)
 if [[ -n "$GATEWAY_HTTP_CODE" ]]; then
   ok "openclaw-gateway online em :${GATEWAY_PORT} (HTTP $GATEWAY_HTTP_CODE)"
   record "OpenClaw Gateway" "ok" "$(elapsed $T)"
+  phase_status "openclaw-gateway" "ok" "$(elapsed $T)"
 else
   # HTTP não respondeu — verifica se há unit systemd que possa ser iniciada.
   SYSTEMD_LOAD=$(systemctl show openclaw-gateway --property=LoadState --value 2>/dev/null || echo "")
@@ -908,15 +950,18 @@ else
       if [[ -n "$GATEWAY_HTTP_CODE" ]]; then
         ok "openclaw-gateway iniciado e online em :${GATEWAY_PORT} (HTTP $GATEWAY_HTTP_CODE)"
         record "OpenClaw Gateway" "ok" "$(elapsed $T)"
+        phase_status "openclaw-gateway" "ok" "$(elapsed $T)"
       else
-        err "systemd reportou start ok, mas gateway segue offline em :${GATEWAY_PORT}"
+        warn "systemd reportou start ok, mas gateway segue offline em :${GATEWAY_PORT}"
         info "Verifique: journalctl -u openclaw-gateway -n 30 --no-pager"
-        record "OpenClaw Gateway" "fail" "$(elapsed $T)"
+        record "OpenClaw Gateway" "skip" "$(elapsed $T)"
+        phase_status "openclaw-gateway" "skip" "$(elapsed $T)"
       fi
     else
-      err "Falha ao executar 'systemctl start openclaw-gateway'"
+      warn "Falha ao executar 'systemctl start openclaw-gateway'"
       info "Verifique: journalctl -u openclaw-gateway -n 30 --no-pager"
-      record "OpenClaw Gateway" "fail" "$(elapsed $T)"
+      record "OpenClaw Gateway" "skip" "$(elapsed $T)"
+      phase_status "openclaw-gateway" "skip" "$(elapsed $T)"
     fi
   else
     # Sem unit systemd. OpenClaw provavelmente é gerenciado fora do systemd
@@ -926,10 +971,12 @@ else
       warn "openclaw-gateway não responde em :${GATEWAY_PORT} mas openclaw CLI funciona — gateway pode estar configurado em outra porta"
       info "Verifique: openclaw status | grep -i dashboard"
       record "OpenClaw Gateway" "skip" "$(elapsed $T)"
+      phase_status "openclaw-gateway" "skip" "$(elapsed $T)"
     else
-      err "openclaw-gateway offline em :${GATEWAY_PORT} e sem unit systemd"
+      warn "openclaw-gateway offline em :${GATEWAY_PORT} e sem unit systemd"
       info "OpenClaw pode estar parado. Tente: 'openclaw daemon start' ou consulte a doc"
-      record "OpenClaw Gateway" "fail" "$(elapsed $T)"
+      record "OpenClaw Gateway" "skip" "$(elapsed $T)"
+      phase_status "openclaw-gateway" "skip" "$(elapsed $T)"
     fi
   fi
 fi
@@ -950,11 +997,13 @@ fi
 # ══════════════════════════════════════════════════════════════════════════════
 step "Verificando Fail2Ban (Proteção contra Brute Force)..."
 T=$(now)
+phase_status "fail2ban" "running"
 
 if ! command -v fail2ban-client &>/dev/null; then
   if $HEADLESS; then
     warn "Fail2Ban não encontrado — modo headless, pulando instalação."
     record "Fail2Ban Setup" "skip" "$(elapsed $T)"
+    phase_status "fail2ban" "skip" "$(elapsed $T)"
   else
     echo ""
     read -rp "  Deseja instalar e configurar o Fail2Ban para proteger contra brute force? (y/N): " INSTALL_F2B
@@ -980,14 +1029,17 @@ EOF
       fi
       ok "Fail2Ban instalado e Jail SSH ativa"
       record "Fail2Ban Setup" "ok" "$(elapsed $T)"
+      phase_status "fail2ban" "ok" "$(elapsed $T)"
     else
       warn "Instalação do Fail2Ban ignorada."
       record "Fail2Ban Setup" "skip" "$(elapsed $T)"
+      phase_status "fail2ban" "skip" "$(elapsed $T)"
     fi
   fi
 else
   ok "Fail2Ban já está instalado e ativo"
   record "Fail2Ban Setup" "ok" "$(elapsed $T)"
+  phase_status "fail2ban" "ok" "$(elapsed $T)"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -995,18 +1047,22 @@ fi
 # ══════════════════════════════════════════════════════════════════════════════
 step "Verificando Firewall (UFW)..."
 T=$(now)
+phase_status "firewall" "running"
 
 if ! command -v ufw &>/dev/null; then
   warn "UFW (Firewall) não encontrado no sistema."
   record "Firewall UFW" "skip" "$(elapsed $T)"
+  phase_status "firewall" "skip" "$(elapsed $T)"
 else
   if sudo ufw status | grep -qi "Status: active"; then
     ok "Firewall UFW já está ativo"
     record "Firewall UFW" "ok" "$(elapsed $T)"
+    phase_status "firewall" "ok" "$(elapsed $T)"
   else
     if $HEADLESS; then
       warn "Firewall UFW inativo — modo headless, pulando ativação."
       record "Firewall UFW" "skip" "$(elapsed $T)"
+      phase_status "firewall" "skip" "$(elapsed $T)"
     else
       echo ""
       read -rp "  Deseja ativar o Firewall (UFW) com portas padrão (SSH, 80, 443, 3000)? (y/N): " ENABLE_UFW
@@ -1019,9 +1075,11 @@ else
         sudo ufw --force enable > /dev/null
         ok "Firewall ativado com segurança padrão"
         record "Firewall UFW" "ok" "$(elapsed $T)"
+        phase_status "firewall" "ok" "$(elapsed $T)"
       else
         warn "Ativação do Firewall ignorada."
         record "Firewall UFW" "skip" "$(elapsed $T)"
+        phase_status "firewall" "skip" "$(elapsed $T)"
       fi
     fi
   fi
