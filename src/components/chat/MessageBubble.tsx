@@ -96,10 +96,32 @@ export function MessageBubble({ message, agent, onSpeak, isSpeaking }: MessageBu
             </span>
           )}
         </div>
-        {(message.tokens_in > 0 || message.tokens_out > 0) && (
+        {(message.tokens_in > 0 ||
+          message.tokens_out > 0 ||
+          message.provider ||
+          message.firstTokenMs ||
+          message.totalMs) && (
           <div style={usageStyle(isUser)}>
-            ↑ {message.tokens_in} · ↓ {message.tokens_out}
-            {message.cost > 0 && ` · $${message.cost.toFixed(4)}`}
+            {message.provider && (
+              <span style={providerBadgeStyle(message.provider)}>
+                {providerLabel(message.provider)}
+                {message.providerDetail && ` · ${message.providerDetail.slice(0, 20)}`}
+              </span>
+            )}
+            {message.firstTokenMs != null && (
+              <span style={{ marginLeft: 6 }}>
+                ⏱ {formatMs(message.firstTokenMs)} → 1º token
+              </span>
+            )}
+            {message.totalMs != null && (
+              <span style={{ marginLeft: 6 }}>· total {formatMs(message.totalMs)}</span>
+            )}
+            {(message.tokens_in > 0 || message.tokens_out > 0) && (
+              <span style={{ marginLeft: 6 }}>
+                · ↑ {message.tokens_in} · ↓ {message.tokens_out}
+                {message.cost > 0 && ` · $${message.cost.toFixed(4)}`}
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -247,5 +269,49 @@ function usageStyle(isUser: boolean): CSSProperties {
     color: "var(--text-muted)",
     marginTop: 4,
     textAlign: isUser ? "right" : "left",
+    display: "flex",
+    gap: 0,
+    flexWrap: "wrap",
+    alignItems: "center",
   };
+}
+
+function providerLabel(provider: string): string {
+  switch (provider) {
+    case "ws":
+      return "⚡ WS";
+    case "cli":
+      return "🐢 CLI";
+    case "ollama":
+      return "🦙 Ollama";
+    default:
+      return provider;
+  }
+}
+
+function providerBadgeStyle(provider: string): CSSProperties {
+  const color =
+    provider === "ws"
+      ? "#22c55e"
+      : provider === "cli"
+      ? "#f59e0b"
+      : provider === "ollama"
+      ? "#6366f1"
+      : "var(--text-muted)";
+  return {
+    display: "inline-flex",
+    alignItems: "center",
+    padding: "1px 6px",
+    borderRadius: 4,
+    border: `1px solid ${color}`,
+    color,
+    fontSize: 9,
+    fontWeight: 600,
+    letterSpacing: 0.4,
+  };
+}
+
+function formatMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
 }

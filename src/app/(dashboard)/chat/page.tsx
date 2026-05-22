@@ -252,6 +252,8 @@ export default function ChatPage() {
       setStatusBanner(null);
       let realAssistantId = assistantTempId;
       let assembled = "";
+      const startedAt = Date.now();
+      let firstTokenAt: number | null = null;
 
       await stream.send({
         threadId: threadId ?? undefined,
@@ -268,10 +270,29 @@ export default function ChatPage() {
             }),
           );
         },
+        onProvider: ({ provider, detail }) => {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === realAssistantId
+                ? { ...m, provider, providerDetail: detail }
+                : m,
+            ),
+          );
+        },
         onToken: (delta) => {
+          if (firstTokenAt === null) firstTokenAt = Date.now();
           assembled += delta;
           setMessages((prev) =>
-            prev.map((m) => (m.id === realAssistantId ? { ...m, content: assembled } : m)),
+            prev.map((m) =>
+              m.id === realAssistantId
+                ? {
+                    ...m,
+                    content: assembled,
+                    firstTokenMs:
+                      m.firstTokenMs ?? (firstTokenAt ? firstTokenAt - startedAt : undefined),
+                  }
+                : m,
+            ),
           );
         },
         onToolUse: ({ id, name, input }) => {
@@ -339,11 +360,19 @@ export default function ChatPage() {
             ),
           );
         },
-        onDone: ({ content }) => {
+        onDone: ({ content, provider, providerDetail }) => {
+          const totalMs = Date.now() - startedAt;
           setMessages((prev) =>
             prev.map((m) =>
               m.id === realAssistantId
-                ? { ...m, content: content || m.content, status: content ? "complete" : "error" }
+                ? {
+                    ...m,
+                    content: content || m.content,
+                    status: content ? "complete" : "error",
+                    provider: provider ?? m.provider,
+                    providerDetail: providerDetail ?? m.providerDetail,
+                    totalMs,
+                  }
                 : m,
             ),
           );

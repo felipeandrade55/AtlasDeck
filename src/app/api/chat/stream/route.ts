@@ -111,6 +111,8 @@ export async function POST(req: NextRequest) {
   let tokensOut = 0;
   let cost = 0;
   let sessionId: string | null = null;
+  let providerForTurn: string | null = null;
+  let providerDetailForTurn: string | null = null;
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -181,6 +183,8 @@ export async function POST(req: NextRequest) {
           tokensIn,
           tokensOut,
           cost,
+          provider: providerForTurn,
+          providerDetail: providerDetailForTurn,
         });
         try {
           controller.close();
@@ -189,6 +193,15 @@ export async function POST(req: NextRequest) {
 
       function handleEvent(evt: RunnerEvent, send: (e: string, d: unknown) => void) {
         switch (evt.type) {
+          case "provider":
+            // Tells the UI which backend (ws / cli / ollama) actually
+            // answered this turn. Useful diagnostic when the WS path
+            // falls back transparently and the user wonders why
+            // latency stayed high.
+            send("provider", { provider: evt.provider, detail: evt.detail });
+            providerForTurn = evt.provider;
+            providerDetailForTurn = evt.detail ?? null;
+            break;
           case "token":
             assembled += evt.delta;
             send("token", { delta: evt.delta });

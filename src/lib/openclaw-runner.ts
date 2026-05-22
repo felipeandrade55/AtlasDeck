@@ -29,7 +29,10 @@ export interface RunnerInput {
   signal?: AbortSignal;
 }
 
+export type RunnerProvider = "ws" | "cli" | "ollama";
+
 export type RunnerEvent =
+  | { type: "provider"; provider: RunnerProvider; detail?: string }
   | { type: "token"; delta: string }
   | { type: "tool_use"; id?: string; name: string; input: unknown }
   | { type: "tool_result"; id?: string; output: string }
@@ -415,6 +418,8 @@ async function* runOllamaFallback(
   let tokensIn = 0;
   let tokensOut = 0;
 
+  yield { type: "provider", provider: "ollama", detail: model };
+
   try {
     for await (const evt of ollamaStreamChat(model, messages, { signal: input.signal })) {
       if (evt.delta) yield { type: "token", delta: evt.delta };
@@ -457,6 +462,7 @@ export async function* runOpenClawChat(input: RunnerInput): AsyncGenerator<Runne
 
     let producedAny = false;
     let wsFatal: string | null = null;
+    let providerAnnounced = false;
     try {
       for await (const evt of runOpenClawWsChat({
         agentId: input.agentId,
@@ -477,9 +483,17 @@ export async function* runOpenClawChat(input: RunnerInput): AsyncGenerator<Runne
             wsFatal = evt.message;
             break;
           }
+          if (!providerAnnounced) {
+            yield { type: "provider", provider: "ws" };
+            providerAnnounced = true;
+          }
           producedAny = true;
           yield evt;
           return;
+        }
+        if (!providerAnnounced) {
+          yield { type: "provider", provider: "ws" };
+          providerAnnounced = true;
         }
         producedAny = true;
         yield evt;
@@ -500,6 +514,7 @@ export async function* runOpenClawChat(input: RunnerInput): AsyncGenerator<Runne
 
   let lastError: unknown = null;
   let lastStderr = "";
+  let cliAnnounced = false;
 
   for (const strategy of strategies) {
     const args = strategy.args(input);
@@ -573,6 +588,11 @@ export async function* runOpenClawChat(input: RunnerInput): AsyncGenerator<Runne
     const onChunk = (chunk: string) => {
       buffer += chunk;
     };
+
+    if (!cliAnnounced) {
+      yield { type: "provider", provider: "cli", detail: strategy.label };
+      cliAnnounced = true;
+    }
 
     let result: SpawnResult;
     try {

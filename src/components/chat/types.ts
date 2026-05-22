@@ -39,6 +39,15 @@ export interface ChatMessage {
   status: ChatMessageStatus;
   error: string | null;
   created_at: string;
+  /**
+   * Backend that produced this assistant message ("ws", "cli", "ollama").
+   * Set in-memory by the stream consumer; not persisted across reloads
+   * yet — when we move that into chat-db this becomes a real column.
+   */
+  provider?: string;
+  providerDetail?: string;
+  firstTokenMs?: number;
+  totalMs?: number;
 }
 
 export interface AgentSummary {

@@ -62,14 +62,51 @@ function stripDiacritics(s: string): string {
  * so the wake word still fires when the recognizer hears one of them.
  * The aliases live in normalized form (lowercase, no diacritics).
  */
-const ALIASES: Record<string, string[]> = {
-  jarvis: ["jarvis", "jarves", "jarvas", "jarbas", "harvey", "harvis", "darvis", "javes"],
-  atlas: ["atlas", "atras", "atras."],
+/**
+ * Aliases are split into two tiers:
+ *  - `canonical` matches anywhere with a word boundary (these are the
+ *    real wake words plus very close ASR confusions that are unlikely
+ *    to show up in natural pt-BR speech)
+ *  - `permissive` matches *only* when it appears at the start of the
+ *    utterance (or right after pause-style punctuation) — those words
+ *    are common enough in everyday speech that we'd otherwise fire
+ *    constantly without intent
+ */
+const ALIASES: Record<string, { canonical: string[]; permissive: string[] }> = {
+  jarvis: {
+    canonical: [
+      "jarvis",
+      "jarves",
+      "jarvas",
+      "jarbas",
+      "harvis",
+      "darvis",
+      "djarves",
+      "garvis",
+      "tarvis",
+    ],
+    permissive: [
+      // Heard in production: "Bom Jesus tudo bom" was actually "Bom dia Jarvis tudo bom"
+      "jesus",
+      "jesús",
+      "harvey",
+      "harveys",
+    ],
+  },
+  atlas: {
+    canonical: ["atlas"],
+    permissive: ["atras", "atrás", "atos", "altos"],
+  },
 };
 
-function aliasesFor(phrase: string): string[] {
+interface AliasSet {
+  canonical: string[];
+  permissive: string[];
+}
+
+function aliasesFor(phrase: string): AliasSet {
   const key = stripDiacritics(phrase.toLowerCase());
-  return ALIASES[key] ?? [key];
+  return ALIASES[key] ?? { canonical: [key], permissive: [] };
 }
 
 export interface WakeMatch {
@@ -78,20 +115,42 @@ export interface WakeMatch {
   tail: string;
 }
 
+const boundary = (c: string): boolean => !/[a-z0-9]/.test(c);
+
+function tryMatchAt(
+  normalized: string,
+  text: string,
+  alias: string,
+  phrase: string,
+  requireTail: boolean,
+): WakeMatch | null {
+  const idx = normalized.indexOf(alias);
+  if (idx === -1) return null;
+  const before = idx === 0 ? " " : normalized[idx - 1];
+  const after = normalized[idx + alias.length] ?? " ";
+  if (!boundary(before) || !boundary(after)) return null;
+  const tail = text.slice(idx + alias.length).trim().replace(/^[,.!?]\s*/, "");
+  if (requireTail) {
+    // Permissive aliases (like "jesus" / "atras") only fire when the
+    // utterance has a substantial command attached. This filters out
+    // casual mentions where the alias is just a word the user
+    // happened to say — we'd rather miss a wake than fire wrong.
+    if (tail.length < 3) return null;
+  }
+  return { phrase, alias, tail };
+}
+
 export function findWakeMatch(text: string, phrases: string[]): WakeMatch | null {
   const normalized = stripDiacritics(text.toLowerCase());
   for (const phrase of phrases) {
-    for (const alias of aliasesFor(phrase)) {
-      const idx = normalized.indexOf(alias);
-      if (idx === -1) continue;
-      // Accept any boundary that is not letter/number to keep noisy
-      // transcripts (no spacing) from blocking the match.
-      const before = idx === 0 ? " " : normalized[idx - 1];
-      const after = normalized[idx + alias.length] ?? " ";
-      const boundary = (c: string) => !/[a-z0-9]/.test(c);
-      if (!boundary(before) || !boundary(after)) continue;
-      const tail = text.slice(idx + alias.length).trim().replace(/^[,.!?]\s*/, "");
-      return { phrase, alias, tail };
+    const { canonical, permissive } = aliasesFor(phrase);
+    for (const alias of canonical) {
+      const m = tryMatchAt(normalized, text, alias, phrase, false);
+      if (m) return m;
+    }
+    for (const alias of permissive) {
+      const m = tryMatchAt(normalized, text, alias, phrase, true);
+      if (m) return m;
     }
   }
   return null;
