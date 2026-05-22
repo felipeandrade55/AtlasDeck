@@ -44,41 +44,67 @@ interface ArgStrategy {
   promptOnStdin?: boolean;
 }
 
+/**
+ * The canonical OpenClaw conversational CLI is `openclaw agent`, which
+ * runs a single turn of the agent (via the Gateway) and prints either a
+ * JSON envelope (with `--json`) or plain text. We try a couple of arg
+ * shapes because flag spellings have varied across builds.
+ *
+ * The fully streaming experience lives on the Gateway WebSocket
+ * (chat.send / chat.history / chat.abort / chat.inject). That migration
+ * is tracked in plan/jarvis-roadmap.md as the next chat-runner upgrade.
+ */
+function chatChannelTarget(): string {
+  return process.env.ATLAS_CHAT_TO || "web:atlasdeck";
+}
+
 const DEFAULT_STRATEGIES: ArgStrategy[] = [
   {
-    label: "chat-stream-stdin",
-    promptOnStdin: true,
-    args: ({ agentId, sessionId }) => {
-      const a = ["chat", "--agent", agentId, "--json", "--stream"];
-      if (sessionId) a.push("--session", sessionId);
-      return a;
-    },
-  },
-  {
-    label: "chat-stream-arg",
+    label: "agent-json-session-id",
     args: ({ agentId, sessionId, prompt }) => {
-      const a = ["chat", "--agent", agentId, "--json", "--stream"];
-      if (sessionId) a.push("--session", sessionId);
-      a.push(prompt);
+      const a = [
+        "agent",
+        "--agent",
+        agentId,
+        "--message",
+        prompt,
+        "--to",
+        chatChannelTarget(),
+        "--json",
+      ];
+      if (sessionId) a.push("--session-id", sessionId);
       return a;
     },
   },
   {
-    label: "chat-json",
+    label: "agent-json-session",
     args: ({ agentId, sessionId, prompt }) => {
-      const a = ["chat", "--agent", agentId, "--json"];
+      const a = [
+        "agent",
+        "--agent",
+        agentId,
+        "--message",
+        prompt,
+        "--to",
+        chatChannelTarget(),
+        "--json",
+      ];
       if (sessionId) a.push("--session", sessionId);
-      a.push(prompt);
       return a;
     },
   },
   {
-    label: "ask",
-    args: ({ prompt }) => ["ask", "--json", "--prompt", prompt],
-  },
-  {
-    label: "complete",
-    args: ({ prompt }) => ["complete", "--json", prompt],
+    label: "agent-json-no-session",
+    args: ({ agentId, prompt }) => [
+      "agent",
+      "--agent",
+      agentId,
+      "--message",
+      prompt,
+      "--to",
+      chatChannelTarget(),
+      "--json",
+    ],
   },
 ];
 
@@ -454,11 +480,51 @@ export async function* runOpenClawChat(input: RunnerInput): AsyncGenerator<Runne
       continue;
     }
 
-    // If no structured events were emitted but we collected raw text, chunk it
+    // If no structured events were emitted but we collected raw text,
+    // try interpreting the *whole stdout* as a single pretty-printed
+    // JSON envelope first — that's how `openclaw agent --json` actually
+    // shapes its output. Common fields: response, message, content, text.
     if (!emittedAnyEvent && pendingChunks.length > 0) {
-      const text = pendingChunks.join("\n");
-      for (const chunk of chunkText(text)) {
+      const text = pendingChunks.join("\n").trim();
+      let extracted: string | null = null;
+      let usage: { tokensIn: number; tokensOut: number; model?: string } | null = null;
+      if (text.startsWith("{") || text.startsWith("[")) {
+        try {
+          const parsed = JSON.parse(text) as Record<string, unknown>;
+          const candidate =
+            (typeof parsed.response === "string" && parsed.response) ||
+            (typeof parsed.message === "string" && parsed.message) ||
+            (typeof parsed.content === "string" && parsed.content) ||
+            (typeof parsed.text === "string" && parsed.text) ||
+            (typeof parsed.output === "string" && parsed.output) ||
+            (typeof parsed.reply === "string" && parsed.reply) ||
+            null;
+          if (candidate) extracted = candidate;
+          const tokensIn = Number(parsed.tokensIn ?? parsed.input_tokens ?? parsed.promptTokens ?? 0);
+          const tokensOut = Number(parsed.tokensOut ?? parsed.output_tokens ?? parsed.completionTokens ?? 0);
+          if (tokensIn || tokensOut) {
+            usage = {
+              tokensIn,
+              tokensOut,
+              model: typeof parsed.model === "string" ? parsed.model : undefined,
+            };
+          }
+        } catch {
+          // not single-JSON; treat as raw text below
+        }
+      }
+
+      const finalText = extracted ?? text;
+      for (const chunk of chunkText(finalText)) {
         yield { type: "token", delta: chunk };
+      }
+      if (usage) {
+        yield {
+          type: "usage",
+          tokensIn: usage.tokensIn,
+          tokensOut: usage.tokensOut,
+          model: usage.model,
+        };
       }
     }
 

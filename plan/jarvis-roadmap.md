@@ -203,8 +203,27 @@
 - [ ] Whisper local: qual tamanho default? (tiny=39MB, base=74MB, small=244MB)
 - [ ] TTS local: Piper (rápido, pt-BR ok) vs Coqui (qualidade superior, pesado)?
 - [ ] Wake word: porcupine (pago em prod) vs openwakeword (free, qualidade ok)?
-- [ ] Banco do chat: novo `chats.db` ou estender `memories.db`?
-- [ ] Modelo do chat: usar OpenClaw direto (subprocess?) ou abstração própria?
+- [ ] Banco do chat: novo `chats.db` ou estender `memories.db`? **→ decidido `chats.db`**
+- [ ] Modelo do chat: usar OpenClaw direto (subprocess?) ou abstração própria? **→ `openclaw agent --json` CLI hoje; WS Gateway na próxima iter**
+
+## 🔌 Próxima iteração do chat runner — Gateway WebSocket
+
+Hoje usamos `openclaw agent --message ... --to ... --json` via subprocess, com fallback Ollama. Funciona mas é one-shot (sem streaming real, sem cancelamento via UI).
+
+O caminho correto é o **Gateway WebSocket no `:18789`**, que a Control UI oficial do OpenClaw usa. Protocolo:
+
+- `chat.send` → `{ result: { runId, status: "started" } }` (ACK rápido)
+- Streaming de eventos no canal `chat` (tokens, tool_use, done)
+- `chat.history` → recupera contexto
+- `chat.abort` → cancela run em andamento
+- `chat.inject` → injeta mensagem de sistema no meio do turno
+
+**Tarefas para próxima iter:**
+- [ ] **R.1** Cliente WS em `src/lib/openclaw-ws-client.ts` (Bearer token, reconnect, multiplex por sessionKey)
+- [ ] **R.2** Adapter no runner: WS primeiro, CLI fallback, Ollama fallback
+- [ ] **R.3** Mapear sessionKey (hoje `web:atlasdeck`) por usuário/thread → `web:<userId>` ou `web:<threadId>`
+- [ ] **R.4** Botão "Parar" do composer dispara `chat.abort`
+- [ ] **R.5** Suporte a `gateway.controlUi.allowedOrigins` em ambientes não-loopback
 
 ---
 
@@ -215,3 +234,4 @@
 | 2026-05-21 | Plano inicial criado, Camada 1 priorizada |
 | 2026-05-22 | Camada 1 MVP entregue: chat-db, openclaw-runner subprocess, SSE, UI `/chat`, STT Web Speech, TTS Web Speech, dock |
 | 2026-05-22 | Bridge OpenClaw sessions + Wake word ("Jarvis"/"Atlas") via Web Speech contínuo entregues |
+| 2026-05-22 | Fix: chat runner agora usa `openclaw agent --json` (CLI real); fallback Ollama mantido; aliases pt-BR no wake word + lastHeard visível |
