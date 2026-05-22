@@ -744,6 +744,9 @@ export interface MemorySettings {
   home_timezone: string | null;
   home_updated_at: string | null;
   morning_briefing_enabled: boolean;
+  elevenlabs_api_key: string | null;
+  elevenlabs_voice_id: string | null;
+  elevenlabs_model_id: string;
 }
 
 const DEFAULT_SETTINGS: MemorySettings = {
@@ -763,6 +766,9 @@ const DEFAULT_SETTINGS: MemorySettings = {
   home_timezone: null,
   home_updated_at: null,
   morning_briefing_enabled: false,
+  elevenlabs_api_key: null,
+  elevenlabs_voice_id: null,
+  elevenlabs_model_id: "eleven_multilingual_v2",
 };
 
 function parseNullableFloat(value: string | undefined): number | null {
@@ -817,6 +823,10 @@ export function getSettings(): MemorySettings {
     home_timezone: parseNullableString(map.get("home_timezone")),
     home_updated_at: parseNullableString(map.get("home_updated_at")),
     morning_briefing_enabled: (map.get("morning_briefing_enabled") ?? "false") === "true",
+    elevenlabs_api_key: parseNullableString(map.get("elevenlabs_api_key")),
+    elevenlabs_voice_id: parseNullableString(map.get("elevenlabs_voice_id")),
+    elevenlabs_model_id:
+      map.get("elevenlabs_model_id") ?? DEFAULT_SETTINGS.elevenlabs_model_id,
   };
 }
 

@@ -17,7 +17,7 @@ import { Composer } from "@/components/chat/Composer";
 import { ImportOpenClawModal } from "@/components/chat/ImportOpenClawModal";
 import { WakeIndicator } from "@/components/chat/WakeIndicator";
 import { useChatStream } from "@/components/chat/useChatStream";
-import { useSpeechSynthesis } from "@/components/chat/useSpeechSynthesis";
+import { useTtsEngine } from "@/components/chat/useTtsEngine";
 import { useWakeWord } from "@/components/chat/useWakeWord";
 
 const WAKE_PHRASES = ["Jarvis", "Atlas"];
@@ -50,7 +50,7 @@ export default function ChatPage() {
   const [wakeTeaser, setWakeTeaser] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const stream = useChatStream();
-  const tts = useSpeechSynthesis();
+  const tts = useTtsEngine();
   const handleSendRef = useRef<((text: string) => Promise<void>) | null>(null);
 
   const agentById = useMemo(() => {
@@ -192,7 +192,7 @@ export default function ChatPage() {
       tts.cancel();
       setSpeakingId(id ?? null);
       try {
-        await tts.speak(text, { lang: "pt-BR" });
+        await tts.speak(text);
       } catch {
         // ignore
       } finally {
@@ -429,10 +429,19 @@ export default function ChatPage() {
                 setTtsEnabled((v) => !v);
               }}
               style={toggleButtonStyle(ttsEnabled)}
-              title={ttsEnabled ? "TTS automático ligado" : "TTS automático desligado"}
+              title={
+                ttsEnabled
+                  ? `Voz automática ligada (${tts.voiceLabel})`
+                  : `Voz automática desligada (${tts.voiceLabel})`
+              }
             >
               {ttsEnabled ? <Volume2 size={16} /> : <VolumeX size={16} />}
               {ttsEnabled ? "Voz ON" : "Voz OFF"}
+              {tts.engine === "elevenlabs" && (
+                <span style={{ fontSize: 10, opacity: 0.7, marginLeft: 2 }}>
+                  · 11labs
+                </span>
+              )}
             </button>
             <button
               type="button"
