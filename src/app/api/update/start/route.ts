@@ -87,9 +87,10 @@ export async function POST() {
   if (config.backupBeforeUpdate) args.push("--with-backup");
   args.push("--status-file", phaseEventsPath());
 
-  // Detached: cria novo grupo de processos, desliga do parent.
-  // Sobrevive ao PM2 restart que o próprio script vai disparar.
-  // (O próprio deploy.sh ignora HUP/PIPE — vide trap no topo do script.)
+  // Detached: libuv chama setsid() para o filho, isolando-o do process group
+  // do Next.js. O deploy.sh ainda ignora HUP/PIPE/INT explicitamente como
+  // defesa em profundidade (vide trap no topo do script) — o cancel
+  // legítimo via UI usa SIGTERM (process.kill(-pid, 'SIGTERM')).
   const child = spawn("bash", [scriptPath, ...args], {
     cwd: process.cwd(),
     env: { ...process.env, ATLASDECK_UPDATE_SESSION: sessionId },

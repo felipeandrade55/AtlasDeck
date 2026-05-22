@@ -20,9 +20,12 @@ set -eo pipefail
 # já isolam o grupo de processos, mas:
 #   - SIGHUP pode chegar se algum reaper de sessão decidir limpar órfãos
 #   - SIGPIPE chega se algum descritor herdado virar broken pipe
-# Ignorar ambos garante que o script só morre por escolha própria (erro de
+#   - SIGINT vaza quando o PM2 mata o atlasdeck antigo (kill_signal=SIGINT
+#     por padrão) e o npm/Node propaga o sinal através do process group
+#     antes que setsid se aplique. O cancel legítimo usa SIGTERM.
+# Ignorar os três garante que o script só morre por escolha própria (erro de
 # comando, exit explícito) ou por SIGTERM/SIGKILL externo intencional.
-trap '' HUP PIPE
+trap '' HUP PIPE INT
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Quick pre-scan for flags
@@ -168,6 +171,7 @@ heartbeat() {
 # kernel, /tmp limpo, deploy disparado por engano em paralelo, etc.) escrevemos
 # um evento terminal de falha. Sem isso a UI fica eternamente em "Compilando…".
 _TERMINAL_EMITTED=false
+_DONE_REACHED=false
 emit_terminal() {
   if [[ "$_TERMINAL_EMITTED" == "true" ]] || [[ -z "$STATUS_FILE" ]]; then
     return 0
@@ -176,17 +180,22 @@ emit_terminal() {
   local code="$1"
   if [[ "$code" == "0" ]]; then
     phase_status "done" "ok" "$(elapsed $TOTAL_START)"
+  elif [[ "$_DONE_REACHED" == "true" ]]; then
+    # Já passamos pelo print_report e o script seguiu para o exit. Um exit code
+    # não-zero aqui geralmente vem de algum cleanup tardio (curl trailing,
+    # pm2 save, etc.) e não significa que o deploy falhou.
+    phase_status "done" "ok" "$(elapsed $TOTAL_START)"
   else
     phase_status "done" "fail" "$(elapsed $TOTAL_START)" \
       "deploy.sh saiu com exit code $code antes de chegar ao fim (sinal externo, panic ou erro fatal)"
   fi
 }
 
-# Captura EXIT (saída normal + erros) e os sinais comuns de terminação.
-# bash não dispara o trap EXIT para SIGKILL — esse caso fica órfão e é
-# coberto pela detecção de heartbeat stale na UI (>60s).
+# Captura EXIT (saída normal + erros) e SIGTERM (cancel legítimo via UI).
+# SIGINT é ignorado totalmente acima (trap '' INT) — não emite terminal nem
+# interrompe o fluxo. SIGKILL não dispara trap algum e é coberto pela detecção
+# de heartbeat stale na UI (>5min) + check de PID dead em getActiveUpdate.
 trap 'emit_terminal $?' EXIT
-trap 'emit_terminal 130' INT
 trap 'emit_terminal 143' TERM
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -238,6 +247,66 @@ if [[ -n "$STATUS_FILE" ]]; then
   : > "$STATUS_FILE"
   phase_status "start" "running"
 fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PERGUNTAS INICIAIS (modo interativo)
+# ══════════════════════════════════════════════════════════════════════════════
+# Toda interação com o usuário é resolvida AQUI no início. Depois deste bloco
+# o script roda até o fim sem nunca mais pedir input. Em --headless nada é
+# perguntado; as fases caem nos defaults (skip).
+#
+# Variáveis preenchidas:
+#   _PROMPT_GH_USER, _PROMPT_GH_TOKEN — credenciais (se faltarem)
+#   _PROMPT_INSTALL_F2B = y|n|""      — instalar Fail2Ban (vazio = já instalado)
+#   _PROMPT_ENABLE_UFW  = y|n|""      — ativar UFW (vazio = já ativo)
+_PROMPT_GH_USER=""
+_PROMPT_GH_TOKEN=""
+_PROMPT_INSTALL_F2B=""
+_PROMPT_ENABLE_UFW=""
+
+if ! $HEADLESS; then
+  # Pré-checagens silenciosas para saber o que perguntar
+  _NEED_CREDS=no
+  if [ ! -f ~/.git-credentials ] || ! grep -q 'github.com' ~/.git-credentials 2>/dev/null; then
+    _NEED_CREDS=yes
+  fi
+
+  _NEED_F2B_PROMPT=no
+  if ! command -v fail2ban-client &>/dev/null; then
+    _NEED_F2B_PROMPT=yes
+  fi
+
+  _NEED_UFW_PROMPT=no
+  if command -v ufw &>/dev/null && ! sudo ufw status 2>/dev/null | grep -qi "Status: active"; then
+    _NEED_UFW_PROMPT=yes
+  fi
+
+  if [[ "$_NEED_CREDS" == "yes" || "$_NEED_F2B_PROMPT" == "yes" || "$_NEED_UFW_PROMPT" == "yes" ]]; then
+    echo -e "${BOLD}${CYAN}▶ Configuração inicial${NC}"
+    echo -e "  ${DIM}Todas as perguntas são feitas aqui; depois o script roda sem interromper.${NC}\n"
+
+    if [[ "$_NEED_CREDS" == "yes" ]]; then
+      echo -e "  ${YELLOW}Credenciais do GitHub não encontradas${NC}"
+      echo -e "  ${DIM}PAT em: github.com → Settings → Developer settings → Personal access tokens${NC}"
+      echo -e "  ${DIM}Escopo: 'repo' (write para --bidirecional, read para pull simples)${NC}"
+      read -rp "  GitHub login : " _PROMPT_GH_USER
+      read -rsp "  GitHub PAT   : " _PROMPT_GH_TOKEN
+      echo ""
+      echo ""
+    fi
+
+    if [[ "$_NEED_F2B_PROMPT" == "yes" ]]; then
+      read -rp "  Instalar e configurar Fail2Ban (proteção brute force)? (y/N): " _PROMPT_INSTALL_F2B
+    fi
+
+    if [[ "$_NEED_UFW_PROMPT" == "yes" ]]; then
+      read -rp "  Ativar Firewall UFW (SSH, 80, 443, 3000)? (y/N): " _PROMPT_ENABLE_UFW
+    fi
+
+    echo ""
+  fi
+fi
+# ─────────────────────────────────────────────────────────────────────────────
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FASE 0 — BACKUP (opcional)
@@ -401,29 +470,23 @@ if [[ "$HAS_CREDS" == "yes" ]]; then
   ok "Credenciais já configuradas ($GH_GIT_EMAIL)"
   record "Credenciais GitHub" "ok" "$(elapsed $T)"
   phase_status "credentials" "ok" "$(elapsed $T)"
+elif [[ -n "$_PROMPT_GH_USER" && -n "$_PROMPT_GH_TOKEN" ]]; then
+  # Resposta coletada no bloco de perguntas iniciais
+  printf 'https://%s:%s@github.com\n' "$_PROMPT_GH_USER" "$_PROMPT_GH_TOKEN" > ~/.git-credentials
+  chmod 600 ~/.git-credentials
+  unset _PROMPT_GH_TOKEN
+  ok "Credenciais salvas (~/.git-credentials)"
+  record "Credenciais GitHub" "ok" "$(elapsed $T)"
+  phase_status "credentials" "ok" "$(elapsed $T)"
 else
   if $HEADLESS; then
     warn "Credenciais não encontradas — modo headless, pulando prompt interativo."
     warn "Configure ~/.git-credentials manualmente antes de executar em modo headless."
-    record "Credenciais GitHub" "skip" "$(elapsed $T)"
-    phase_status "credentials" "skip" "$(elapsed $T)"
   else
-    warn "Credenciais não encontradas — informe login e PAT"
-    echo ""
-    echo -e "  ${DIM}PAT em: github.com → Settings → Developer settings → Personal access tokens${NC}"
-    echo -e "  ${DIM}Escopo necessário: 'repo' (write para --bidirecional, read para pull simples)${NC}"
-    echo ""
-    read -rp "  GitHub login : " GH_USER
-    read -rsp "  GitHub PAT   : " GH_TOKEN
-    echo ""
-
-    printf 'https://%s:%s@github.com\n' "$GH_USER" "$GH_TOKEN" > ~/.git-credentials
-    chmod 600 ~/.git-credentials
-
-    ok "Credenciais salvas (~/.git-credentials)"
-    record "Credenciais GitHub" "ok" "$(elapsed $T)"
-    phase_status "credentials" "ok" "$(elapsed $T)"
+    warn "Credenciais não informadas no início — pulando."
   fi
+  record "Credenciais GitHub" "skip" "$(elapsed $T)"
+  phase_status "credentials" "skip" "$(elapsed $T)"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -867,6 +930,11 @@ phase_status "health-check" "running"
 DASH_OK=false
 LAST_CODE="000"
 
+# Logo após o pm2 restart, o PM2 pode emitir SIGINT pro process group inteiro
+# do antigo atlasdeck (o pai deste script). Em alguns kernels o sinal vaza
+# para sleep/curl mesmo com setsid aplicado. set +e local + `|| true` defensivo
+# garantem que o loop continue até o dashboard responder.
+set +e
 for i in $(seq 1 $HEALTH_TIMEOUT); do
   LAST_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
     --connect-timeout 2 --max-time 4 "$APP_URL" 2>/dev/null || echo "000")
@@ -885,8 +953,9 @@ for i in $(seq 1 $HEALTH_TIMEOUT); do
   if (( i % 5 == 0 )); then
     heartbeat
   fi
-  sleep 1
+  sleep 1 || true
 done
+set -e
 
 echo ""
 
@@ -905,8 +974,14 @@ fi
 step "Health check — serviços internos (/api/health)..."
 T=$(now)
 
+# set +e local + heartbeat antes do curl: este ponto está logo após o pm2
+# restart e é onde o SIGINT vazado costuma chegar. Sem isso, um curl morto
+# por sinal fazia set -e abortar antes da fase 8.
+set +e
+heartbeat
 HEALTH_JSON=$(curl -s --connect-timeout 5 --max-time 10 \
   "$APP_URL/api/health" 2>/dev/null || echo "")
+set -e
 
 if [[ -n "$HEALTH_JSON" ]] && echo "$HEALTH_JSON" | grep -q '"status"'; then
   OVERALL=$(echo "$HEALTH_JSON" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
@@ -936,6 +1011,7 @@ else
   warn "Não foi possível consultar /api/health (dashboard ainda iniciando?)"
   record "Serviços (/api/health)" "skip" "$(elapsed $T)"
 fi
+heartbeat
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FASE 8 — OPENCLAW GATEWAY
@@ -1044,19 +1120,12 @@ T=$(now)
 phase_status "fail2ban" "running"
 
 if ! command -v fail2ban-client &>/dev/null; then
-  if $HEADLESS; then
-    warn "Fail2Ban não encontrado — modo headless, pulando instalação."
-    record "Fail2Ban Setup" "skip" "$(elapsed $T)"
-    phase_status "fail2ban" "skip" "$(elapsed $T)"
-  else
-    echo ""
-    read -rp "  Deseja instalar e configurar o Fail2Ban para proteger contra brute force? (y/N): " INSTALL_F2B
-    if [[ "$INSTALL_F2B" =~ ^[Yy]$ ]]; then
-      info "Instalando fail2ban..."
-      sudo apt-get update -qq && sudo apt-get install -y fail2ban
+  if [[ "$_PROMPT_INSTALL_F2B" =~ ^[Yy]$ ]]; then
+    info "Instalando fail2ban..."
+    sudo apt-get update -qq && sudo apt-get install -y fail2ban
 
-      if [ ! -f /etc/fail2ban/jail.local ]; then
-        cat <<EOF | sudo tee /etc/fail2ban/jail.local > /dev/null
+    if [ ! -f /etc/fail2ban/jail.local ]; then
+      cat <<EOF | sudo tee /etc/fail2ban/jail.local > /dev/null
 [DEFAULT]
 bantime = 1h
 findtime = 10m
@@ -1069,16 +1138,19 @@ filter = sshd
 logpath = /var/log/auth.log
 maxretry = 3
 EOF
-        sudo systemctl restart fail2ban
-      fi
-      ok "Fail2Ban instalado e Jail SSH ativa"
-      record "Fail2Ban Setup" "ok" "$(elapsed $T)"
-      phase_status "fail2ban" "ok" "$(elapsed $T)"
-    else
-      warn "Instalação do Fail2Ban ignorada."
-      record "Fail2Ban Setup" "skip" "$(elapsed $T)"
-      phase_status "fail2ban" "skip" "$(elapsed $T)"
+      sudo systemctl restart fail2ban
     fi
+    ok "Fail2Ban instalado e Jail SSH ativa"
+    record "Fail2Ban Setup" "ok" "$(elapsed $T)"
+    phase_status "fail2ban" "ok" "$(elapsed $T)"
+  else
+    if $HEADLESS; then
+      warn "Fail2Ban não encontrado — modo headless, pulando instalação."
+    else
+      warn "Instalação do Fail2Ban ignorada (resposta no início do script)."
+    fi
+    record "Fail2Ban Setup" "skip" "$(elapsed $T)"
+    phase_status "fail2ban" "skip" "$(elapsed $T)"
   fi
 else
   ok "Fail2Ban já está instalado e ativo"
@@ -1097,49 +1169,50 @@ if ! command -v ufw &>/dev/null; then
   warn "UFW (Firewall) não encontrado no sistema."
   record "Firewall UFW" "skip" "$(elapsed $T)"
   phase_status "firewall" "skip" "$(elapsed $T)"
+elif sudo ufw status | grep -qi "Status: active"; then
+  ok "Firewall UFW já está ativo"
+  record "Firewall UFW" "ok" "$(elapsed $T)"
+  phase_status "firewall" "ok" "$(elapsed $T)"
+elif [[ "$_PROMPT_ENABLE_UFW" =~ ^[Yy]$ ]]; then
+  info "Configurando regras padrão..."
+  sudo ufw allow ssh > /dev/null
+  sudo ufw allow http > /dev/null
+  sudo ufw allow https > /dev/null
+  sudo ufw allow 3000/tcp > /dev/null
+  sudo ufw --force enable > /dev/null
+  ok "Firewall ativado com segurança padrão"
+  record "Firewall UFW" "ok" "$(elapsed $T)"
+  phase_status "firewall" "ok" "$(elapsed $T)"
 else
-  if sudo ufw status | grep -qi "Status: active"; then
-    ok "Firewall UFW já está ativo"
-    record "Firewall UFW" "ok" "$(elapsed $T)"
-    phase_status "firewall" "ok" "$(elapsed $T)"
+  if $HEADLESS; then
+    warn "Firewall UFW inativo — modo headless, pulando ativação."
   else
-    if $HEADLESS; then
-      warn "Firewall UFW inativo — modo headless, pulando ativação."
-      record "Firewall UFW" "skip" "$(elapsed $T)"
-      phase_status "firewall" "skip" "$(elapsed $T)"
-    else
-      echo ""
-      read -rp "  Deseja ativar o Firewall (UFW) com portas padrão (SSH, 80, 443, 3000)? (y/N): " ENABLE_UFW
-      if [[ "$ENABLE_UFW" =~ ^[Yy]$ ]]; then
-        info "Configurando regras padrão..."
-        sudo ufw allow ssh > /dev/null
-        sudo ufw allow http > /dev/null
-        sudo ufw allow https > /dev/null
-        sudo ufw allow 3000/tcp > /dev/null
-        sudo ufw --force enable > /dev/null
-        ok "Firewall ativado com segurança padrão"
-        record "Firewall UFW" "ok" "$(elapsed $T)"
-        phase_status "firewall" "ok" "$(elapsed $T)"
-      else
-        warn "Ativação do Firewall ignorada."
-        record "Firewall UFW" "skip" "$(elapsed $T)"
-        phase_status "firewall" "skip" "$(elapsed $T)"
-      fi
-    fi
+    warn "Ativação do Firewall ignorada (resposta no início do script)."
   fi
+  record "Firewall UFW" "skip" "$(elapsed $T)"
+  phase_status "firewall" "skip" "$(elapsed $T)"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
 # RELATÓRIO FINAL
 # ══════════════════════════════════════════════════════════════════════════════
 echo ""
-# Não emitimos phase_status "done" aqui — o trap EXIT cuida disso baseado no
-# exit code, evitando duplicação e cobrindo também saídas inesperadas.
+# Marcar que o fluxo chegou ao fim: a partir daqui, qualquer exit code do trap
+# EXIT pode ser tratado como sucesso (subprocesses tardios não podem mais
+# invalidar um deploy que já passou por todas as fases).
+_DONE_REACHED=true
+# Emite "done" explicitamente para a UI baseado no relatório. O trap EXIT
+# segue como salvaguarda, mas com _DONE_REACHED=true ele não vai sobrescrever
+# este resultado com "fail" caso o processo morra durante o cleanup.
 if print_report; then
+  phase_status "done" "ok" "$(elapsed $TOTAL_START)"
+  _TERMINAL_EMITTED=true
   echo -e "\n  ${GREEN}${BOLD}🚀 Update concluído com sucesso!${NC}"
   echo -e "  ${DIM}Dashboard: ${APP_URL}${NC}\n"
   exit 0
 else
+  phase_status "done" "fail" "$(elapsed $TOTAL_START)" "Uma ou mais fases falharam — veja o relatório"
+  _TERMINAL_EMITTED=true
   echo -e "\n  ${YELLOW}${BOLD}⚠ Update com problemas — veja o relatório acima.${NC}\n"
   exit 1
 fi
