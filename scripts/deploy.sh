@@ -268,13 +268,12 @@ if $WITH_BACKUP; then
   [ -d "$PROJ_DIR/data" ] && TAR_ARGS+=("-C" "$PROJ_DIR" "data")
   [ -f "$PROJ_DIR/.env" ] && TAR_ARGS+=("-C" "$PROJ_DIR" ".env")
 
-  # Diretório OpenClaw: mantém somente configuração, agentes e skills. Mídia e
+  # Diretório OpenClaw: mantém somente configuração e skills. Mídia, agentes e
   # workspaces podem ser enormes; o backup completo continua no menu de Backup,
   # mas o update precisa priorizar disponibilidade.
   OPENCLAW_BASE="${OPENCLAW_DIR:-$HOME/.openclaw}"
   if [ -d "$OPENCLAW_BASE" ]; then
     [ -f "$OPENCLAW_BASE/openclaw.json" ] && TAR_ARGS+=("-C" "$OPENCLAW_BASE" "openclaw.json")
-    [ -d "$OPENCLAW_BASE/agents" ] && TAR_ARGS+=("-C" "$OPENCLAW_BASE" "agents")
     [ -d "$OPENCLAW_BASE/skills" ] && TAR_ARGS+=("-C" "$OPENCLAW_BASE" "skills")
   fi
 
@@ -293,6 +292,12 @@ if $WITH_BACKUP; then
           --exclude="$BACKUP_DIR/*" \
           --exclude="data/models" \
           --exclude="./data/models" \
+          --exclude="data/*.log" \
+          --exclude="data/update-current.log" \
+          --exclude="data/update-phase-events.log" \
+          --exclude="**/*.jsonl" \
+          --exclude="**/sessions" \
+          --exclude="**/sessions/*" \
           --exclude="node_modules" \
           --exclude=".next" \
           --exclude=".next.prev" \
@@ -306,8 +311,9 @@ if $WITH_BACKUP; then
     TAR_PID=$!
 
     PROGRESS_COUNTER=0
-    MAX_BACKUP_SECONDS="${UPDATE_BACKUP_TIMEOUT_SECONDS:-180}"
-    MAX_BACKUP_BYTES="${UPDATE_BACKUP_MAX_BYTES:-1073741824}"
+    MAX_BACKUP_SECONDS="${UPDATE_BACKUP_TIMEOUT_SECONDS:-120}"
+    MAX_BACKUP_BYTES="${UPDATE_BACKUP_MAX_BYTES:-536870912}"
+    BACKUP_SKIPPED=false
     while kill -0 $TAR_PID 2>/dev/null; do
       sleep 3
       PROGRESS_COUNTER=$((PROGRESS_COUNTER + 3))
@@ -316,35 +322,40 @@ if $WITH_BACKUP; then
         SIZE_BYTES=$(stat -c%s "$BACKUP_FILE" 2>/dev/null || echo 0)
         info "Backup em andamento... ${PROGRESS_COUNTER}s (atual: $SIZE)"
         if [ "$SIZE_BYTES" -gt "$MAX_BACKUP_BYTES" ]; then
-          warn "Backup pré-update excedeu limite seguro (${SIZE}); cancelando para não travar o deploy"
+          warn "Backup pré-update excedeu limite seguro (${SIZE}); pulando para não travar o deploy"
           kill "$TAR_PID" 2>/dev/null || true
           wait "$TAR_PID" 2>/dev/null || true
           rm -f "$BACKUP_FILE"
-          record "Backup pré-update" "fail" "$(elapsed $T)"
-          phase_status "backup" "fail" "$(elapsed $T)" "backup excedeu limite seguro de tamanho"
-          exit 1
+          BACKUP_SKIPPED=true
+          break
         fi
       else
         info "Backup em andamento... ${PROGRESS_COUNTER}s"
       fi
       if [ "$PROGRESS_COUNTER" -ge "$MAX_BACKUP_SECONDS" ]; then
-        warn "Backup pré-update passou de ${MAX_BACKUP_SECONDS}s; cancelando para não travar o deploy"
+        warn "Backup pré-update passou de ${MAX_BACKUP_SECONDS}s; pulando para não travar o deploy"
         kill "$TAR_PID" 2>/dev/null || true
         wait "$TAR_PID" 2>/dev/null || true
         rm -f "$BACKUP_FILE"
-        record "Backup pré-update" "fail" "$(elapsed $T)"
-        phase_status "backup" "fail" "$(elapsed $T)" "backup excedeu timeout seguro"
-        exit 1
+        BACKUP_SKIPPED=true
+        break
       fi
       heartbeat
     done
 
-    set +e
-    wait $TAR_PID
-    TAR_EXIT=$?
-    set -e
+    if $BACKUP_SKIPPED; then
+      TAR_EXIT=124
+    else
+      set +e
+      wait $TAR_PID
+      TAR_EXIT=$?
+      set -e
+    fi
 
-    if [ $TAR_EXIT -eq 0 ] && [ -f "$BACKUP_FILE" ]; then
+    if $BACKUP_SKIPPED; then
+      record "Backup pré-update" "skip" "$(elapsed $T)"
+      phase_status "backup" "skip" "$(elapsed $T)"
+    elif [ $TAR_EXIT -eq 0 ] && [ -f "$BACKUP_FILE" ]; then
       chmod 600 "$BACKUP_FILE" 2>/dev/null || true
       SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
       ok "Backup concluído: $(basename "$BACKUP_FILE") ($SIZE)"
@@ -684,15 +695,29 @@ fi
 # isso comparamos com TODOS os PIDs relacionados: o pm_id-pid + child_pids.
 PM2_JLIST=$(pm2 jlist 2>/dev/null || echo "[]")
 
-# Extrai info da app + lista de PIDs relacionados (parent + filhos)
-ATLAS_INFO=$(printf '%s' "$PM2_JLIST" | node -e '
+# Extrai info da app + lista de PIDs relacionados (parent + filhos).
+# APP_NAME/VPS_DIR precisam ser variáveis de ambiente do node; passar depois
+# do comando vira argumento e fazia process.env.APP_NAME ficar vazio. Isso
+# levou o deploy a achar que o PM2 não tinha atlasdeck e iniciar duplicados.
+ATLAS_INFO=$(printf '%s' "$PM2_JLIST" | APP_NAME="$APP_NAME" VPS_DIR="$VPS_DIR" node -e '
 let s = "";
 process.stdin.on("data", d => s += d);
 process.stdin.on("end", () => {
   try {
     const arr = JSON.parse(s);
-    const p = arr.find(x => x.name === process.env.APP_NAME);
-    if (!p) { process.stdout.write("MISSING|||"); return; }
+    const matches = arr.filter(x => x.name === process.env.APP_NAME);
+    if (matches.length === 0) { process.stdout.write("MISSING|||"); return; }
+
+    const active = matches.filter(x => x.pm2_env?.status !== "errored" && x.pid && x.pid > 0);
+    const preferred = active.find(x => x.pm2_env?.pm_cwd === process.env.VPS_DIR) || active[0] || matches[0];
+    if (matches.length > 1) {
+      const summary = matches.map(x => `${x.pm_id}:${x.pm2_env?.status || "unknown"}:${x.pid || 0}`).join(",");
+      const pids = active.map(x => x.pid).filter(Boolean).join(",");
+      process.stdout.write("DUPLICATE|" + summary + "||" + pids);
+      return;
+    }
+
+    const p = preferred;
     const pids = new Set();
     if (p.pid) pids.add(p.pid);
     if (Array.isArray(p.pm2_env?.child_pids)) {
@@ -708,7 +733,7 @@ process.stdin.on("end", () => {
     process.stdout.write("ERROR|||");
   }
 });
-' APP_NAME="$APP_NAME" 2>/dev/null || echo "ERROR|||")
+' 2>/dev/null || echo "ERROR|||")
 
 ATLAS_STATE="${ATLAS_INFO%%|*}"
 _REST="${ATLAS_INFO#*|}"
@@ -772,7 +797,21 @@ fi
 # e abortava o script ANTES do health check. Agora a fase só falha se o
 # health check confirmar que a app não está respondendo.
 PM2_ACTION_EXIT=0
-if [[ "$ATLAS_STATE" == "PRESENT" ]]; then
+if [[ "$ATLAS_STATE" == "DUPLICATE" ]]; then
+  warn "PM2 tem múltiplos processos '$APP_NAME' (${EXISTING_CWD}) — limpando duplicados e recriando processo único"
+  pm2 delete "$APP_NAME" < /dev/null 2>/dev/null || true
+  cd "$VPS_DIR"
+  set +e
+  pm2 start npm --name "$APP_NAME" -- start < /dev/null
+  PM2_ACTION_EXIT=$?
+  set -e
+  pm2 save < /dev/null 2>/dev/null || true
+  if [[ $PM2_ACTION_EXIT -eq 0 ]]; then
+    ok "PM2: duplicados removidos e processo único iniciado"
+  else
+    warn "PM2: recriação após duplicados retornou exit $PM2_ACTION_EXIT — validando via health check"
+  fi
+elif [[ "$ATLAS_STATE" == "PRESENT" ]]; then
   if [[ "$EXISTING_CWD" != "$VPS_DIR" ]] || [[ "$EXISTING_ARGS" == *"dev"* ]]; then
     warn "PM2 configurado incorretamente (CWD divergente ou modo Dev detectado) — recriando processo para Produção"
     pm2 delete "$APP_NAME" < /dev/null 2>/dev/null || true
@@ -983,7 +1022,7 @@ fi
 
 # OpenClaw CLI status (informativo)
 if command -v openclaw &>/dev/null; then
-  OPENCLAW_OUT=$(openclaw status 2>/dev/null | grep -v '^$' | head -8 || echo "")
+  OPENCLAW_OUT=$(openclaw status 2>/dev/null | awk 'NF { print; if (++n == 8) exit }' || echo "")
   if [[ -n "$OPENCLAW_OUT" ]]; then
     info "openclaw status:"
     echo "$OPENCLAW_OUT" | while IFS= read -r line; do
