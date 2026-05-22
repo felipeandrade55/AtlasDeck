@@ -17,6 +17,7 @@ import { spawn, ChildProcessWithoutNullStreams } from "child_process";
 import { readOpenClawConfig } from "@/lib/openclaw-config";
 import { streamChat as ollamaStreamChat, getOllamaStatus } from "@/lib/ollama-client";
 import { getSettings } from "@/lib/memory-db";
+import { isWsEnabled, runOpenClawWsChat } from "@/lib/openclaw-ws-client";
 
 export interface RunnerInput {
   agentId: string;
@@ -444,6 +445,54 @@ export async function* runOpenClawChat(input: RunnerInput): AsyncGenerator<Runne
   if (process.env.ATLAS_CHAT_PROVIDER === "ollama") {
     yield* runOllamaFallback(input, "ATLAS_CHAT_PROVIDER=ollama");
     return;
+  }
+
+  // Strategy 0: Gateway WebSocket — real-time tokens with abort support.
+  // Skipped when ATLAS_CHAT_WS=off and silently falls through to the CLI
+  // path when the gateway is unreachable or rejects the connection.
+  if (isWsEnabled()) {
+    const sessionKey =
+      process.env.ATLAS_CHAT_TO ||
+      (input.sessionId ? `web:${input.sessionId.slice(0, 24)}` : "web:atlasdeck");
+
+    let producedAny = false;
+    let wsFatal: string | null = null;
+    try {
+      for await (const evt of runOpenClawWsChat({
+        agentId: input.agentId,
+        prompt: input.prompt,
+        sessionKey,
+        sessionId: input.sessionId,
+        signal: input.signal,
+      })) {
+        if (evt.type === "error") {
+          // First byte never arrived or gateway refused — try the CLI.
+          if (
+            !producedAny &&
+            (evt.code === "WS_HANDSHAKE_TIMEOUT" ||
+              evt.code === "WS_CONNECT_FAIL" ||
+              evt.code === "NO_WS" ||
+              (evt.code ?? "").startsWith("WS_CLOSE_"))
+          ) {
+            wsFatal = evt.message;
+            break;
+          }
+          producedAny = true;
+          yield evt;
+          return;
+        }
+        producedAny = true;
+        yield evt;
+        if (evt.type === "done") return;
+      }
+      if (producedAny) return;
+    } catch (err) {
+      wsFatal = err instanceof Error ? err.message : String(err);
+    }
+
+    if (process.env.MEMORY_DEBUG === "1" && wsFatal) {
+      console.log(`[openclaw-runner] WS unavailable (${wsFatal}); falling back to CLI`);
+    }
   }
 
   const config = readOpenClawConfig();

@@ -10,7 +10,7 @@
 
 - **Início:** 2026-05-21
 - **Camadas:** 6
-- **Progresso global:** 18 / 42 checkpoints (Camada 1: 18/17 — bridge + wake word entregues)
+- **Progresso global:** 24 / 42 checkpoints — Camada 1 essencialmente fechada, runner reformatado com WS Gateway + voz ElevenLabs
 
 ---
 
@@ -219,11 +219,13 @@ O caminho correto é o **Gateway WebSocket no `:18789`**, que a Control UI ofici
 - `chat.inject` → injeta mensagem de sistema no meio do turno
 
 **Tarefas para próxima iter:**
-- [ ] **R.1** Cliente WS em `src/lib/openclaw-ws-client.ts` (Bearer token, reconnect, multiplex por sessionKey)
-- [ ] **R.2** Adapter no runner: WS primeiro, CLI fallback, Ollama fallback
-- [ ] **R.3** Mapear sessionKey (hoje `web:atlasdeck`) por usuário/thread → `web:<userId>` ou `web:<threadId>`
-- [ ] **R.4** Botão "Parar" do composer dispara `chat.abort`
-- [ ] **R.5** Suporte a `gateway.controlUi.allowedOrigins` em ambientes não-loopback
+- [x] **R.1** Cliente WS em `src/lib/openclaw-ws-client.ts` (Bearer token via query string em 3 chaves, translator tolerante de eventos) _(reconnect/multiplex pendentes)_
+- [x] **R.2** Adapter no runner: WS primeiro, CLI fallback, Ollama fallback
+- [x] **R.3** Mapear sessionKey (hoje `web:atlasdeck` ou `web:<threadId>` via env `ATLAS_CHAT_TO`)
+- [x] **R.4** Botão "Parar" do composer dispara `chat.abort` (via AbortSignal propagado até o WS)
+- [ ] **R.5** Suporte a `gateway.controlUi.allowedOrigins` em ambientes não-loopback _(pendente)_
+- [ ] **R.6** Reuso de conexão WS entre turnos (hoje abrimos uma por turno) _(novo)_
+- [ ] **R.7** UI mostra qual provider respondeu (WS / CLI / Ollama) na bolha _(novo)_
 
 ---
 
@@ -235,3 +237,5 @@ O caminho correto é o **Gateway WebSocket no `:18789`**, que a Control UI ofici
 | 2026-05-22 | Camada 1 MVP entregue: chat-db, openclaw-runner subprocess, SSE, UI `/chat`, STT Web Speech, TTS Web Speech, dock |
 | 2026-05-22 | Bridge OpenClaw sessions + Wake word ("Jarvis"/"Atlas") via Web Speech contínuo entregues |
 | 2026-05-22 | Fix: chat runner agora usa `openclaw agent --json` (CLI real); fallback Ollama mantido; aliases pt-BR no wake word + lastHeard visível |
+| 2026-05-22 | Parser do envelope `openclaw agent --json` (result.payloads[0].text) + wake word com modo "aguardando comando" (10s) |
+| 2026-05-22 | Voz ElevenLabs no Jarvis (mesma do Telegram) via /api/chat/tts streaming + Gateway WebSocket como estratégia primária do runner (chat.send/abort) — corrige latência de 40s |
