@@ -455,6 +455,7 @@ export async function* runOpenClawChat(input: RunnerInput): AsyncGenerator<Runne
   // Strategy 0: Gateway WebSocket — real-time tokens with abort support.
   // Skipped when ATLAS_CHAT_WS=off and silently falls through to the CLI
   // path when the gateway is unreachable or rejects the connection.
+  let wsFailureForCli: string | null = null;
   if (isWsEnabled()) {
     const sessionKey =
       process.env.ATLAS_CHAT_TO ||
@@ -504,9 +505,14 @@ export async function* runOpenClawChat(input: RunnerInput): AsyncGenerator<Runne
       wsFatal = err instanceof Error ? err.message : String(err);
     }
 
-    if (process.env.MEMORY_DEBUG === "1" && wsFatal) {
-      console.log(`[openclaw-runner] WS unavailable (${wsFatal}); falling back to CLI`);
+    if (wsFatal) {
+      wsFailureForCli = wsFatal;
+      if (process.env.MEMORY_DEBUG === "1") {
+        console.log(`[openclaw-runner] WS unavailable (${wsFatal}); falling back to CLI`);
+      }
     }
+  } else {
+    wsFailureForCli = "WS disabled via ATLAS_CHAT_WS=off";
   }
 
   const config = readOpenClawConfig();
@@ -515,6 +521,7 @@ export async function* runOpenClawChat(input: RunnerInput): AsyncGenerator<Runne
   let lastError: unknown = null;
   let lastStderr = "";
   let cliAnnounced = false;
+  const lastWsFatal: string | null = wsFailureForCli;
 
   for (const strategy of strategies) {
     const args = strategy.args(input);
@@ -590,7 +597,17 @@ export async function* runOpenClawChat(input: RunnerInput): AsyncGenerator<Runne
     };
 
     if (!cliAnnounced) {
-      yield { type: "provider", provider: "cli", detail: strategy.label };
+      // Include the WS failure reason (if any) so the bubble badge
+      // tells the operator exactly why we fell back, not just that we
+      // did. E.g. "CLI · WS rejeitou: handshake timeout".
+      const detail = (() => {
+        const label = strategy.label;
+        if (lastWsFatal) {
+          return `${label} · WS: ${lastWsFatal.slice(0, 80)}`;
+        }
+        return label;
+      })();
+      yield { type: "provider", provider: "cli", detail };
       cliAnnounced = true;
     }
 

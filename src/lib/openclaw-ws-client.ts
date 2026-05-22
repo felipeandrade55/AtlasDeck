@@ -53,18 +53,26 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function buildWsUrl(): string {
+/**
+ * Build the candidate WebSocket URLs to try in order. Gateways differ
+ * across builds: some expose chat on `/`, others on `/ws` or `/api/ws`.
+ * We probe each in sequence until one accepts the handshake; the
+ * winner is reused for the rest of the turn.
+ */
+function buildWsUrlCandidates(): string[] {
   const info = getOpenClawGatewayInfo();
   const baseUrl = info.url.replace(/^http/, "ws").replace(/\/$/, "");
-  if (!info.token) return baseUrl;
-  // Pass the token under a few common query keys so we work across
-  // gateway builds that differ on the expected name.
-  const params = new URLSearchParams({
-    token: info.token,
-    access_token: info.token,
-    auth: info.token,
-  });
-  return `${baseUrl}/?${params.toString()}`;
+  const params = info.token
+    ? `?${new URLSearchParams({
+        token: info.token,
+        access_token: info.token,
+        auth: info.token,
+      }).toString()}`
+    : "";
+  const paths = process.env.ATLAS_CHAT_WS_PATH?.trim()
+    ? [process.env.ATLAS_CHAT_WS_PATH.trim()]
+    : ["/", "/ws", "/api/ws", "/gateway/ws", "/chat"];
+  return paths.map((p) => `${baseUrl}${p === "/" ? "" : p}${params}`);
 }
 
 /**
@@ -206,8 +214,67 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
     return;
   }
 
-  const url = buildWsUrl();
+  const candidates = buildWsUrlCandidates();
   const debug = process.env.MEMORY_DEBUG === "1";
+
+  // Probe each candidate until one accepts the upgrade. We do a quick
+  // 1.5s handshake test per URL — connecting via WebSocket is cheap so
+  // probing 3-4 paths is still well under the runner's overall budget.
+  let url: string | null = null;
+  let probeError = "";
+  for (const candidate of candidates) {
+    const probeOk = await new Promise<boolean>((resolve) => {
+      let probe: WebSocket;
+      try {
+        probe = new WebSocket(candidate);
+      } catch (err) {
+        probeError = `${candidate}: ${(err as Error).message}`;
+        resolve(false);
+        return;
+      }
+      const timer = setTimeout(() => {
+        try {
+          probe.close();
+        } catch {}
+        probeError = `${candidate}: handshake timeout (1.5s)`;
+        resolve(false);
+      }, 1500);
+      probe.onopen = () => {
+        clearTimeout(timer);
+        try {
+          probe.close(1000, "probe ok");
+        } catch {}
+        resolve(true);
+      };
+      probe.onerror = () => {
+        clearTimeout(timer);
+        probeError = `${candidate}: connection refused or closed`;
+        resolve(false);
+      };
+      probe.onclose = (ev) => {
+        clearTimeout(timer);
+        if (ev.code !== 1000) {
+          probeError = `${candidate}: closed (${ev.code} ${ev.reason || ""})`.trim();
+          resolve(false);
+        }
+      };
+    });
+    if (probeOk) {
+      url = candidate;
+      if (debug) console.log("[ws] probe accepted:", candidate);
+      break;
+    }
+    if (debug) console.log("[ws] probe rejected:", candidate);
+  }
+
+  if (!url) {
+    yield {
+      type: "error",
+      code: "WS_HANDSHAKE_TIMEOUT",
+      message: `Gateway nao aceitou nenhum dos paths probados (${candidates.length}). Ultimo erro: ${probeError || "desconhecido"}`,
+    };
+    return;
+  }
 
   let ws: WebSocket;
   try {

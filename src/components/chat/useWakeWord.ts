@@ -176,6 +176,16 @@ interface UseWakeWordOptions {
  */
 const AWAIT_COMMAND_WINDOW_MS = 10_000;
 
+/**
+ * Silence window after the user stops speaking before we treat the
+ * accumulated transcript as the final command. Web Speech sometimes
+ * finalises one word at a time when the user pauses briefly between
+ * words ("Atlas, bom… dia") — without this buffer we would fire on
+ * "bom" alone. 1.5s is the sweet spot between responsiveness and
+ * letting the user finish the sentence.
+ */
+const COMMAND_SILENCE_MS = 1800;
+
 export function useWakeWord({
   enabled,
   paused = false,
@@ -197,6 +207,8 @@ export function useWakeWord({
   const lastPhraseRef = useRef<string>("Jarvis");
   const lastFiredCommandRef = useRef<string>("");
   const lastFiredAtRef = useRef(0);
+  const pendingBufferRef = useRef<string>("");
+  const pendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     phrasesRef.current = phrases;
@@ -265,58 +277,65 @@ export function useWakeWord({
           return true;
         };
 
-        // Mode A: we are awaiting a follow-up command after a bare wake word.
-        // Any reasonably long transcript that does NOT itself start with a
-        // wake word is treated as the command.
-        if (awaitingUntilRef.current > Date.now()) {
-          const candidate = (finalText.trim() || combined).trim();
-          if (
-            candidate.length >= 3 &&
-            !findWakeMatch(candidate, phrasesRef.current)
-          ) {
-            if (!debounceFire(candidate)) return;
-            awaitingUntilRef.current = 0;
-            setState("activated");
+        const flushPending = () => {
+          const cmd = pendingBufferRef.current.trim();
+          pendingBufferRef.current = "";
+          if (pendingTimerRef.current) {
+            clearTimeout(pendingTimerRef.current);
+            pendingTimerRef.current = null;
+          }
+          if (!cmd) {
+            // Empty buffer just means "wake word fired, no command yet" —
+            // tell the page so it can show the teaser. Keep awaiting open.
             try {
-              onWakeRef.current({ phrase: lastPhraseRef.current, command: candidate });
-            } catch {}
-            try {
-              rec.abort();
+              onWakeRef.current({ phrase: lastPhraseRef.current, command: "" });
             } catch {}
             return;
           }
+          if (!debounceFire(cmd)) return;
+          awaitingUntilRef.current = 0;
+          setState("activated");
+          try {
+            onWakeRef.current({ phrase: lastPhraseRef.current, command: cmd });
+          } catch {}
+          try {
+            rec.abort();
+          } catch {}
+        };
+
+        const queueFlush = (extraText: string) => {
+          if (extraText) {
+            pendingBufferRef.current = `${pendingBufferRef.current} ${extraText}`.trim();
+          }
+          if (pendingTimerRef.current) clearTimeout(pendingTimerRef.current);
+          pendingTimerRef.current = setTimeout(flushPending, COMMAND_SILENCE_MS);
+        };
+
+        // Mode A: awaiting a follow-up command after a bare wake word.
+        // Buffer every final transcript and let the silence timer fire
+        // the accumulated command — handles "Atlas… bom… dia" gracefully.
+        if (awaitingUntilRef.current > Date.now()) {
+          const piece = finalText.trim();
+          if (!piece) return;
+          if (findWakeMatch(piece, phrasesRef.current)) {
+            // User said the wake word again — restart the buffer cleanly.
+            pendingBufferRef.current = "";
+          }
+          queueFlush(piece);
+          return;
         }
 
         // Mode B: regular wake-word watching.
         const match = findWakeMatch(combined, phrasesRef.current);
         if (!match) return;
-        const command = match.tail.trim();
-
-        if (command.length >= 3) {
-          if (!debounceFire(command)) return;
-          awaitingUntilRef.current = 0;
-          lastPhraseRef.current = match.phrase;
-          setState("activated");
-          try {
-            onWakeRef.current({ phrase: match.phrase, command });
-          } catch {}
-          try {
-            rec.abort();
-          } catch {}
-          return;
-        }
-
-        // Bare wake word — enter the follow-up window and let the user
-        // speak the command in a fresh utterance.
-        awaitingUntilRef.current = Date.now() + AWAIT_COMMAND_WINDOW_MS;
+        const tail = match.tail.trim();
         lastPhraseRef.current = match.phrase;
         setState("activated");
-        try {
-          onWakeRef.current({ phrase: match.phrase, command: "" });
-        } catch {}
-        try {
-          rec.abort();
-        } catch {}
+        // Enter the follow-up window in case the user pauses after the
+        // wake word ("Atlas, …") — keeps the recognizer collecting more.
+        awaitingUntilRef.current = Date.now() + AWAIT_COMMAND_WINDOW_MS;
+        pendingBufferRef.current = tail;
+        queueFlush("");
       };
       rec.onerror = (event: Event) => {
         const code = (event as Event & { error?: string }).error;
@@ -357,6 +376,11 @@ export function useWakeWord({
       clearTimeout(restartTimerRef.current);
       restartTimerRef.current = null;
     }
+    if (pendingTimerRef.current) {
+      clearTimeout(pendingTimerRef.current);
+      pendingTimerRef.current = null;
+    }
+    pendingBufferRef.current = "";
     try {
       recognitionRef.current?.abort();
     } catch {}
