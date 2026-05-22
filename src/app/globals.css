@@ -453,3 +453,15 @@ code, pre, .font-mono {
   font-size: 12px;
   color: var(--warning);
 }
+
+/* Chat / Jarvis animations */
+@keyframes pulse {
+  0% { opacity: 0.35; }
+  50% { opacity: 1; }
+  100% { opacity: 0.35; }
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}

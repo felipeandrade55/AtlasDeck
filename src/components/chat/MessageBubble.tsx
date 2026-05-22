@@ -1,0 +1,251 @@
+"use client";
+
+import { useState, type CSSProperties } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { Bot, ChevronDown, ChevronRight, User, Volume2, Wrench } from "lucide-react";
+import type { ChatMessage, AgentSummary } from "./types";
+
+interface MessageBubbleProps {
+  message: ChatMessage;
+  agent?: AgentSummary;
+  onSpeak?: (text: string) => void;
+  isSpeaking?: boolean;
+}
+
+export function MessageBubble({ message, agent, onSpeak, isSpeaking }: MessageBubbleProps) {
+  const [collapsed, setCollapsed] = useState(message.role === "tool_use" || message.role === "tool_result");
+
+  if (message.role === "tool_use" || message.role === "tool_result") {
+    return (
+      <div style={toolWrapStyle}>
+        <button
+          type="button"
+          onClick={() => setCollapsed((c) => !c)}
+          style={toolHeaderStyle}
+        >
+          {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+          <Wrench size={14} />
+          <span style={{ fontWeight: 600 }}>
+            {message.role === "tool_use" ? "Tool call" : "Tool result"}
+          </span>
+          {message.tool_name && (
+            <code style={{ color: "var(--accent)" }}>{message.tool_name}</code>
+          )}
+        </button>
+        {!collapsed && (
+          <pre style={toolBodyStyle}>
+            {message.role === "tool_use"
+              ? JSON.stringify(message.tool_input, null, 2)
+              : message.tool_output ?? message.content}
+          </pre>
+        )}
+      </div>
+    );
+  }
+
+  const isUser = message.role === "user";
+  const isError = message.status === "error";
+  const isStreaming = message.status === "streaming";
+
+  return (
+    <div style={rowStyle(isUser)}>
+      {!isUser && (
+        <div style={avatarStyle(agent?.color ?? "#3b82f6")}>
+          {agent?.emoji ?? <Bot size={18} />}
+        </div>
+      )}
+      <div style={{ maxWidth: "min(720px, 80%)" }}>
+        <div style={metaRowStyle(isUser)}>
+          <span style={{ fontWeight: 600 }}>
+            {isUser ? "Você" : agent?.name ?? message.role}
+          </span>
+          <span style={{ color: "var(--text-muted)" }}>
+            {new Date(message.created_at).toLocaleTimeString("pt-BR", {
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+          </span>
+          {!isUser && onSpeak && message.content && !isStreaming && (
+            <button
+              type="button"
+              onClick={() => onSpeak(message.content)}
+              style={ttsButtonStyle(isSpeaking)}
+              title={isSpeaking ? "Falando…" : "Ouvir resposta"}
+            >
+              <Volume2 size={14} />
+            </button>
+          )}
+        </div>
+        <div style={bubbleStyle({ isUser, isError, isStreaming })}>
+          {isUser ? (
+            <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>{message.content}</p>
+          ) : (
+            <div className="prose prose-invert max-w-none" style={{ fontSize: 14 }}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {message.content || (isStreaming ? "▋" : "")}
+              </ReactMarkdown>
+            </div>
+          )}
+          {isError && message.error && (
+            <p style={errorTextStyle}>⚠ {message.error}</p>
+          )}
+          {isStreaming && (
+            <span style={cursorStyle} aria-hidden>
+              ▋
+            </span>
+          )}
+        </div>
+        {(message.tokens_in > 0 || message.tokens_out > 0) && (
+          <div style={usageStyle(isUser)}>
+            ↑ {message.tokens_in} · ↓ {message.tokens_out}
+            {message.cost > 0 && ` · $${message.cost.toFixed(4)}`}
+          </div>
+        )}
+      </div>
+      {isUser && (
+        <div style={avatarStyle("var(--accent)")}>
+          <User size={18} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function rowStyle(isUser: boolean): CSSProperties {
+  return {
+    display: "flex",
+    flexDirection: isUser ? "row-reverse" : "row",
+    gap: 12,
+    alignItems: "flex-start",
+    width: "100%",
+  };
+}
+
+function avatarStyle(color: string): CSSProperties {
+  return {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    background: color,
+    color: "#fff",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 16,
+    flexShrink: 0,
+  };
+}
+
+function metaRowStyle(isUser: boolean): CSSProperties {
+  return {
+    display: "flex",
+    flexDirection: isUser ? "row-reverse" : "row",
+    gap: 8,
+    fontSize: 12,
+    color: "var(--text-secondary)",
+    marginBottom: 4,
+    alignItems: "center",
+  };
+}
+
+function bubbleStyle({
+  isUser,
+  isError,
+  isStreaming,
+}: {
+  isUser: boolean;
+  isError: boolean;
+  isStreaming: boolean;
+}): CSSProperties {
+  return {
+    padding: "10px 14px",
+    borderRadius: 12,
+    background: isUser
+      ? "var(--accent-soft)"
+      : isError
+      ? "var(--danger-soft, rgba(239,68,68,0.15))"
+      : "var(--surface)",
+    border: `1px solid ${
+      isError ? "var(--danger, #ef4444)" : "var(--border)"
+    }`,
+    color: "var(--text-primary)",
+    fontSize: 14,
+    lineHeight: 1.55,
+    boxShadow: isStreaming ? "0 0 0 1px var(--accent)" : undefined,
+    position: "relative",
+  };
+}
+
+const toolWrapStyle: CSSProperties = {
+  margin: "4px auto",
+  width: "min(720px, 90%)",
+  borderRadius: 8,
+  border: "1px dashed var(--border)",
+  background: "var(--surface)",
+  fontSize: 12,
+};
+
+const toolHeaderStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  width: "100%",
+  padding: "6px 10px",
+  background: "transparent",
+  border: "none",
+  color: "var(--text-secondary)",
+  cursor: "pointer",
+  fontFamily: "var(--font-body)",
+  fontSize: 12,
+};
+
+const toolBodyStyle: CSSProperties = {
+  margin: 0,
+  padding: "8px 12px",
+  borderTop: "1px dashed var(--border)",
+  fontFamily: "var(--font-mono)",
+  fontSize: 11,
+  color: "var(--text-primary)",
+  whiteSpace: "pre-wrap",
+  wordBreak: "break-word",
+  maxHeight: 240,
+  overflow: "auto",
+};
+
+function ttsButtonStyle(active?: boolean): CSSProperties {
+  return {
+    width: 22,
+    height: 22,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 4,
+    background: active ? "var(--accent-soft)" : "transparent",
+    color: active ? "var(--accent)" : "var(--text-muted)",
+    border: "none",
+    cursor: "pointer",
+  };
+}
+
+const errorTextStyle: CSSProperties = {
+  margin: "8px 0 0 0",
+  fontSize: 12,
+  color: "var(--danger, #ef4444)",
+};
+
+const cursorStyle: CSSProperties = {
+  display: "inline-block",
+  marginLeft: 2,
+  animation: "blink 1s steps(1) infinite",
+  color: "var(--accent)",
+};
+
+function usageStyle(isUser: boolean): CSSProperties {
+  return {
+    fontSize: 10,
+    color: "var(--text-muted)",
+    marginTop: 4,
+    textAlign: isUser ? "right" : "left",
+  };
+}

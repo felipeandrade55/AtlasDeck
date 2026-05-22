@@ -16,10 +16,12 @@ import {
   DollarSign,
   Settings,
   History,
+  MessageCircle,
 } from "lucide-react";
 
 const dockItems = [
   { href: "/", label: "Dashboard", icon: Home },
+  { href: "/chat", label: "Chat", icon: MessageCircle },
   { href: "/system", label: "Monitor do Sistema", icon: Monitor },
   { href: "/files", label: "Arquivos", icon: FolderOpen },
   { href: "/memory", label: "Memória", icon: Brain },
