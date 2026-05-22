@@ -378,8 +378,8 @@ export default function ChatPage() {
         setWakeTeaser(null);
         void handleSendRef.current?.(command);
       } else {
-        setWakeTeaser("Wake word detectada — fale o comando ou use o microfone.");
-        setTimeout(() => setWakeTeaser(null), 6000);
+        setWakeTeaser("🎙 Pode falar — estou ouvindo seu comando.");
+        setTimeout(() => setWakeTeaser(null), 10_000);
       }
     },
   });

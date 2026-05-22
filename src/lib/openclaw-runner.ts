@@ -249,6 +249,97 @@ function lineToEvent(line: string): RunnerEvent | null {
   }
 }
 
+interface AgentEnvelopeFields {
+  reply: string | null;
+  sessionId: string | null;
+  usage: { tokensIn: number; tokensOut: number; model?: string } | null;
+}
+
+/**
+ * Parses the JSON envelope emitted by `openclaw agent --json` and
+ * extracts the parts the chat UI cares about. The envelope has this
+ * shape (abridged):
+ *
+ *   {
+ *     "runId": "...",
+ *     "status": "ok",
+ *     "result": {
+ *       "payloads": [{ "text": "<visible reply>", "mediaUrl": null }],
+ *       "meta": {
+ *         "agentMeta": {
+ *           "sessionId": "...",
+ *           "model": "...",
+ *           "usage": { "input": N, "output": M, "total": T }
+ *         },
+ *         "finalAssistantVisibleText": "<visible reply>",
+ *         "finalAssistantRawText": "<visible reply>"
+ *       }
+ *     }
+ *   }
+ *
+ * Both `payloads[0].text` and `meta.finalAssistantVisibleText` carry
+ * the same text — we accept either so the parser stays robust across
+ * minor envelope tweaks. The function returns sensible nulls when the
+ * input is not JSON or does not match the expected shape.
+ */
+export function parseAgentEnvelope(raw: string): AgentEnvelopeFields {
+  const result: AgentEnvelopeFields = { reply: null, sessionId: null, usage: null };
+  if (!raw || (!raw.startsWith("{") && !raw.startsWith("["))) return result;
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return result;
+  }
+
+  const r = parsed.result as Record<string, unknown> | undefined;
+  const meta = r?.meta as Record<string, unknown> | undefined;
+  const agentMeta = meta?.agentMeta as Record<string, unknown> | undefined;
+  const payloads = r?.payloads as Array<Record<string, unknown>> | undefined;
+
+  // Visible reply: prefer first payload text, then finalAssistantVisibleText,
+  // then finalAssistantRawText, then a handful of flat-envelope aliases.
+  const firstPayload = Array.isArray(payloads) ? payloads[0] : undefined;
+  const candidate =
+    (firstPayload && typeof firstPayload.text === "string" && firstPayload.text) ||
+    (meta && typeof meta.finalAssistantVisibleText === "string" && meta.finalAssistantVisibleText) ||
+    (meta && typeof meta.finalAssistantRawText === "string" && meta.finalAssistantRawText) ||
+    (typeof parsed.response === "string" && parsed.response) ||
+    (typeof parsed.message === "string" && parsed.message) ||
+    (typeof parsed.content === "string" && parsed.content) ||
+    (typeof parsed.text === "string" && parsed.text) ||
+    (typeof parsed.output === "string" && parsed.output) ||
+    (typeof parsed.reply === "string" && parsed.reply) ||
+    null;
+  if (candidate) result.reply = candidate;
+
+  // Session id for follow-up turns
+  const sessionId =
+    (agentMeta && typeof agentMeta.sessionId === "string" && agentMeta.sessionId) ||
+    (meta && typeof meta.sessionId === "string" && meta.sessionId) ||
+    (typeof parsed.sessionId === "string" && parsed.sessionId) ||
+    null;
+  if (sessionId) result.sessionId = sessionId;
+
+  // Token usage from agentMeta.usage (input/output/total) — OpenClaw uses
+  // those field names instead of input_tokens/output_tokens.
+  const usage = agentMeta?.usage as Record<string, unknown> | undefined;
+  if (usage) {
+    const tokensIn = Number(usage.input ?? usage.tokensIn ?? usage.input_tokens ?? 0);
+    const tokensOut = Number(usage.output ?? usage.tokensOut ?? usage.output_tokens ?? 0);
+    if (tokensIn || tokensOut) {
+      result.usage = {
+        tokensIn,
+        tokensOut,
+        model: typeof agentMeta?.model === "string" ? agentMeta.model : undefined,
+      };
+    }
+  }
+
+  return result;
+}
+
 /**
  * Best-effort chunking for the raw-text fallback path. Splits a buffered
  * string into ~24-char windows so the SSE consumer still sees a streaming
@@ -482,48 +573,26 @@ export async function* runOpenClawChat(input: RunnerInput): AsyncGenerator<Runne
 
     // If no structured events were emitted but we collected raw text,
     // try interpreting the *whole stdout* as a single pretty-printed
-    // JSON envelope first — that's how `openclaw agent --json` actually
-    // shapes its output. Common fields: response, message, content, text.
+    // JSON envelope — that's how `openclaw agent --json` actually
+    // shapes its output. The canonical envelope nests the visible reply
+    // under `result.payloads[0].text` (or `result.meta.finalAssistantVisibleText`)
+    // and the usage stats under `result.meta.agentMeta.usage`.
     if (!emittedAnyEvent && pendingChunks.length > 0) {
       const text = pendingChunks.join("\n").trim();
-      let extracted: string | null = null;
-      let usage: { tokensIn: number; tokensOut: number; model?: string } | null = null;
-      if (text.startsWith("{") || text.startsWith("[")) {
-        try {
-          const parsed = JSON.parse(text) as Record<string, unknown>;
-          const candidate =
-            (typeof parsed.response === "string" && parsed.response) ||
-            (typeof parsed.message === "string" && parsed.message) ||
-            (typeof parsed.content === "string" && parsed.content) ||
-            (typeof parsed.text === "string" && parsed.text) ||
-            (typeof parsed.output === "string" && parsed.output) ||
-            (typeof parsed.reply === "string" && parsed.reply) ||
-            null;
-          if (candidate) extracted = candidate;
-          const tokensIn = Number(parsed.tokensIn ?? parsed.input_tokens ?? parsed.promptTokens ?? 0);
-          const tokensOut = Number(parsed.tokensOut ?? parsed.output_tokens ?? parsed.completionTokens ?? 0);
-          if (tokensIn || tokensOut) {
-            usage = {
-              tokensIn,
-              tokensOut,
-              model: typeof parsed.model === "string" ? parsed.model : undefined,
-            };
-          }
-        } catch {
-          // not single-JSON; treat as raw text below
-        }
+      const envelope = parseAgentEnvelope(text);
+      if (envelope.sessionId) {
+        yield { type: "session", sessionId: envelope.sessionId };
       }
-
-      const finalText = extracted ?? text;
+      const finalText = envelope.reply ?? text;
       for (const chunk of chunkText(finalText)) {
         yield { type: "token", delta: chunk };
       }
-      if (usage) {
+      if (envelope.usage) {
         yield {
           type: "usage",
-          tokensIn: usage.tokensIn,
-          tokensOut: usage.tokensOut,
-          model: usage.model,
+          tokensIn: envelope.usage.tokensIn,
+          tokensOut: envelope.usage.tokensOut,
+          model: envelope.usage.model,
         };
       }
     }

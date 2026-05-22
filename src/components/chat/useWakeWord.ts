@@ -109,6 +109,14 @@ interface UseWakeWordOptions {
   onWake: (payload: { phrase: string; command: string }) => void;
 }
 
+/**
+ * Window in ms during which a transcript produced after an empty wake
+ * (e.g. user said just "Jarvis") is treated as the spoken command and
+ * forwarded to the chat. Anything beyond this returns to normal wake
+ * listening so the user does not get a stale command fired hours later.
+ */
+const AWAIT_COMMAND_WINDOW_MS = 10_000;
+
 export function useWakeWord({
   enabled,
   paused = false,
@@ -125,6 +133,10 @@ export function useWakeWord({
   const phrasesRef = useRef(phrases);
   const onWakeRef = useRef(onWake);
   const startInternalRef = useRef<() => void>(() => {});
+  const awaitingUntilRef = useRef(0);
+  const lastPhraseRef = useRef<string>("Jarvis");
+  const lastFiredCommandRef = useRef<string>("");
+  const lastFiredAtRef = useRef(0);
 
   useEffect(() => {
     phrasesRef.current = phrases;
@@ -153,28 +165,85 @@ export function useWakeWord({
 
       rec.onstart = () => setState("listening");
       rec.onresult = (event) => {
-        let text = "";
+        let interimText = "";
+        let finalText = "";
         for (let i = event.resultIndex; i < event.results.length; i += 1) {
-          text += event.results[i][0].transcript;
+          const result = event.results[i];
+          const fragment = result[0]?.transcript ?? "";
+          if (result.isFinal) finalText += fragment;
+          else interimText += fragment;
         }
-        const trimmed = text.trim();
-        if (!trimmed) return;
-        setLastHeard(trimmed.slice(-120));
-        // Log only when debug is on so production console stays clean.
+        const combined = (interimText + finalText).trim();
+        if (!combined) return;
+        setLastHeard(combined.slice(-120));
+        // Debug logger — toggle with ?wake-debug in the URL.
         if (typeof window !== "undefined" && window.location?.search.includes("wake-debug")) {
-          console.log("[wake] heard:", trimmed);
+          console.log("[wake] heard:", { interim: interimText, final: finalText });
         }
-        const match = findWakeMatch(trimmed, phrasesRef.current);
+
+        const debounceFire = (command: string): boolean => {
+          const sig = command.toLowerCase();
+          if (!sig) return false;
+          if (
+            sig === lastFiredCommandRef.current &&
+            Date.now() - lastFiredAtRef.current < 4000
+          ) {
+            return false;
+          }
+          lastFiredCommandRef.current = sig;
+          lastFiredAtRef.current = Date.now();
+          return true;
+        };
+
+        // Mode A: we are awaiting a follow-up command after a bare wake word.
+        // Any reasonably long transcript that does NOT itself start with a
+        // wake word is treated as the command.
+        if (awaitingUntilRef.current > Date.now()) {
+          const candidate = (finalText.trim() || combined).trim();
+          if (
+            candidate.length >= 3 &&
+            !findWakeMatch(candidate, phrasesRef.current)
+          ) {
+            if (!debounceFire(candidate)) return;
+            awaitingUntilRef.current = 0;
+            setState("activated");
+            try {
+              onWakeRef.current({ phrase: lastPhraseRef.current, command: candidate });
+            } catch {}
+            try {
+              rec.abort();
+            } catch {}
+            return;
+          }
+        }
+
+        // Mode B: regular wake-word watching.
+        const match = findWakeMatch(combined, phrasesRef.current);
         if (!match) return;
         const command = match.tail.trim();
+
+        if (command.length >= 3) {
+          if (!debounceFire(command)) return;
+          awaitingUntilRef.current = 0;
+          lastPhraseRef.current = match.phrase;
+          setState("activated");
+          try {
+            onWakeRef.current({ phrase: match.phrase, command });
+          } catch {}
+          try {
+            rec.abort();
+          } catch {}
+          return;
+        }
+
+        // Bare wake word — enter the follow-up window and let the user
+        // speak the command in a fresh utterance.
+        awaitingUntilRef.current = Date.now() + AWAIT_COMMAND_WINDOW_MS;
+        lastPhraseRef.current = match.phrase;
         setState("activated");
         try {
-          onWakeRef.current({ phrase: match.phrase, command });
-        } catch {
-          // user callback errored — keep listening
-        }
-        // Reset: abort current session and immediately restart
-        stopRequestedRef.current = false;
+          onWakeRef.current({ phrase: match.phrase, command: "" });
+        } catch {}
         try {
           rec.abort();
         } catch {}
