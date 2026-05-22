@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import type {
   UpdateCheckResult,
+  UpdateConfig,
   UpdateHistoryEntry,
   UpdateLiveStatus,
   UpdatePhase,
@@ -77,6 +78,8 @@ export function UpdatePanel() {
   const [phaseStartedAt, setPhaseStartedAt] = useState<number | null>(null);
   const [elapsedTick, setElapsedTick] = useState(0);
   const [reconnecting, setReconnecting] = useState(false);
+  const [backupBeforeUpdate, setBackupBeforeUpdate] = useState(true);
+  const [savingBackupConfig, setSavingBackupConfig] = useState(false);
 
   const logsEndRef = useRef<HTMLDivElement>(null);
   const offsetsRef = useRef({ logOffset: 0, phaseOffset: 0 });
@@ -107,6 +110,40 @@ export function UpdatePanel() {
         setHistory(data.updates || []);
       }
     } catch {}
+  }, []);
+
+  const fetchUpdateConfig = useCallback(async () => {
+    try {
+      const res = await fetch("/api/update/config", { cache: "no-store" });
+      if (!res.ok) return;
+      const config = await res.json() as UpdateConfig;
+      setBackupBeforeUpdate(config.backupBeforeUpdate !== false);
+    } catch {}
+  }, []);
+
+  const saveBackupConfig = useCallback(async (enabled: boolean) => {
+    setSavingBackupConfig(true);
+    try {
+      const res = await fetch("/api/update/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ backupBeforeUpdate: enabled }),
+      });
+      const config = await res.json().catch(() => null) as UpdateConfig | { error?: string } | null;
+      if (!res.ok) {
+        throw new Error(config && "error" in config ? config.error : "Falha ao salvar configuração de backup");
+      }
+      if (config && "backupBeforeUpdate" in config) {
+        setBackupBeforeUpdate(config.backupBeforeUpdate !== false);
+      } else {
+        setBackupBeforeUpdate(enabled);
+      }
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : "Falha ao salvar configuração de backup");
+      throw err;
+    } finally {
+      setSavingBackupConfig(false);
+    }
   }, []);
 
   const initPhases = useCallback((includeBackup: boolean) => {
@@ -310,6 +347,7 @@ export function UpdatePanel() {
       } catch {}
 
       void fetchCheck();
+      void fetchUpdateConfig();
     })();
 
     void fetchHistory();
@@ -357,9 +395,10 @@ export function UpdatePanel() {
     setPhaseStartedAt(Date.now());
     offsetsRef.current = { logOffset: 0, phaseOffset: 0 };
 
-    initPhases(true);
+    initPhases(backupBeforeUpdate);
 
     try {
+      await saveBackupConfig(backupBeforeUpdate);
       const response = await fetch("/api/update/start", { method: "POST" });
       if (!response.ok) {
         const err = await response.json();
@@ -375,7 +414,7 @@ export function UpdatePanel() {
       setStatus("error");
       setErrorMsg(err instanceof Error ? err.message : "Erro de conexão");
     }
-  }, [connectStream, initPhases]);
+  }, [backupBeforeUpdate, connectStream, initPhases, saveBackupConfig]);
 
   const renderPhaseIcon = (s: string) => {
     switch (s) {
@@ -572,10 +611,53 @@ export function UpdatePanel() {
                   </div>
                 )}
 
+                <div
+                  className="mb-4 rounded-lg p-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+                  style={{
+                    backgroundColor: "var(--surface)",
+                    border: "1px solid var(--border)",
+                  }}
+                >
+                  <div>
+                    <div className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+                      Backup antes de atualizar
+                    </div>
+                    <div className="text-xs" style={{ color: "var(--text-muted)" }}>
+                      {backupBeforeUpdate
+                        ? "Ativo: cria backup antes do Git Pull. É o padrão recomendado."
+                        : "Desativado: pula o backup para destravar atualizações mais rápidas."}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={backupBeforeUpdate}
+                    disabled={savingBackupConfig}
+                    onClick={() => {
+                      const next = !backupBeforeUpdate;
+                      setBackupBeforeUpdate(next);
+                      void saveBackupConfig(next).catch(() => setBackupBeforeUpdate(!next));
+                    }}
+                    className="relative inline-flex h-7 w-14 flex-shrink-0 items-center rounded-full transition-colors disabled:opacity-60"
+                    style={{
+                      backgroundColor: backupBeforeUpdate ? "var(--accent)" : "var(--card-elevated)",
+                      border: "1px solid var(--border)",
+                    }}
+                  >
+                    <span
+                      className="inline-block h-5 w-5 rounded-full bg-white transition-transform"
+                      style={{
+                        transform: backupBeforeUpdate ? "translateX(30px)" : "translateX(4px)",
+                      }}
+                    />
+                  </button>
+                </div>
+
                 <div className="flex gap-3">
                   <button
                     onClick={startUpdate}
-                    className="px-5 py-2 rounded-lg font-bold text-sm transition-opacity hover:opacity-90"
+                    disabled={savingBackupConfig}
+                    className="px-5 py-2 rounded-lg font-bold text-sm transition-opacity hover:opacity-90 disabled:opacity-60"
                     style={{ backgroundColor: "var(--accent)", color: "#fff" }}
                   >
                     🚀 Atualizar Agora
