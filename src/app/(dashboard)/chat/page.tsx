@@ -16,9 +16,14 @@ import { MessageBubble } from "@/components/chat/MessageBubble";
 import { Composer } from "@/components/chat/Composer";
 import { ImportOpenClawModal } from "@/components/chat/ImportOpenClawModal";
 import { VoiceSettingsModal } from "@/components/chat/VoiceSettingsModal";
+import { WakeWordSettingsModal } from "@/components/chat/WakeWordSettingsModal";
 import { WakeIndicator } from "@/components/chat/WakeIndicator";
 import { HeardPanel } from "@/components/chat/HeardPanel";
+import { PushToTalkOverlay } from "@/components/chat/PushToTalkOverlay";
 import { useChatStream } from "@/components/chat/useChatStream";
+import { usePushToTalk } from "@/components/chat/usePushToTalk";
+import { usePorcupineWakeWord } from "@/components/chat/usePorcupineWakeWord";
+import { useFollowUpCapture } from "@/components/chat/useFollowUpCapture";
 import { useTtsEngine } from "@/components/chat/useTtsEngine";
 import { useWakeWord } from "@/components/chat/useWakeWord";
 
@@ -53,6 +58,7 @@ export default function ChatPage() {
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
   const [showImportModal, setShowImportModal] = useState(false);
   const [showVoiceModal, setShowVoiceModal] = useState(false);
+  const [showWakeModal, setShowWakeModal] = useState(false);
   const [wakeEnabled, setWakeEnabled] = useState(true);
   const [wakeTeaser, setWakeTeaser] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -405,9 +411,54 @@ export default function ChatPage() {
     handleSendRef.current = handleSend;
   }, [handleSend]);
 
-  const wake = useWakeWord({
+  const pushToTalk = usePushToTalk({
+    enabled: !stream.isStreaming,
+    onCommand: (text) => {
+      void handleSendRef.current?.(text);
+    },
+  });
+
+  // Captures the spoken command after Porcupine detects the wake word.
+  // Porcupine only signals "wake" — we still need an ASR to transcribe
+  // what the user said next. Web Speech is reliable for full sentences;
+  // we only fight pt-BR mistranscription on isolated trigger words.
+  const followUp = useFollowUpCapture({
+    onCommand: (text) => {
+      setWakeTeaser(null);
+      void handleSendRef.current?.(text);
+    },
+    onCancel: () => {
+      setWakeTeaser(null);
+    },
+  });
+
+  // Porcupine is the canonical wake-word engine: it does acoustic
+  // detection on raw audio and works regardless of how the browser's
+  // pt-BR ASR mishears the trigger. We pause Web Speech wake whenever
+  // Porcupine is available so they do not fight for the microphone.
+  const porcupine = usePorcupineWakeWord({
     enabled: wakeEnabled,
-    paused: stream.isStreaming || speakingId !== null,
+    paused:
+      stream.isStreaming ||
+      speakingId !== null ||
+      pushToTalk.holding ||
+      followUp.active,
+    onWake: () => {
+      setWakeTeaser("🎙 Detectado! Pode falar seu comando.");
+      followUp.arm();
+    },
+  });
+
+  const webSpeechWakeActive =
+    wakeEnabled && porcupine.available !== true;
+
+  const wake = useWakeWord({
+    enabled: webSpeechWakeActive,
+    paused:
+      stream.isStreaming ||
+      speakingId !== null ||
+      pushToTalk.holding ||
+      porcupine.holding,
     phrases: WAKE_PHRASES,
     onWake: ({ command }) => {
       if (command.length >= 3) {
@@ -497,12 +548,42 @@ export default function ChatPage() {
               Importar
             </button>
             <WakeIndicator
-              state={wake.state}
-              enabled={wakeEnabled && wake.supported}
-              phrases={WAKE_PHRASES}
-              lastHeard={wake.lastHeard}
+              state={
+                porcupine.available
+                  ? porcupine.state === "listening"
+                    ? "listening"
+                    : porcupine.state === "activated"
+                    ? "activated"
+                    : porcupine.state === "loading"
+                    ? "listening"
+                    : porcupine.state === "error"
+                    ? "error"
+                    : wake.state
+                  : wake.state
+              }
+              enabled={
+                wakeEnabled && (Boolean(porcupine.available) || wake.supported)
+              }
+              phrases={
+                porcupine.available
+                  ? ["Jarvis (Porcupine)"]
+                  : WAKE_PHRASES
+              }
+              lastHeard={
+                porcupine.available
+                  ? porcupine.errorMessage || "Porcupine ativo"
+                  : wake.lastHeard
+              }
               onToggle={() => setWakeEnabled((v) => !v)}
             />
+            <button
+              type="button"
+              onClick={() => setShowWakeModal(true)}
+              style={toggleButtonStyle(false)}
+              title="Configurar wake word (Picovoice)"
+            >
+              ⚙ Wake
+            </button>
           </div>
         </header>
 
@@ -520,9 +601,19 @@ export default function ChatPage() {
           }}
         />
 
+        <WakeWordSettingsModal
+          open={showWakeModal}
+          onClose={() => setShowWakeModal(false)}
+        />
+
         <HeardPanel
           entries={wake.heardLog ?? []}
           enabled={wakeEnabled && wake.supported}
+        />
+
+        <PushToTalkOverlay
+          visible={pushToTalk.holding}
+          interim={pushToTalk.interim}
         />
 
         {statusBanner && (
@@ -566,10 +657,27 @@ function EmptyState() {
     <div style={emptyStateStyle}>
       <Bot size={42} style={{ color: "var(--accent)" }} />
       <h2 style={{ margin: 0, fontSize: 20 }}>Pronto para conversar</h2>
-      <p style={{ margin: 0, color: "var(--text-secondary)", maxWidth: 420 }}>
-        Digite uma pergunta ou clique no microfone para falar.
-        Diga &ldquo;Jarvis&rdquo; ou &ldquo;Atlas&rdquo; quando a wake word estiver ligada.
+      <p style={{ margin: 0, color: "var(--text-secondary)", maxWidth: 520 }}>
+        Quatro formas de falar com o Jarvis:
       </p>
+      <ul style={emptyStateListStyle}>
+        <li>
+          <strong>Diga &ldquo;Jarvis&rdquo;</strong> com Porcupine ativo —
+          detecção acústica precisa, ignora o ASR do Chrome. Configure em{" "}
+          <kbd style={kbdStyle}>⚙ Wake</kbd> no topo.
+        </li>
+        <li>
+          <kbd style={kbdStyle}>ESPAÇO</kbd> — segure para falar, solte para
+          enviar (fallback sem setup)
+        </li>
+        <li>
+          🎙 clique no microfone do composer para gravar manualmente
+        </li>
+        <li>
+          fallback sem Porcupine: dizer &ldquo;Atlas …&rdquo; em voz alta —
+          <em> Web Speech pt-BR pode não pegar a palavra, prefira Porcupine.</em>
+        </li>
+      </ul>
     </div>
   );
 }
@@ -687,4 +795,29 @@ const emptyStateStyle: CSSProperties = {
   padding: "60px 20px",
   color: "var(--text-secondary)",
   textAlign: "center",
+};
+
+const emptyStateListStyle: CSSProperties = {
+  textAlign: "left",
+  margin: 0,
+  padding: 0,
+  listStyle: "none",
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
+  maxWidth: 480,
+  fontSize: 13,
+  color: "var(--text-secondary)",
+};
+
+const kbdStyle: CSSProperties = {
+  display: "inline-block",
+  padding: "1px 8px",
+  borderRadius: 4,
+  border: "1px solid var(--border)",
+  background: "var(--surface)",
+  color: "var(--text-primary)",
+  fontFamily: "var(--font-mono)",
+  fontSize: 11,
+  fontWeight: 600,
 };

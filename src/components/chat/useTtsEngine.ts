@@ -3,22 +3,23 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSpeechSynthesis } from "./useSpeechSynthesis";
 
-export type TtsEngine = "elevenlabs" | "web_speech";
+export type TtsEngine = "elevenlabs" | "fishaudio" | "web_speech";
 
-interface ElevenLabsConfigStatus {
+interface ActiveTtsStatus {
+  provider: "elevenlabs" | "fishaudio" | null;
   configured: boolean;
   voiceId: string | null;
 }
 
 /**
- * Single TTS entry point used by the chat UI. Prefers ElevenLabs (same
- * voice the user already hears via Telegram) and silently falls back
- * to the browser's Web Speech API when ElevenLabs is not configured or
- * fails — so the page never goes silent because of a backend hiccup.
+ * Single TTS entry point used by the chat UI. Prefers the user's
+ * selected cloud provider (ElevenLabs or Fish Audio) exposed by
+ * `/api/chat/tts`, and silently falls back to Web Speech when neither
+ * is configured or the request fails — so the page never goes silent
+ * because of a backend hiccup.
  *
- * The hook also exposes `engine` and `cancel` so the page can render a
- * "Voz: ElevenLabs / Web" badge and stop playback when the user starts
- * speaking again.
+ * `engine` and `voiceLabel` let the page render a "Voz: 11labs / fish /
+ * web" badge; `cancel` stops playback when the user starts speaking.
  */
 export function useTtsEngine() {
   const fallback = useSpeechSynthesis();
@@ -32,10 +33,15 @@ export function useTtsEngine() {
     try {
       const res = await fetch("/api/chat/tts");
       if (!res.ok) return;
-      const status = (await res.json()) as ElevenLabsConfigStatus;
-      if (status.configured) {
-        setEngine("elevenlabs");
-        setVoiceLabel(status.voiceId ? `ElevenLabs · ${status.voiceId.slice(0, 8)}` : "ElevenLabs");
+      const status = (await res.json()) as ActiveTtsStatus;
+      if (status.configured && status.provider) {
+        setEngine(status.provider);
+        const name = status.provider === "fishaudio" ? "FishAudio" : "ElevenLabs";
+        setVoiceLabel(
+          status.voiceId
+            ? `${name} · ${status.voiceId.slice(0, 8)}`
+            : `${name} · default`,
+        );
       } else {
         setEngine("web_speech");
         setVoiceLabel("Web Speech");
@@ -70,7 +76,7 @@ export function useTtsEngine() {
     fallback.cancel();
   }, [cleanupAudio, fallback]);
 
-  const speakViaElevenLabs = useCallback(
+  const speakViaCloud = useCallback(
     async (text: string): Promise<boolean> => {
       cancelledRef.current = false;
       const res = await fetch("/api/chat/tts", {
@@ -112,9 +118,9 @@ export function useTtsEngine() {
       cancel();
       cancelledRef.current = false;
 
-      if (engine === "elevenlabs") {
+      if (engine === "elevenlabs" || engine === "fishaudio") {
         try {
-          const ok = await speakViaElevenLabs(text);
+          const ok = await speakViaCloud(text);
           if (ok) return;
         } catch {
           // fall through to fallback
@@ -126,7 +132,7 @@ export function useTtsEngine() {
         // give up silently
       }
     },
-    [engine, fallback, speakViaElevenLabs, cancel],
+    [engine, fallback, speakViaCloud, cancel],
   );
 
   useEffect(() => () => cleanupAudio(), [cleanupAudio]);
@@ -137,6 +143,7 @@ export function useTtsEngine() {
     refresh,
     engine,
     voiceLabel,
-    supported: fallback.supported || engine === "elevenlabs",
+    supported:
+      fallback.supported || engine === "elevenlabs" || engine === "fishaudio",
   };
 }

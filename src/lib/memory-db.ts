@@ -747,7 +747,15 @@ export interface MemorySettings {
   elevenlabs_api_key: string | null;
   elevenlabs_voice_id: string | null;
   elevenlabs_model_id: string;
+  fishaudio_api_key: string | null;
+  fishaudio_voice_id: string | null;
+  fishaudio_model: string;
+  tts_provider: TtsProvider;
+  porcupine_access_key: string | null;
+  porcupine_keyword: string;
 }
+
+export type TtsProvider = "elevenlabs" | "fishaudio";
 
 const DEFAULT_SETTINGS: MemorySettings = {
   embedding_provider: "xenova",
@@ -769,6 +777,12 @@ const DEFAULT_SETTINGS: MemorySettings = {
   elevenlabs_api_key: null,
   elevenlabs_voice_id: null,
   elevenlabs_model_id: "eleven_multilingual_v2",
+  fishaudio_api_key: null,
+  fishaudio_voice_id: null,
+  fishaudio_model: "s2-pro",
+  tts_provider: "elevenlabs",
+  porcupine_access_key: null,
+  porcupine_keyword: "Jarvis",
 };
 
 function parseNullableFloat(value: string | undefined): number | null {
@@ -787,6 +801,10 @@ function parseExtractorProvider(value: string | undefined): ExtractorProvider {
     return value;
   }
   return DEFAULT_SETTINGS.extractor_provider;
+}
+
+function parseTtsProvider(value: string | undefined): TtsProvider {
+  return value === "fishaudio" ? "fishaudio" : "elevenlabs";
 }
 
 export function getSettings(): MemorySettings {
@@ -827,6 +845,14 @@ export function getSettings(): MemorySettings {
     elevenlabs_voice_id: parseNullableString(map.get("elevenlabs_voice_id")),
     elevenlabs_model_id:
       map.get("elevenlabs_model_id") ?? DEFAULT_SETTINGS.elevenlabs_model_id,
+    fishaudio_api_key: parseNullableString(map.get("fishaudio_api_key")),
+    fishaudio_voice_id: parseNullableString(map.get("fishaudio_voice_id")),
+    fishaudio_model:
+      map.get("fishaudio_model") ?? DEFAULT_SETTINGS.fishaudio_model,
+    tts_provider: parseTtsProvider(map.get("tts_provider")),
+    porcupine_access_key: parseNullableString(map.get("porcupine_access_key")),
+    porcupine_keyword:
+      map.get("porcupine_keyword") ?? DEFAULT_SETTINGS.porcupine_keyword,
   };
 }
 

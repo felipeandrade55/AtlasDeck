@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { CheckCircle2, Volume2, X } from "lucide-react";
 
-interface ProbedPath {
+type TtsProvider = "elevenlabs" | "fishaudio";
+
+interface ElevenProbedPath {
   path: string;
   exists: boolean;
   hasApiKey: boolean;
@@ -12,7 +14,7 @@ interface ProbedPath {
   voiceIdPreview: string | null;
 }
 
-interface Diagnostic {
+interface ElevenDiag {
   configured: boolean;
   voiceId: string | null;
   modelId: string | null;
@@ -23,7 +25,25 @@ interface Diagnostic {
   envHasVoiceId: boolean;
   memorySettingsHasApiKey: boolean;
   memorySettingsHasVoiceId: boolean;
-  probedPaths: ProbedPath[];
+  probedPaths: ElevenProbedPath[];
+}
+
+interface FishDiag {
+  configured: boolean;
+  hasVoiceId: boolean;
+  voiceId: string | null;
+  model: string | null;
+  source: string | null;
+  envHasApiKey: boolean;
+  envHasVoiceId: boolean;
+  memorySettingsHasApiKey: boolean;
+  memorySettingsHasVoiceId: boolean;
+}
+
+interface FullDiag {
+  provider: TtsProvider;
+  elevenlabs: ElevenDiag;
+  fishaudio: FishDiag;
 }
 
 interface VoiceSettingsModalProps {
@@ -32,24 +52,36 @@ interface VoiceSettingsModalProps {
 }
 
 export function VoiceSettingsModal({ open, onClose }: VoiceSettingsModalProps) {
-  const [diag, setDiag] = useState<Diagnostic | null>(null);
+  const [diag, setDiag] = useState<FullDiag | null>(null);
   const [loading, setLoading] = useState(false);
-  const [apiKey, setApiKey] = useState("");
-  const [voiceId, setVoiceId] = useState("");
-  const [modelId, setModelId] = useState("eleven_multilingual_v2");
+
+  const [provider, setProvider] = useState<TtsProvider>("elevenlabs");
+
+  const [elevenApiKey, setElevenApiKey] = useState("");
+  const [elevenVoiceId, setElevenVoiceId] = useState("");
+  const [elevenModelId, setElevenModelId] = useState("eleven_multilingual_v2");
+
+  const [fishApiKey, setFishApiKey] = useState("");
+  const [fishVoiceId, setFishVoiceId] = useState("");
+  const [fishModel, setFishModel] = useState("s2-pro");
+
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testError, setTestError] = useState<string | null>(null);
+  const [testNote, setTestNote] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const res = await fetch("/api/chat/tts/config");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as Diagnostic;
+      const data = (await res.json()) as FullDiag;
       setDiag(data);
-      if (data.voiceId) setVoiceId(data.voiceId);
-      if (data.modelId) setModelId(data.modelId);
+      setProvider(data.provider);
+      if (data.elevenlabs.voiceId) setElevenVoiceId(data.elevenlabs.voiceId);
+      if (data.elevenlabs.modelId) setElevenModelId(data.elevenlabs.modelId);
+      if (data.fishaudio.voiceId) setFishVoiceId(data.fishaudio.voiceId);
+      if (data.fishaudio.model) setFishModel(data.fishaudio.model);
     } catch (err) {
       console.error(err);
     } finally {
@@ -60,42 +92,89 @@ export function VoiceSettingsModal({ open, onClose }: VoiceSettingsModalProps) {
   useEffect(() => {
     if (open) {
       void load();
-      setApiKey("");
+      setElevenApiKey("");
+      setFishApiKey("");
       setTestError(null);
+      setTestNote(null);
     }
   }, [open, load]);
 
+  const handleSwitchProvider = useCallback(async (next: TtsProvider) => {
+    setProvider(next);
+    setTestError(null);
+    setTestNote(null);
+    try {
+      const res = await fetch("/api/chat/tts/config", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider: next }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as FullDiag;
+      setDiag(data);
+    } catch (err) {
+      setTestError(`Falha ao trocar provider: ${(err as Error).message}`);
+    }
+  }, []);
+
   const handleSave = useCallback(async () => {
     setSaving(true);
+    setTestError(null);
+    setTestNote(null);
     try {
-      const patch: Record<string, string | null> = {};
-      if (apiKey.trim()) patch.apiKey = apiKey.trim();
-      if (voiceId.trim()) patch.voiceId = voiceId.trim();
-      if (modelId.trim()) patch.modelId = modelId.trim();
+      const patch: Record<string, unknown> = { provider };
+      const eleven: Record<string, string | null> = {};
+      if (elevenApiKey.trim()) eleven.apiKey = elevenApiKey.trim();
+      if (elevenVoiceId.trim()) eleven.voiceId = elevenVoiceId.trim();
+      if (elevenModelId.trim()) eleven.modelId = elevenModelId.trim();
+      if (Object.keys(eleven).length > 0) patch.elevenlabs = eleven;
+
+      const fish: Record<string, string | null> = {};
+      if (fishApiKey.trim()) fish.apiKey = fishApiKey.trim();
+      // voiceId is optional: send always so blank = clear (allows "qualquer voz")
+      fish.voiceId = fishVoiceId.trim() ? fishVoiceId.trim() : null;
+      if (fishModel.trim()) fish.model = fishModel.trim();
+      if (fishApiKey.trim() || fishVoiceId !== "" || fishModel.trim()) {
+        patch.fishaudio = fish;
+      }
+
       const res = await fetch("/api/chat/tts/config", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(patch),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as Diagnostic;
+      const data = (await res.json()) as FullDiag;
       setDiag(data);
-      setApiKey("");
+      setElevenApiKey("");
+      setFishApiKey("");
+      setTestNote("Salvo.");
     } catch (err) {
       setTestError(`Falha ao salvar: ${(err as Error).message}`);
     } finally {
       setSaving(false);
     }
-  }, [apiKey, voiceId, modelId]);
+  }, [
+    provider,
+    elevenApiKey,
+    elevenVoiceId,
+    elevenModelId,
+    fishApiKey,
+    fishVoiceId,
+    fishModel,
+  ]);
 
   const handleTest = useCallback(async () => {
     setTesting(true);
     setTestError(null);
+    setTestNote(null);
     try {
       const res = await fetch("/api/chat/tts", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: "Olá Felipe, voz funcionando perfeitamente." }),
+        body: JSON.stringify({
+          text: "Olá Felipe, voz funcionando perfeitamente.",
+        }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -103,11 +182,13 @@ export function VoiceSettingsModal({ open, onClose }: VoiceSettingsModalProps) {
           (data as { error?: string }).error ?? `HTTP ${res.status}`,
         );
       }
+      const usedProvider = res.headers.get("x-tts-provider");
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       audio.onended = () => URL.revokeObjectURL(url);
       await audio.play();
+      setTestNote(`Tocando via ${usedProvider ?? "?"}.`);
     } catch (err) {
       setTestError(`Teste falhou: ${(err as Error).message}`);
     } finally {
@@ -117,16 +198,22 @@ export function VoiceSettingsModal({ open, onClose }: VoiceSettingsModalProps) {
 
   if (!open) return null;
 
+  const elevenAvailable = diag?.elevenlabs.configured ?? false;
+  const fishAvailable = diag?.fishaudio.configured ?? false;
+  const activeAvailable =
+    provider === "elevenlabs" ? elevenAvailable : fishAvailable;
+
   return (
     <div style={backdropStyle} onClick={onClose}>
       <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
         <header style={modalHeaderStyle}>
           <div>
             <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>
-              Voz do Jarvis (ElevenLabs)
+              Voz do Jarvis
             </h2>
             <p style={{ margin: "4px 0 0 0", fontSize: 12, color: "var(--text-muted)" }}>
-              Use a mesma voz do seu agente no Telegram.
+              Escolha entre ElevenLabs e Fish Audio. Mantenha os dois
+              configurados para alternar com um clique.
             </p>
           </div>
           <button type="button" onClick={onClose} style={iconButtonStyle}>
@@ -139,24 +226,67 @@ export function VoiceSettingsModal({ open, onClose }: VoiceSettingsModalProps) {
 
           {diag && (
             <>
-              <section style={statusBox(diag.configured)}>
-                <strong>
-                  {diag.configured ? "✅ Configurado" : "⚠ Não configurado"}
-                </strong>
-                {diag.configured && (
-                  <div style={{ marginTop: 4, fontSize: 12 }}>
-                    Fonte: <code>{diag.source}</code> · voiceId{" "}
-                    <code>{diag.voiceId}</code> · model{" "}
-                    <code>{diag.modelId}</code>
+              <section style={fieldset}>
+                <h3 style={sectionTitle}>Provider ativo</h3>
+                <div style={providerRow}>
+                  <ProviderButton
+                    label="ElevenLabs"
+                    sub={
+                      elevenAvailable
+                        ? diag.elevenlabs.voiceId
+                          ? `voz ${diag.elevenlabs.voiceId.slice(0, 8)}…`
+                          : "configurado"
+                        : "não configurado"
+                    }
+                    available={elevenAvailable}
+                    active={provider === "elevenlabs"}
+                    onClick={() => void handleSwitchProvider("elevenlabs")}
+                  />
+                  <ProviderButton
+                    label="Fish Audio"
+                    sub={
+                      fishAvailable
+                        ? diag.fishaudio.voiceId
+                          ? `voz ${diag.fishaudio.voiceId.slice(0, 8)}…`
+                          : "voz padrão"
+                        : "não configurado"
+                    }
+                    available={fishAvailable}
+                    active={provider === "fishaudio"}
+                    onClick={() => void handleSwitchProvider("fishaudio")}
+                  />
+                </div>
+                {!activeAvailable && (
+                  <div style={warningBox}>
+                    O provider selecionado ainda não está configurado. Use o
+                    formulário abaixo para colar a API key.
                   </div>
                 )}
+                <div style={buttonRow}>
+                  <button
+                    type="button"
+                    onClick={handleTest}
+                    disabled={testing || !activeAvailable}
+                    style={secondaryButton(testing || !activeAvailable)}
+                    title={
+                      activeAvailable
+                        ? "Toca uma frase teste com o provider ativo"
+                        : "Configure antes de testar"
+                    }
+                  >
+                    <Volume2 size={14} />
+                    {testing ? "Tocando…" : "Testar voz"}
+                  </button>
+                </div>
+                {testNote && <div style={successBox}>✓ {testNote}</div>}
+                {testError && <div style={errorBox}>⚠ {testError}</div>}
               </section>
 
               <section style={fieldset}>
-                <h3 style={sectionTitle}>Configurar via AtlasDeck</h3>
+                <h3 style={sectionTitle}>ElevenLabs</h3>
                 <p style={muted}>
-                  Salva em <code>memory_settings</code>. Sobrescreve detecções
-                  do <code>openclaw.json</code>.
+                  Mesma voz usada no Telegram. Sobrescreve detecções do{" "}
+                  <code>openclaw.json</code>.
                 </p>
 
                 <label style={label}>
@@ -164,12 +294,12 @@ export function VoiceSettingsModal({ open, onClose }: VoiceSettingsModalProps) {
                   <input
                     type="password"
                     placeholder={
-                      diag.memorySettingsHasApiKey
-                        ? "(salva — apague para limpar)"
+                      diag.elevenlabs.memorySettingsHasApiKey
+                        ? "(salva — cole nova ou deixe vazio)"
                         : "sk_..."
                     }
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
+                    value={elevenApiKey}
+                    onChange={(e) => setElevenApiKey(e.target.value)}
                     style={input}
                   />
                 </label>
@@ -179,8 +309,8 @@ export function VoiceSettingsModal({ open, onClose }: VoiceSettingsModalProps) {
                   <input
                     type="text"
                     placeholder="ex: 21m00Tcm4TlvDq8ikWAM"
-                    value={voiceId}
-                    onChange={(e) => setVoiceId(e.target.value)}
+                    value={elevenVoiceId}
+                    onChange={(e) => setElevenVoiceId(e.target.value)}
                     style={input}
                   />
                 </label>
@@ -190,113 +320,170 @@ export function VoiceSettingsModal({ open, onClose }: VoiceSettingsModalProps) {
                   <input
                     type="text"
                     placeholder="eleven_multilingual_v2"
-                    value={modelId}
-                    onChange={(e) => setModelId(e.target.value)}
+                    value={elevenModelId}
+                    onChange={(e) => setElevenModelId(e.target.value)}
                     style={input}
                   />
                 </label>
 
-                <div style={buttonRow}>
-                  <button
-                    type="button"
-                    onClick={handleSave}
-                    disabled={saving}
-                    style={primaryButton(saving)}
-                  >
-                    {saving ? "Salvando…" : "Salvar"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleTest}
-                    disabled={testing || !diag.configured}
-                    style={secondaryButton(testing || !diag.configured)}
-                    title={
-                      diag.configured
-                        ? "Toca uma frase teste com a voz configurada"
-                        : "Configure antes de testar"
-                    }
-                  >
-                    <Volume2 size={14} />
-                    {testing ? "Tocando…" : "Testar voz"}
-                  </button>
-                </div>
-                {testError && <div style={errorBox}>⚠ {testError}</div>}
-              </section>
-
-              <section style={fieldset}>
-                <h3 style={sectionTitle}>Diagnóstico</h3>
                 <ul style={diagList}>
                   <li>
-                    <DiagDot ok={diag.envHasApiKey} />
+                    <DiagDot ok={diag.elevenlabs.envHasApiKey} />
                     ENV <code>ELEVENLABS_API_KEY</code>
                   </li>
                   <li>
-                    <DiagDot ok={diag.envHasVoiceId} />
+                    <DiagDot ok={diag.elevenlabs.envHasVoiceId} />
                     ENV <code>ELEVENLABS_VOICE_ID</code>
                   </li>
                   <li>
-                    <DiagDot ok={diag.memorySettingsHasApiKey} />
+                    <DiagDot ok={diag.elevenlabs.memorySettingsHasApiKey} />
                     memory_settings.api_key
                   </li>
                   <li>
-                    <DiagDot ok={diag.memorySettingsHasVoiceId} />
+                    <DiagDot ok={diag.elevenlabs.memorySettingsHasVoiceId} />
                     memory_settings.voice_id
                   </li>
                   <li>
-                    <DiagDot ok={diag.openclawJsonExists} />
-                    <code>{diag.openclawJsonPath ?? "openclaw.json"}</code>{" "}
-                    {diag.openclawJsonExists ? "encontrado" : "ausente"}
+                    <DiagDot ok={diag.elevenlabs.openclawJsonExists} />
+                    <code>{diag.elevenlabs.openclawJsonPath ?? "openclaw.json"}</code>{" "}
+                    {diag.elevenlabs.openclawJsonExists ? "encontrado" : "ausente"}
                   </li>
                 </ul>
-
-                {diag.openclawJsonExists && (
-                  <>
-                    <div style={{ marginTop: 8, fontSize: 11, color: "var(--text-secondary)" }}>
-                      Caminhos probados em <code>openclaw.json</code>:
-                    </div>
-                    <ul style={diagList}>
-                      {diag.probedPaths.map((p) => (
-                        <li key={p.path}>
-                          <DiagDot ok={p.exists && p.hasApiKey && p.hasVoiceId} />
-                          <code>{p.path}</code>
-                          {p.exists && (
-                            <span style={muted}>
-                              {" "}
-                              · api={p.apiKeyPreview ?? "—"} · voice=
-                              {p.voiceIdPreview ?? "—"}
-                            </span>
-                          )}
-                          {!p.exists && <span style={muted}> · ausente</span>}
-                        </li>
-                      ))}
-                    </ul>
-                  </>
-                )}
-
-                <details style={{ marginTop: 10, fontSize: 11 }}>
-                  <summary style={{ cursor: "pointer", color: "var(--text-secondary)" }}>
-                    Não vê seu path? Clique aqui
-                  </summary>
-                  <p style={{ ...muted, marginTop: 6 }}>
-                    Hoje probamos: <code>channels.elevenlabs</code>,{" "}
-                    <code>channels.eleven_labs</code>,{" "}
-                    <code>integrations.*</code>, <code>voice.*</code>,{" "}
-                    <code>tts.*</code> com chaves <code>apiKey</code>/
-                    <code>api_key</code>/<code>key</code> e{" "}
-                    <code>voiceId</code>/<code>voice_id</code>/
-                    <code>voice</code>. Se o seu OpenClaw armazena em outro
-                    lugar, cole manualmente acima ou exporte as ENVs{" "}
-                    <code>ELEVENLABS_API_KEY</code> /{" "}
-                    <code>ELEVENLABS_VOICE_ID</code> no service do
-                    mission-control.
-                  </p>
-                </details>
               </section>
+
+              <section style={fieldset}>
+                <h3 style={sectionTitle}>Fish Audio</h3>
+                <p style={muted}>
+                  Bearer token do Fish Audio. Se deixar o Voice ID vazio,
+                  o Fish Audio usa uma voz padrão.
+                </p>
+
+                <label style={label}>
+                  API key
+                  <input
+                    type="password"
+                    placeholder={
+                      diag.fishaudio.memorySettingsHasApiKey
+                        ? "(salva — cole nova ou deixe vazio)"
+                        : "61e3cf7b..."
+                    }
+                    value={fishApiKey}
+                    onChange={(e) => setFishApiKey(e.target.value)}
+                    style={input}
+                  />
+                </label>
+
+                <label style={label}>
+                  Voice ID <span style={muted}>(opcional)</span>
+                  <input
+                    type="text"
+                    placeholder="ex: a5b93aeddcc948c19ea04f0afe9d178c"
+                    value={fishVoiceId}
+                    onChange={(e) => setFishVoiceId(e.target.value)}
+                    style={input}
+                  />
+                </label>
+
+                <label style={label}>
+                  Model
+                  <input
+                    type="text"
+                    placeholder="s2-pro"
+                    value={fishModel}
+                    onChange={(e) => setFishModel(e.target.value)}
+                    style={input}
+                  />
+                </label>
+
+                <ul style={diagList}>
+                  <li>
+                    <DiagDot ok={diag.fishaudio.envHasApiKey} />
+                    ENV <code>FISHAUDIO_API_KEY</code>
+                  </li>
+                  <li>
+                    <DiagDot ok={diag.fishaudio.envHasVoiceId} />
+                    ENV <code>FISHAUDIO_VOICE_ID</code>
+                  </li>
+                  <li>
+                    <DiagDot ok={diag.fishaudio.memorySettingsHasApiKey} />
+                    memory_settings.api_key
+                  </li>
+                  <li>
+                    <DiagDot ok={diag.fishaudio.memorySettingsHasVoiceId} />
+                    memory_settings.voice_id
+                  </li>
+                </ul>
+              </section>
+
+              <div style={buttonRow}>
+                <button
+                  type="button"
+                  onClick={handleSave}
+                  disabled={saving}
+                  style={primaryButton(saving)}
+                >
+                  {saving ? "Salvando…" : "Salvar tudo"}
+                </button>
+              </div>
             </>
           )}
         </div>
       </div>
     </div>
+  );
+}
+
+function ProviderButton({
+  label,
+  sub,
+  available,
+  active,
+  onClick,
+}: {
+  label: string;
+  sub: string;
+  available: boolean;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        flex: 1,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "flex-start",
+        gap: 4,
+        padding: "10px 12px",
+        borderRadius: 10,
+        background: active ? "var(--accent-soft)" : "var(--bg)",
+        border: `1px solid ${active ? "var(--accent)" : "var(--border)"}`,
+        color: active ? "var(--accent)" : "var(--text-primary)",
+        cursor: "pointer",
+        textAlign: "left",
+      }}
+      title={available ? `Usar ${label}` : `${label} não está configurado`}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <strong style={{ fontSize: 13 }}>{label}</strong>
+        {available ? (
+          <CheckCircle2 size={12} style={{ color: "#22c55e" }} />
+        ) : (
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              background: "var(--text-muted)",
+              opacity: 0.5,
+            }}
+          />
+        )}
+      </div>
+      <span style={{ fontSize: 11, opacity: 0.8 }}>{sub}</span>
+    </button>
   );
 }
 
@@ -360,16 +547,6 @@ const iconButtonStyle: CSSProperties = {
   cursor: "pointer",
 };
 
-function statusBox(ok: boolean): CSSProperties {
-  return {
-    padding: "10px 12px",
-    background: ok ? "var(--accent-soft)" : "var(--danger-soft, rgba(239,68,68,0.1))",
-    border: `1px solid ${ok ? "var(--accent)" : "var(--danger, #ef4444)"}`,
-    borderRadius: 8,
-    color: ok ? "var(--accent)" : "var(--danger, #ef4444)",
-  };
-}
-
 const fieldset: CSSProperties = {
   display: "flex",
   flexDirection: "column",
@@ -411,6 +588,11 @@ const input: CSSProperties = {
 };
 
 const buttonRow: CSSProperties = {
+  display: "flex",
+  gap: 8,
+};
+
+const providerRow: CSSProperties = {
   display: "flex",
   gap: 8,
 };
@@ -460,5 +642,23 @@ const errorBox: CSSProperties = {
   border: "1px solid var(--danger, #ef4444)",
   borderRadius: 6,
   color: "var(--danger, #ef4444)",
+  fontSize: 12,
+};
+
+const successBox: CSSProperties = {
+  padding: "8px 10px",
+  background: "var(--accent-soft)",
+  border: "1px solid var(--accent)",
+  borderRadius: 6,
+  color: "var(--accent)",
+  fontSize: 12,
+};
+
+const warningBox: CSSProperties = {
+  padding: "8px 10px",
+  background: "rgba(234,179,8,0.1)",
+  border: "1px solid #eab308",
+  borderRadius: 6,
+  color: "#eab308",
   fontSize: 12,
 };

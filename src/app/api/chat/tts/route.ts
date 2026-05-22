@@ -1,10 +1,13 @@
 /**
- * POST /api/chat/tts  -> stream ElevenLabs MP3 audio for the given text
- * GET  /api/chat/tts  -> ElevenLabs configuration status (without exposing the key)
- *
- * The browser hits this endpoint when TTS is enabled and ElevenLabs is
- * configured; the response body is `audio/mpeg` streamed straight from
- * ElevenLabs, so playback starts within ~500ms of the request.
+ * POST /api/chat/tts -> stream MP3 audio for the given text, from
+ *                      whichever TTS provider the user selected in
+ *                      settings (`tts_provider`: "elevenlabs" or
+ *                      "fishaudio"). If the selected provider is not
+ *                      configured, falls back to the other provider so
+ *                      voice never goes silent because of a wrong
+ *                      toggle.
+ * GET  /api/chat/tts -> active provider status (provider name, voice
+ *                      id, configured flag) without exposing keys.
  */
 import { NextRequest, NextResponse } from "next/server";
 import {
@@ -12,12 +15,70 @@ import {
   readElevenLabsConfig,
   streamElevenLabsTts,
 } from "@/lib/elevenlabs";
+import {
+  fishAudioStatus,
+  readFishAudioConfig,
+  streamFishAudioTts,
+} from "@/lib/fishaudio";
+import { getSettings, type TtsProvider } from "@/lib/memory-db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+interface ActiveTtsStatus {
+  provider: TtsProvider | null;
+  configured: boolean;
+  voiceId: string | null;
+  source: string | null;
+  elevenlabs: ReturnType<typeof elevenLabsStatus>;
+  fishaudio: ReturnType<typeof fishAudioStatus>;
+  /** What the user picked, even if it isn't currently usable. */
+  preferred: TtsProvider;
+}
+
+function resolveActive(): ActiveTtsStatus {
+  const eleven = elevenLabsStatus();
+  const fish = fishAudioStatus();
+  let preferred: TtsProvider = "elevenlabs";
+  try {
+    preferred = getSettings().tts_provider;
+  } catch {
+    // ignore — fall back to default
+  }
+
+  const order: TtsProvider[] =
+    preferred === "fishaudio"
+      ? ["fishaudio", "elevenlabs"]
+      : ["elevenlabs", "fishaudio"];
+
+  for (const provider of order) {
+    const status = provider === "elevenlabs" ? eleven : fish;
+    if (status.configured) {
+      return {
+        provider,
+        configured: true,
+        voiceId: status.voiceId,
+        source: status.source,
+        elevenlabs: eleven,
+        fishaudio: fish,
+        preferred,
+      };
+    }
+  }
+
+  return {
+    provider: null,
+    configured: false,
+    voiceId: null,
+    source: null,
+    elevenlabs: eleven,
+    fishaudio: fish,
+    preferred,
+  };
+}
+
 export async function GET() {
-  return NextResponse.json(elevenLabsStatus());
+  return NextResponse.json(resolveActive());
 }
 
 interface TtsBody {
@@ -42,12 +103,12 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const config = readElevenLabsConfig();
-  if (!config) {
+  const active = resolveActive();
+  if (!active.provider) {
     return NextResponse.json(
       {
         error:
-          "ElevenLabs nao configurado. Defina ELEVENLABS_API_KEY+ELEVENLABS_VOICE_ID no env, ou configure em /settings.",
+          "TTS nao configurado. Configure ElevenLabs ou Fish Audio em Configurações de Voz.",
       },
       { status: 503 },
     );
@@ -57,11 +118,25 @@ export async function POST(req: NextRequest) {
   req.signal.addEventListener("abort", () => ac.abort(), { once: true });
 
   let upstream: Response;
+  let voiceHeader: string;
+  let sourceHeader: string;
   try {
-    upstream = await streamElevenLabsTts(config, text, { signal: ac.signal });
+    if (active.provider === "elevenlabs") {
+      const config = readElevenLabsConfig();
+      if (!config) throw new Error("ElevenLabs config disappeared");
+      upstream = await streamElevenLabsTts(config, text, { signal: ac.signal });
+      voiceHeader = config.voiceId;
+      sourceHeader = config.source;
+    } else {
+      const config = readFishAudioConfig();
+      if (!config) throw new Error("FishAudio config disappeared");
+      upstream = await streamFishAudioTts(config, text, { signal: ac.signal });
+      voiceHeader = config.voiceId ?? "default";
+      sourceHeader = config.source;
+    }
   } catch (err) {
     return NextResponse.json(
-      { error: `ElevenLabs request failed: ${(err as Error).message}` },
+      { error: `${active.provider} request failed: ${(err as Error).message}` },
       { status: 502 },
     );
   }
@@ -70,7 +145,7 @@ export async function POST(req: NextRequest) {
     const errText = await upstream.text().catch(() => "");
     return NextResponse.json(
       {
-        error: `ElevenLabs returned HTTP ${upstream.status}: ${errText.slice(0, 240)}`,
+        error: `${active.provider} returned HTTP ${upstream.status}: ${errText.slice(0, 240)}`,
       },
       { status: 502 },
     );
@@ -81,8 +156,9 @@ export async function POST(req: NextRequest) {
     headers: {
       "content-type": "audio/mpeg",
       "cache-control": "no-store",
-      "x-tts-voice": config.voiceId,
-      "x-tts-source": config.source,
+      "x-tts-provider": active.provider,
+      "x-tts-voice": voiceHeader,
+      "x-tts-source": sourceHeader,
     },
   });
 }

@@ -22,14 +22,14 @@ interface HeardPanelProps {
  * Entries fade out after 30s of inactivity so the panel stays calm.
  */
 export function HeardPanel({ entries, enabled }: HeardPanelProps) {
-  const fresh = entries.filter((e) => Date.now() - e.at < 30_000);
-  if (!enabled || fresh.length === 0) return null;
+  if (!enabled || entries.length === 0) return null;
+  const latest = entries.slice(-5).reverse();
 
   return (
     <div style={containerStyle}>
       <div style={headerStyle}>👂 Web Speech ouviu</div>
       <ul style={listStyle}>
-        {fresh.slice(-5).reverse().map((entry) => (
+        {latest.map((entry) => (
           <li key={entry.at} style={itemStyle(entry.matched)}>
             <span style={dotStyle(entry.matched)} />
             <span style={textStyle}>{entry.text}</span>
@@ -45,10 +45,9 @@ export function HeardPanel({ entries, enabled }: HeardPanelProps) {
 }
 
 function relativeTime(at: number): string {
-  const diff = Math.floor((Date.now() - at) / 1000);
-  if (diff < 1) return "agora";
-  if (diff < 60) return `${diff}s atrás`;
-  return `${Math.floor(diff / 60)}m`;
+  // Static label per entry — avoids re-rendering on every tick.
+  const date = new Date(at);
+  return date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 const containerStyle: CSSProperties = {
