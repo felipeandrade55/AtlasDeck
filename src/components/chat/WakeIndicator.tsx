@@ -9,6 +9,7 @@ interface WakeIndicatorProps {
   enabled: boolean;
   onToggle: () => void;
   phrases: string[];
+  lastHeard?: string;
 }
 
 const STATE_LABEL: Record<WakeState, string> = {
@@ -25,22 +26,30 @@ const STATE_COLOR: Record<WakeState, string> = {
   error: "var(--danger, #ef4444)",
 };
 
-export function WakeIndicator({ state, enabled, onToggle, phrases }: WakeIndicatorProps) {
+export function WakeIndicator({ state, enabled, onToggle, phrases, lastHeard }: WakeIndicatorProps) {
   const color = STATE_COLOR[state];
   const Icon = enabled ? Ear : EarOff;
+  const tooltip = lastHeard
+    ? `Wake word: ${STATE_LABEL[state]} (${phrases.join(", ")})\núltimo ouvido: "${lastHeard}"`
+    : `Wake word: ${STATE_LABEL[state]} (${phrases.join(", ")})`;
 
   return (
     <button
       type="button"
       onClick={onToggle}
       style={buttonStyle(enabled)}
-      title={`Wake word: ${STATE_LABEL[state]} (${phrases.join(", ")})`}
+      title={tooltip}
     >
       <span style={dotStyle(color, state === "listening")} />
       <Icon size={14} />
       <span style={{ fontSize: 11, fontWeight: 500 }}>
         {enabled ? phrases[0] : "Wake off"}
       </span>
+      {enabled && lastHeard && (
+        <span style={{ fontSize: 10, color: "var(--text-muted)", maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          👂 {lastHeard.length > 30 ? `…${lastHeard.slice(-28)}` : lastHeard}
+        </span>
+      )}
     </button>
   );
 }

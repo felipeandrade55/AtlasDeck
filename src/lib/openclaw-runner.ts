@@ -1,21 +1,22 @@
 /**
- * OpenClaw chat runner.
+ * Chat runner with layered fallback.
  *
- * Spawns the OpenClaw CLI as a subprocess and adapts its output into a
- * uniform event stream the chat layer (API + UI) consumes regardless of
- * whether OpenClaw is producing JSON events, JSONL or plain text.
+ * The runner first tries to drive the OpenClaw CLI as a subprocess
+ * (several argument shapes since the CLI varies across builds). If
+ * every CLI strategy fails — for example because the user's OpenClaw
+ * build does not ship a `chat`/`ask`/`complete` subcommand — the
+ * runner falls back to Ollama's `/api/chat` streaming endpoint using
+ * the model configured in memory settings.
  *
- * The CLI shape varies (different builds expose `chat`, `ask`, or
- * `complete`), so the runner tries a sequence of argument shapes and
- * falls back gracefully. Streaming is best-effort: if the CLI does not
- * support it, the runner still emits incremental token events by
- * chunking the buffered output, so the UI behaves consistently.
- *
- * If `openclaw` is not installed (typical in local dev), the runner
- * surfaces a friendly error event instead of crashing the request.
+ * That fallback covers the most common production setup where OpenClaw
+ * is present for skills/orchestration but the conversational primitive
+ * lives in Ollama. The chat UI always receives the same event stream
+ * regardless of which provider answered.
  */
 import { spawn, ChildProcessWithoutNullStreams } from "child_process";
 import { readOpenClawConfig } from "@/lib/openclaw-config";
+import { streamChat as ollamaStreamChat, getOllamaStatus } from "@/lib/ollama-client";
+import { getSettings } from "@/lib/memory-db";
 
 export interface RunnerInput {
   agentId: string;
@@ -237,11 +238,102 @@ function* chunkText(text: string, size = 24): Iterable<string> {
 
 const TIMEOUT_MS = 120_000;
 
+async function* runOllamaFallback(
+  input: RunnerInput,
+  reason: string,
+): AsyncGenerator<RunnerEvent> {
+  let model: string | null = null;
+  try {
+    const status = await getOllamaStatus();
+    if (!status.running) {
+      yield {
+        type: "error",
+        code: "NO_PROVIDER",
+        message:
+          `OpenClaw CLI nao tem comando de chat (${reason}). ` +
+          `Ollama tambem nao esta rodando. Inicie o Ollama (systemctl start ollama) ou ` +
+          `configure ATLAS_CHAT_RUNNER_CMD para apontar pro comando correto do OpenClaw.`,
+      };
+      return;
+    }
+    const settings = getSettings();
+    model = settings.ollama_model || "qwen2.5:7b";
+    // Ensure the model is locally available; otherwise surface the issue.
+    const hasModel = status.models.some((m) => m.name === model || m.name.startsWith(`${model}:`));
+    if (!hasModel && status.models.length > 0) {
+      // Use the first available model as a soft fallback.
+      model = status.models[0].name;
+    } else if (!hasModel) {
+      yield {
+        type: "error",
+        code: "OLLAMA_NO_MODEL",
+        message: `Ollama esta rodando mas nao tem nenhum modelo instalado. Rode: ollama pull ${model}`,
+      };
+      return;
+    }
+  } catch (err) {
+    yield {
+      type: "error",
+      code: "OLLAMA_STATUS_FAIL",
+      message: `Falha ao consultar Ollama: ${(err as Error).message}`,
+    };
+    return;
+  }
+
+  const systemPrompt =
+    `Voce e o Jarvis (Atlas), o assistente pessoal do usuario rodando dentro do AtlasDeck. ` +
+    `Responda em portugues brasileiro, de forma curta e direta. ` +
+    `Quando nao souber, diga que nao sabe.`;
+
+  const messages = [
+    { role: "system" as const, content: systemPrompt },
+    ...(input.history ?? []).map((m) => ({
+      role: m.role,
+      content: m.content,
+    })),
+    { role: "user" as const, content: input.prompt },
+  ];
+
+  let tokensIn = 0;
+  let tokensOut = 0;
+
+  try {
+    for await (const evt of ollamaStreamChat(model, messages, { signal: input.signal })) {
+      if (evt.delta) yield { type: "token", delta: evt.delta };
+      if (evt.done) {
+        tokensIn = evt.tokensIn ?? 0;
+        tokensOut = evt.tokensOut ?? 0;
+        yield {
+          type: "usage",
+          tokensIn,
+          tokensOut,
+          model: evt.model ?? model,
+        };
+      }
+    }
+    yield { type: "done" };
+  } catch (err) {
+    yield {
+      type: "error",
+      code: "OLLAMA_STREAM_FAIL",
+      message: `Ollama falhou no streaming: ${(err as Error).message}`,
+    };
+  }
+}
+
 export async function* runOpenClawChat(input: RunnerInput): AsyncGenerator<RunnerEvent> {
+  // Allow forcing Ollama via env (useful while the OpenClaw CLI surface is
+  // still being mapped — defaults to trying OpenClaw first).
+  if (process.env.ATLAS_CHAT_PROVIDER === "ollama") {
+    yield* runOllamaFallback(input, "ATLAS_CHAT_PROVIDER=ollama");
+    return;
+  }
+
   const config = readOpenClawConfig();
   const strategies = parseStrategiesFromEnv();
 
   let lastError: unknown = null;
+  let lastStderr = "";
 
   for (const strategy of strategies) {
     const args = strategy.args(input);
@@ -352,7 +444,10 @@ export async function* runOpenClawChat(input: RunnerInput): AsyncGenerator<Runne
     for (const e of finalEvents) yield e;
 
     if (result.exitCode !== 0 && !emittedAnyEvent) {
-      // Strategy failed — try the next one
+      // Strategy failed — try the next one. Keep stderr around so the
+      // Ollama fallback can include the most informative message in
+      // its diagnostic output if every strategy fails.
+      lastStderr = result.stderr.slice(0, 240) || lastStderr;
       lastError = new Error(
         `openclaw ${strategy.label} exited ${result.exitCode}: ${result.stderr.slice(0, 240)}`,
       );
@@ -376,7 +471,14 @@ export async function* runOpenClawChat(input: RunnerInput): AsyncGenerator<Runne
     return;
   }
 
-  // All strategies failed
-  const msg = lastError instanceof Error ? lastError.message : String(lastError ?? "unknown failure");
-  yield { type: "error", message: `OpenClaw nao respondeu em nenhuma estrategia: ${msg}` };
+  // All OpenClaw CLI strategies failed — fall back to Ollama. Surface
+  // a single status token so the user can see we switched providers.
+  const reason =
+    (lastError instanceof Error ? lastError.message : String(lastError ?? "unknown failure")) ||
+    lastStderr ||
+    "unknown failure";
+  if (process.env.MEMORY_DEBUG === "1") {
+    console.log(`[openclaw-runner] all CLI strategies failed; falling back to Ollama. ${reason}`);
+  }
+  yield* runOllamaFallback(input, reason.slice(0, 160));
 }

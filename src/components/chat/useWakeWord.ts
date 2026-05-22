@@ -56,18 +56,43 @@ function stripDiacritics(s: string): string {
   return s.normalize("NFD").replace(/[̀-ͯ]/g, "");
 }
 
-function findWakeMatch(text: string, phrases: string[]): { phrase: string; tail: string } | null {
+/**
+ * Brazilian Portuguese ASR engines often mistranscribe "Jarvis" as
+ * a handful of close-sounding native words. We accept these as aliases
+ * so the wake word still fires when the recognizer hears one of them.
+ * The aliases live in normalized form (lowercase, no diacritics).
+ */
+const ALIASES: Record<string, string[]> = {
+  jarvis: ["jarvis", "jarves", "jarvas", "jarbas", "harvey", "harvis", "darvis", "javes"],
+  atlas: ["atlas", "atras", "atras."],
+};
+
+function aliasesFor(phrase: string): string[] {
+  const key = stripDiacritics(phrase.toLowerCase());
+  return ALIASES[key] ?? [key];
+}
+
+export interface WakeMatch {
+  phrase: string;
+  alias: string;
+  tail: string;
+}
+
+export function findWakeMatch(text: string, phrases: string[]): WakeMatch | null {
   const normalized = stripDiacritics(text.toLowerCase());
   for (const phrase of phrases) {
-    const needle = stripDiacritics(phrase.toLowerCase());
-    const idx = normalized.indexOf(needle);
-    if (idx === -1) continue;
-    // Require a word boundary before/after
-    const before = idx === 0 ? " " : normalized[idx - 1];
-    const after = normalized[idx + needle.length] ?? " ";
-    if (!/[\s.,!?]/.test(before) || !/[\s.,!?]/.test(after)) continue;
-    const tail = text.slice(idx + needle.length).trim().replace(/^[,.!?]\s*/, "");
-    return { phrase, tail };
+    for (const alias of aliasesFor(phrase)) {
+      const idx = normalized.indexOf(alias);
+      if (idx === -1) continue;
+      // Accept any boundary that is not letter/number to keep noisy
+      // transcripts (no spacing) from blocking the match.
+      const before = idx === 0 ? " " : normalized[idx - 1];
+      const after = normalized[idx + alias.length] ?? " ";
+      const boundary = (c: string) => !/[a-z0-9]/.test(c);
+      if (!boundary(before) || !boundary(after)) continue;
+      const tail = text.slice(idx + alias.length).trim().replace(/^[,.!?]\s*/, "");
+      return { phrase, alias, tail };
+    }
   }
   return null;
 }
@@ -93,6 +118,7 @@ export function useWakeWord({
 }: UseWakeWordOptions) {
   const [state, setState] = useState<WakeState>("off");
   const [supported, setSupported] = useState(true);
+  const [lastHeard, setLastHeard] = useState<string>("");
   const recognitionRef = useRef<RecognitionInstance | null>(null);
   const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stopRequestedRef = useRef(false);
@@ -131,8 +157,14 @@ export function useWakeWord({
         for (let i = event.resultIndex; i < event.results.length; i += 1) {
           text += event.results[i][0].transcript;
         }
-        if (!text.trim()) return;
-        const match = findWakeMatch(text, phrasesRef.current);
+        const trimmed = text.trim();
+        if (!trimmed) return;
+        setLastHeard(trimmed.slice(-120));
+        // Log only when debug is on so production console stays clean.
+        if (typeof window !== "undefined" && window.location?.search.includes("wake-debug")) {
+          console.log("[wake] heard:", trimmed);
+        }
+        const match = findWakeMatch(trimmed, phrasesRef.current);
         if (!match) return;
         const command = match.tail.trim();
         setState("activated");
@@ -203,5 +235,5 @@ export function useWakeWord({
     return stopInternal;
   }, [enabled, paused, supported, startInternal, stopInternal]);
 
-  return { state, supported };
+  return { state, supported, lastHeard };
 }

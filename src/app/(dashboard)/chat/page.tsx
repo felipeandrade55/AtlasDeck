@@ -447,6 +447,7 @@ export default function ChatPage() {
               state={wake.state}
               enabled={wakeEnabled && wake.supported}
               phrases={WAKE_PHRASES}
+              lastHeard={wake.lastHeard}
               onToggle={() => setWakeEnabled((v) => !v)}
             />
           </div>

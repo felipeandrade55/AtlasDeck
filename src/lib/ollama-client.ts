@@ -201,6 +201,98 @@ export async function generateJson(
   return data.response ?? "";
 }
 
+export interface ChatStreamMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+export interface ChatStreamEvent {
+  delta?: string;
+  done?: boolean;
+  tokensIn?: number;
+  tokensOut?: number;
+  model?: string;
+}
+
+/**
+ * Stream a conversational completion via Ollama's `/api/chat`. Yields
+ * one event per chunk so the caller can forward tokens to the browser
+ * in real time. The final event carries usage counts derived from
+ * Ollama's `prompt_eval_count` / `eval_count`.
+ */
+export async function* streamChat(
+  model: string,
+  messages: ChatStreamMessage[],
+  opts: { temperature?: number; signal?: AbortSignal } = {},
+): AsyncGenerator<ChatStreamEvent> {
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  opts.signal?.addEventListener("abort", onAbort, { once: true });
+
+  let res: Response;
+  try {
+    res = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        messages,
+        stream: true,
+        options: {
+          temperature: opts.temperature ?? 0.7,
+        },
+      }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    opts.signal?.removeEventListener("abort", onAbort);
+    throw err;
+  }
+
+  if (!res.ok || !res.body) {
+    opts.signal?.removeEventListener("abort", onAbort);
+    const txt = await res.text().catch(() => "");
+    throw new Error(`Ollama chat failed (HTTP ${res.status}): ${txt.slice(0, 240)}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let parsed: Record<string, unknown>;
+        try {
+          parsed = JSON.parse(line) as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+        const msg = parsed.message as { content?: string } | undefined;
+        const delta = typeof msg?.content === "string" ? msg.content : "";
+        if (delta) yield { delta };
+        if (parsed.done === true) {
+          yield {
+            done: true,
+            tokensIn: Number(parsed.prompt_eval_count ?? 0),
+            tokensOut: Number(parsed.eval_count ?? 0),
+            model: typeof parsed.model === "string" ? parsed.model : model,
+          };
+          return;
+        }
+      }
+    }
+  } finally {
+    opts.signal?.removeEventListener("abort", onAbort);
+  }
+}
+
 /**
  * Trigger the official Ollama install script (Linux only). Returns a
  * status id the UI can poll. macOS and Windows users should be
