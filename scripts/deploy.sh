@@ -355,12 +355,18 @@ if $WITH_BACKUP; then
     if $BACKUP_SKIPPED; then
       record "Backup pré-update" "skip" "$(elapsed $T)"
       phase_status "backup" "skip" "$(elapsed $T)"
-    elif [ $TAR_EXIT -eq 0 ] && [ -f "$BACKUP_FILE" ]; then
+    elif [ -f "$BACKUP_FILE" ]; then
       chmod 600 "$BACKUP_FILE" 2>/dev/null || true
       SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
-      ok "Backup concluído: $(basename "$BACKUP_FILE") ($SIZE)"
-      record "Backup pré-update" "ok" "$(elapsed $T)"
-      phase_status "backup" "ok" "$(elapsed $T)"
+      if [ $TAR_EXIT -eq 0 ]; then
+        ok "Backup concluído: $(basename "$BACKUP_FILE") ($SIZE)"
+        record "Backup pré-update" "ok" "$(elapsed $T)"
+        phase_status "backup" "ok" "$(elapsed $T)"
+      else
+        warn "Backup gerado com avisos (tar exit $TAR_EXIT): $(basename "$BACKUP_FILE") ($SIZE)"
+        record "Backup pré-update" "skip" "$(elapsed $T)"
+        phase_status "backup" "skip" "$(elapsed $T)"
+      fi
 
       # Aplica retenção: mantém últimos 5 backups
       cd "$BACKUP_DIR"
@@ -369,11 +375,10 @@ if $WITH_BACKUP; then
         info "Retenção: removido $old"
       done
     else
-      err "Backup falhou (exit $TAR_EXIT)"
+      warn "Backup pré-update falhou (exit $TAR_EXIT) — continuando sem backup para não bloquear o deploy"
       rm -f "$BACKUP_FILE"
-      record "Backup pré-update" "fail" "$(elapsed $T)"
-      phase_status "backup" "fail" "$(elapsed $T)" "tar exit $TAR_EXIT"
-      exit 1
+      record "Backup pré-update" "skip" "$(elapsed $T)"
+      phase_status "backup" "skip" "$(elapsed $T)"
     fi
   fi
 fi

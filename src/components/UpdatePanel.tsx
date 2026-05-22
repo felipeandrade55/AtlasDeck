@@ -852,8 +852,8 @@ export function UpdatePanel() {
                   {errorMsg || "Erro desconhecido"}
                 </div>
                 <p className="text-sm text-red-300 mb-4">
-                  Um backup foi criado antes da atualização e o sistema continua rodando a
-                  versão anterior. Verifique os logs abaixo ou o histórico para mais detalhes.
+                  O sistema continua rodando a última versão válida. Se a falha ocorreu antes
+                  do Git Pull, a versão anterior pode continuar ativa; verifique os logs abaixo.
                 </p>
                 <button
                   onClick={() => void startUpdate()}
