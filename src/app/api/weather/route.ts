@@ -45,6 +45,10 @@ export async function GET(request: Request) {
   const lon  = hasCustomCoords ? parseFloat(rawLon!)  : defaultLon;
   const city = hasCustomCoords ? 'Local'              : defaultCity;
 
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+    return NextResponse.json({ error: 'Coordenadas inválidas' }, { status: 400 });
+  }
+
   // Return cache if valid (only for default location endpoint)
   if (!hasCustomCoords && cache && Date.now() - cache.ts < CACHE_DURATION) {
     return NextResponse.json(cache.data);
@@ -53,11 +57,20 @@ export async function GET(request: Request) {
   try {
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,precipitation,precipitation_probability&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max,precipitation_sum&timezone=auto&forecast_days=3`;
 
-    const res = await fetch(url, { next: { revalidate: 600 } });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    const res = await fetch(url, { next: { revalidate: 600 }, signal: controller.signal })
+      .finally(() => clearTimeout(timeout));
+    if (!res.ok) {
+      throw new Error(`Open-Meteo HTTP ${res.status}`);
+    }
     const json = await res.json();
 
     const current = json.current;
     const daily = json.daily;
+    if (!current || !daily?.time) {
+      throw new Error('Resposta de clima inválida');
+    }
 
     const wmo = WMO_CODES[current.weather_code] || { label: "Unknown", emoji: "🌡️" };
 
@@ -86,6 +99,10 @@ export async function GET(request: Request) {
     return NextResponse.json(data);
   } catch (error) {
     console.error('[weather] Error:', error);
-    return NextResponse.json({ error: 'Failed to fetch weather' }, { status: 500 });
+    return NextResponse.json({
+      error: 'Clima temporariamente indisponível',
+      city,
+      updated: new Date().toISOString(),
+    });
   }
 }

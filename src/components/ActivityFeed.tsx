@@ -81,6 +81,23 @@ interface ActivityFeedProps {
   limit?: number;
 }
 
+async function fetchActivitiesWithTimeout(limit: number, timeoutMs = 8000): Promise<Activity[]> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`/api/activities?limit=${limit}&sort=newest`, {
+      signal: controller.signal,
+    });
+    const data = await res.json().catch(() => null) as ActivitiesResponse | null;
+    if (!res.ok) {
+      throw new Error(data && "error" in data ? String(data.error) : `HTTP ${res.status}`);
+    }
+    return data?.activities ?? [];
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
 export function ActivityFeed({ limit = 10 }: ActivityFeedProps) {
   const [activities, setActivities] = useState<Activity[] | null>(null);
   const router = useRouter();
@@ -88,9 +105,8 @@ export function ActivityFeed({ limit = 10 }: ActivityFeedProps) {
 
   useEffect(() => {
     // Initial load via REST
-    fetch(`/api/activities?limit=${limit}&sort=newest`)
-      .then((res) => res.json())
-      .then((data: ActivitiesResponse) => setActivities(data.activities))
+    fetchActivitiesWithTimeout(limit)
+      .then((items) => setActivities(items))
       .catch(() => setActivities([]));
 
     // Real-time updates via SSE
@@ -114,9 +130,8 @@ export function ActivityFeed({ limit = 10 }: ActivityFeedProps) {
     es.onerror = () => {
       es.close();
       const id = setInterval(() => {
-        fetch(`/api/activities?limit=${limit}&sort=newest`)
-          .then(r => r.json())
-          .then((data: ActivitiesResponse) => setActivities(data.activities))
+        fetchActivitiesWithTimeout(limit)
+          .then((items) => setActivities(items))
           .catch(() => {});
       }, 30_000);
       connectionRef.current = id;

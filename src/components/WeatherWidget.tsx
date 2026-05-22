@@ -30,9 +30,25 @@ interface WeatherData {
   updated: string;
 }
 
+async function fetchJsonWithTimeout<T>(url: string, timeoutMs: number): Promise<T> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error(data?.error || `HTTP ${res.status}`);
+    }
+    return data as T;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
 export function WeatherWidget() {
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(new Date());
   const [geoStatus, setGeoStatus] = useState<'home' | 'ok' | 'denied' | 'unavailable' | 'default'>('default');
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -45,20 +61,25 @@ export function WeatherWidget() {
       const url = lat != null && lon != null
         ? `/api/weather?lat=${lat}&lon=${lon}`
         : '/api/weather';
-      fetch(url)
-        .then((r) => r.json())
+      fetchJsonWithTimeout<WeatherData & { error?: string }>(url, 8000)
         .then((d) => {
           if (cancelled) return;
-          if (label && d && !d.error) d.city = label;
+          if (d?.error) throw new Error(d.error);
+          if (label && d) d.city = label;
           setWeather(d);
+          setError(null);
           setLoading(false);
         })
-        .catch(() => !cancelled && setLoading(false));
+        .catch((err) => {
+          if (cancelled) return;
+          setWeather(null);
+          setError(err instanceof Error ? err.message : "Clima indisponível");
+          setLoading(false);
+        });
     };
 
     // Priority 1: server-saved home location
-    fetch('/api/user/location')
-      .then((r) => r.json())
+    fetchJsonWithTimeout<{ lat: number | null; lon: number | null; label?: string | null }>('/api/user/location', 3000)
       .then((loc) => {
         if (cancelled) return;
         if (loc && typeof loc.lat === 'number' && typeof loc.lon === 'number') {
@@ -112,7 +133,41 @@ export function WeatherWidget() {
   }
 
   if (!weather || (weather as unknown as Record<string, unknown>).error) {
-    return null;
+    return (
+      <div style={{
+        padding: "1.25rem",
+        backgroundColor: "var(--card)",
+        borderRadius: "0.75rem",
+        border: "1px solid var(--border)",
+        minHeight: "120px",
+      }}>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div style={{ color: "var(--text-primary)", fontWeight: 700, marginBottom: 4 }}>
+              Clima indisponível
+            </div>
+            <div style={{ color: "var(--text-muted)", fontSize: "0.75rem" }}>
+              {error || "Não foi possível carregar a previsão agora."}
+            </div>
+          </div>
+          <button
+            onClick={() => {
+              setLoading(true);
+              setReloadKey((k) => k + 1);
+            }}
+            className="px-2 py-1 rounded text-xs"
+            style={{ backgroundColor: "var(--card-elevated)", color: "var(--text-secondary)", border: "1px solid var(--border)" }}
+          >
+            Tentar
+          </button>
+        </div>
+        <LocationPicker
+          open={pickerOpen}
+          onClose={() => setPickerOpen(false)}
+          onSaved={() => setReloadKey((k) => k + 1)}
+        />
+      </div>
+    );
   }
 
   return (
