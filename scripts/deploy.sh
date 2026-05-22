@@ -121,7 +121,10 @@ else
   RED=''; BOLD=''; DIM=''; NC=''
 fi
 
-TOTAL_START=$(date +%s)
+# TOTAL_START é preservado se este script foi reexecutado por auto-update
+# (vide bloco "AUTO-RELAUNCH" após o git-pull): a contagem total reflete o
+# update inteiro, não apenas a parte rodada pela nova versão do script.
+TOTAL_START="${_TOTAL_START_RESUME:-$(date +%s)}"
 REPORT=()
 
 step()    { echo -e "\n${CYAN}${BOLD}▶ $1${NC}"; }
@@ -132,6 +135,19 @@ info()    { echo -e "  ${DIM}$1${NC}"; }
 now()     { date +%s; }
 elapsed() { echo $(( $(date +%s) - $1 )); }
 record()  { REPORT+=("$1|$2|$3"); }
+
+# ─── SKIP-PHASE (auto-relaunch resume) ───────────────────────────────────────
+# Quando o deploy.sh é reexecutado por ter sido atualizado durante o git pull,
+# fases já concluídas (credentials, git-pull, backup) são pré-marcadas como
+# pendentes no env DEPLOY_SKIP_PHASES (comma-separated). Helper abaixo permite
+# que cada fase pule limpo, emitindo apenas "skip" no status file pra UI.
+_skip_phase() {
+  local phase="$1"
+  case ",${DEPLOY_SKIP_PHASES:-}," in
+    *",${phase},"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 # ─── STATUS FILE WRITER ───────────────────────────────────────────────────────
 # Escreve uma linha JSON com a fase atual e seu status no arquivo de status.
@@ -311,7 +327,12 @@ fi
 # ══════════════════════════════════════════════════════════════════════════════
 # FASE 0 — BACKUP (opcional)
 # ══════════════════════════════════════════════════════════════════════════════
-if $WITH_BACKUP; then
+if _skip_phase "backup"; then
+  step "Backup pré-update..."
+  info "Backup já executado pela versão anterior do script — pulando."
+  phase_status "backup" "skip" "0"
+  record "Backup pré-update" "skip" "0"
+elif $WITH_BACKUP; then
   step "Backup pré-update..."
   T=$(now)
   phase_status "backup" "running"
@@ -455,6 +476,12 @@ fi
 # ══════════════════════════════════════════════════════════════════════════════
 # FASE 1 — CREDENCIAIS DO GITHUB
 # ══════════════════════════════════════════════════════════════════════════════
+if _skip_phase "credentials"; then
+  step "Verificando credenciais do GitHub..."
+  info "Credenciais já validadas pela versão anterior do script — pulando."
+  phase_status "credentials" "skip" "0"
+  record "Credenciais GitHub" "skip" "0"
+else
 step "Verificando credenciais do GitHub..."
 T=$(now)
 phase_status "credentials" "running"
@@ -488,10 +515,19 @@ else
   record "Credenciais GitHub" "skip" "$(elapsed $T)"
   phase_status "credentials" "skip" "$(elapsed $T)"
 fi
+fi  # fim do wrapper _skip_phase "credentials"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FASE 2 — CLONE OU PULL
 # ══════════════════════════════════════════════════════════════════════════════
+if _skip_phase "git-pull"; then
+  step "Atualizando código..."
+  info "Pull já executado pela versão anterior do script — pulando."
+  phase_status "git-pull" "skip" "0"
+  record "Git clone/pull" "skip" "0"
+  # Garante que estamos no diretório certo para as fases seguintes (npm/build).
+  [ -d "$VPS_DIR" ] && cd "$VPS_DIR"
+else
 step "Atualizando código..."
 T=$(now)
 phase_status "git-pull" "running"
@@ -576,6 +612,51 @@ fi
 
 record "Git clone/pull" "ok" "$(elapsed $T)"
 phase_status "git-pull" "ok" "$(elapsed $T)"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AUTO-RELAUNCH — se o próprio deploy.sh foi atualizado neste pull, reexecuta
+# a versão nova ANTES de seguir com npm install/build/restart. Isso evita o
+# antigo problema de precisar rodar o update 2x para uma mudança no deploy.sh
+# entrar em vigor.
+# ══════════════════════════════════════════════════════════════════════════════
+# Só consideramos relaunch se NÃO veio de outro relaunch (evita loop infinito
+# se houver bug no novo script) e se conseguimos comparar checksums.
+if [[ "${_DEPLOY_RELAUNCHED:-0}" != "1" ]] && command -v sha256sum &>/dev/null; then
+  _CURRENT_SHA=$(sha256sum "$0" 2>/dev/null | cut -d' ' -f1 || echo "")
+  _NEW_SCRIPT="$VPS_DIR/scripts/deploy.sh"
+  if [ -f "$_NEW_SCRIPT" ]; then
+    _NEW_SHA=$(sha256sum "$_NEW_SCRIPT" 2>/dev/null | cut -d' ' -f1 || echo "")
+    if [[ -n "$_CURRENT_SHA" && -n "$_NEW_SHA" && "$_CURRENT_SHA" != "$_NEW_SHA" ]]; then
+      step "Auto-relaunch — deploy.sh foi atualizado neste pull"
+      info "Reexecutando com a versão nova ($_NEW_SHA via $_NEW_SCRIPT)..."
+
+      # Copia o novo script pra /tmp pra ficar imune a um próximo git reset.
+      _RELAUNCH_TMP=$(mktemp /tmp/deploy.relaunch.XXXXXX.sh)
+      cp "$_NEW_SCRIPT" "$_RELAUNCH_TMP"
+      chmod +x "$_RELAUNCH_TMP"
+
+      # Lista de fases que o novo script pula (já foram feitas aqui).
+      # Sintaxe comma-separated batendo com _skip_phase().
+      _RESUME_SKIP="backup,credentials,git-pull"
+
+      ok "Saindo do script atual e entregando para a nova versão..."
+      # _DEPLOY_SAFE=1: o novo script vê que já está em /tmp, pula a auto-preservação.
+      # _DEPLOY_RELAUNCHED=1: marca origem e bloqueia novo relaunch (defesa anti-loop).
+      # _TOTAL_START_RESUME: preserva relógio total do update.
+      # _PROMPT_*: respostas já coletadas para o novo script não re-perguntar.
+      # `exec env -i ... bash` não funciona porque perderíamos PATH; usamos env aditivo.
+      exec env \
+        _DEPLOY_SAFE=1 \
+        _DEPLOY_RELAUNCHED=1 \
+        DEPLOY_SKIP_PHASES="$_RESUME_SKIP" \
+        _TOTAL_START_RESUME="$TOTAL_START" \
+        _PROMPT_INSTALL_F2B="${_PROMPT_INSTALL_F2B:-}" \
+        _PROMPT_ENABLE_UFW="${_PROMPT_ENABLE_UFW:-}" \
+        "$_RELAUNCH_TMP" "$@"
+    fi
+  fi
+fi
+fi  # fim do wrapper _skip_phase "git-pull"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FASE 3 — DEPENDÊNCIAS
