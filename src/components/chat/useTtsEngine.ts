@@ -28,26 +28,29 @@ export function useTtsEngine() {
   const objectUrlRef = useRef<string | null>(null);
   const cancelledRef = useRef(false);
 
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const res = await fetch("/api/chat/tts");
-        if (!res.ok) return;
-        const status = (await res.json()) as ElevenLabsConfigStatus;
-        if (!alive) return;
-        if (status.configured) {
-          setEngine("elevenlabs");
-          setVoiceLabel(status.voiceId ? `ElevenLabs · ${status.voiceId.slice(0, 8)}` : "ElevenLabs");
-        }
-      } catch {
-        // Keep web_speech default
+  const refresh = useCallback(async () => {
+    try {
+      const res = await fetch("/api/chat/tts");
+      if (!res.ok) return;
+      const status = (await res.json()) as ElevenLabsConfigStatus;
+      if (status.configured) {
+        setEngine("elevenlabs");
+        setVoiceLabel(status.voiceId ? `ElevenLabs · ${status.voiceId.slice(0, 8)}` : "ElevenLabs");
+      } else {
+        setEngine("web_speech");
+        setVoiceLabel("Web Speech");
       }
-    })();
-    return () => {
-      alive = false;
-    };
+    } catch {
+      // Keep current engine
+    }
   }, []);
+
+  useEffect(() => {
+    // Initial detection on mount — refreshing settings re-fires via the
+    // dedicated `refresh()` method when the user saves the modal.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void refresh();
+  }, [refresh]);
 
   const cleanupAudio = useCallback(() => {
     if (audioRef.current) {
@@ -131,6 +134,7 @@ export function useTtsEngine() {
   return {
     speak,
     cancel,
+    refresh,
     engine,
     voiceLabel,
     supported: fallback.supported || engine === "elevenlabs",

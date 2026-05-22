@@ -40,6 +40,24 @@ export interface ElevenLabsStatus {
   source: ElevenLabsConfig["source"] | null;
 }
 
+export interface ElevenLabsDiagnostic extends ElevenLabsStatus {
+  /** Which OpenClaw json paths were probed, and what we found at each. */
+  probedPaths: Array<{
+    path: string;
+    exists: boolean;
+    hasApiKey: boolean;
+    hasVoiceId: boolean;
+    apiKeyPreview: string | null;
+    voiceIdPreview: string | null;
+  }>;
+  openclawJsonPath: string | null;
+  openclawJsonExists: boolean;
+  envHasApiKey: boolean;
+  envHasVoiceId: boolean;
+  memorySettingsHasApiKey: boolean;
+  memorySettingsHasVoiceId: boolean;
+}
+
 function clean(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const t = value.trim();
@@ -148,6 +166,97 @@ export function elevenLabsStatus(): ElevenLabsStatus {
     voiceId: config.voiceId,
     modelId: config.modelId,
     source: config.source,
+  };
+}
+
+function preview(value: string, keepHead = 4, keepTail = 4): string {
+  if (value.length <= keepHead + keepTail) return value;
+  return `${value.slice(0, keepHead)}…${value.slice(-keepTail)}`;
+}
+
+const PROBE_PATHS: Array<{ key: string; pick: (cfg: Record<string, unknown>) => unknown }> = [
+  { key: "channels.elevenlabs", pick: (c) => (c.channels as Record<string, unknown> | undefined)?.elevenlabs },
+  { key: "channels.eleven_labs", pick: (c) => (c.channels as Record<string, unknown> | undefined)?.eleven_labs },
+  { key: "channels.eleven-labs", pick: (c) => (c.channels as Record<string, unknown> | undefined)?.["eleven-labs"] },
+  { key: "integrations.elevenlabs", pick: (c) => (c.integrations as Record<string, unknown> | undefined)?.elevenlabs },
+  { key: "integrations.eleven_labs", pick: (c) => (c.integrations as Record<string, unknown> | undefined)?.eleven_labs },
+  { key: "voice.elevenlabs", pick: (c) => (c.voice as Record<string, unknown> | undefined)?.elevenlabs },
+  { key: "voice.eleven_labs", pick: (c) => (c.voice as Record<string, unknown> | undefined)?.eleven_labs },
+  { key: "tts.elevenlabs", pick: (c) => (c.tts as Record<string, unknown> | undefined)?.elevenlabs },
+  { key: "tts.eleven_labs", pick: (c) => (c.tts as Record<string, unknown> | undefined)?.eleven_labs },
+];
+
+/**
+ * Verbose status used by the UI's diagnostic modal. We never return
+ * the full API key/voice id — only short head/tail previews — so the
+ * endpoint stays safe to surface from the browser.
+ */
+export function elevenLabsDiagnostic(): ElevenLabsDiagnostic {
+  const status = elevenLabsStatus();
+
+  const envHasApiKey = !!clean(process.env.ELEVENLABS_API_KEY);
+  const envHasVoiceId = !!clean(process.env.ELEVENLABS_VOICE_ID);
+
+  let memorySettingsHasApiKey = false;
+  let memorySettingsHasVoiceId = false;
+  try {
+    const s = getSettings();
+    memorySettingsHasApiKey = !!s.elevenlabs_api_key;
+    memorySettingsHasVoiceId = !!s.elevenlabs_voice_id;
+  } catch {
+    // ignore
+  }
+
+  let openclawJsonPath: string | null = null;
+  let openclawJsonExists = false;
+  const probedPaths: ElevenLabsDiagnostic["probedPaths"] = [];
+
+  try {
+    const dir = readOpenClawConfig().openclawDir;
+    openclawJsonPath = path.join(dir, "openclaw.json");
+    openclawJsonExists = fs.existsSync(openclawJsonPath);
+
+    if (openclawJsonExists) {
+      const cfg = JSON.parse(fs.readFileSync(openclawJsonPath, "utf-8")) as Record<string, unknown>;
+      for (const probe of PROBE_PATHS) {
+        const node = probe.pick(cfg);
+        if (!node || typeof node !== "object") {
+          probedPaths.push({
+            path: probe.key,
+            exists: false,
+            hasApiKey: false,
+            hasVoiceId: false,
+            apiKeyPreview: null,
+            voiceIdPreview: null,
+          });
+          continue;
+        }
+        const c = node as OpenClawCandidate;
+        const apiKey = clean(c.apiKey) ?? clean(c.api_key) ?? clean(c.key);
+        const voiceId = clean(c.voiceId) ?? clean(c.voice_id) ?? clean(c.voice);
+        probedPaths.push({
+          path: probe.key,
+          exists: true,
+          hasApiKey: !!apiKey,
+          hasVoiceId: !!voiceId,
+          apiKeyPreview: apiKey ? preview(apiKey) : null,
+          voiceIdPreview: voiceId ? preview(voiceId) : null,
+        });
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return {
+    ...status,
+    probedPaths,
+    openclawJsonPath,
+    openclawJsonExists,
+    envHasApiKey,
+    envHasVoiceId,
+    memorySettingsHasApiKey,
+    memorySettingsHasVoiceId,
   };
 }
 

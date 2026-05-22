@@ -186,6 +186,7 @@ export function useWakeWord({
   const [state, setState] = useState<WakeState>("off");
   const [supported, setSupported] = useState(true);
   const [lastHeard, setLastHeard] = useState<string>("");
+  const [heardLog, setHeardLog] = useState<Array<{ at: number; text: string; matched: boolean }>>([]);
   const recognitionRef = useRef<RecognitionInstance | null>(null);
   const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stopRequestedRef = useRef(false);
@@ -235,6 +236,16 @@ export function useWakeWord({
         const combined = (interimText + finalText).trim();
         if (!combined) return;
         setLastHeard(combined.slice(-120));
+        // Track the last 8 final transcripts so the UI can show a
+        // visible "heard recently" panel — much better than asking
+        // the user to enable wake-debug in the URL.
+        if (finalText.trim()) {
+          const matched = findWakeMatch(finalText, phrasesRef.current) !== null;
+          setHeardLog((prev) => [
+            ...prev.slice(-7),
+            { at: Date.now(), text: finalText.trim(), matched },
+          ]);
+        }
         // Debug logger — toggle with ?wake-debug in the URL.
         if (typeof window !== "undefined" && window.location?.search.includes("wake-debug")) {
           console.log("[wake] heard:", { interim: interimText, final: finalText });
@@ -363,5 +374,5 @@ export function useWakeWord({
     return stopInternal;
   }, [enabled, paused, supported, startInternal, stopInternal]);
 
-  return { state, supported, lastHeard };
+  return { state, supported, lastHeard, heardLog };
 }

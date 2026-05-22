@@ -10,17 +10,23 @@ import {
 } from "react";
 // handleSend ref forwarded to the wake word hook so the callback can call
 // the latest version without forcing it to be declared before the hook.
-import { Bot, Download, Volume2, VolumeX } from "lucide-react";
+import { Bot, Download, Settings as SettingsIcon, Volume2, VolumeX } from "lucide-react";
 import { ThreadList } from "@/components/chat/ThreadList";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { Composer } from "@/components/chat/Composer";
 import { ImportOpenClawModal } from "@/components/chat/ImportOpenClawModal";
+import { VoiceSettingsModal } from "@/components/chat/VoiceSettingsModal";
 import { WakeIndicator } from "@/components/chat/WakeIndicator";
+import { HeardPanel } from "@/components/chat/HeardPanel";
 import { useChatStream } from "@/components/chat/useChatStream";
 import { useTtsEngine } from "@/components/chat/useTtsEngine";
 import { useWakeWord } from "@/components/chat/useWakeWord";
 
-const WAKE_PHRASES = ["Jarvis", "Atlas"];
+// "Atlas" comes first because it's a real Portuguese word — Web Speech's
+// pt-BR engine transcribes it reliably. "Jarvis" is kept as a secondary
+// option even though pt-BR ASR mistranscribes it often (jesus, jovis,
+// jarves, etc.); the alias map in useWakeWord covers most variants.
+const WAKE_PHRASES = ["Atlas", "Jarvis"];
 import type {
   AgentSummary,
   ChatMessage,
@@ -46,6 +52,7 @@ export default function ChatPage() {
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
   const [showImportModal, setShowImportModal] = useState(false);
+  const [showVoiceModal, setShowVoiceModal] = useState(false);
   const [wakeEnabled, setWakeEnabled] = useState(true);
   const [wakeTeaser, setWakeTeaser] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -474,6 +481,14 @@ export default function ChatPage() {
             </button>
             <button
               type="button"
+              onClick={() => setShowVoiceModal(true)}
+              style={toggleButtonStyle(false)}
+              title="Configurar voz (ElevenLabs)"
+            >
+              <SettingsIcon size={14} />
+            </button>
+            <button
+              type="button"
               onClick={() => setShowImportModal(true)}
               style={toggleButtonStyle(false)}
               title="Importar sessions do OpenClaw"
@@ -495,6 +510,19 @@ export default function ChatPage() {
           open={showImportModal}
           onClose={() => setShowImportModal(false)}
           onImported={loadThreads}
+        />
+
+        <VoiceSettingsModal
+          open={showVoiceModal}
+          onClose={() => {
+            setShowVoiceModal(false);
+            void tts.refresh();
+          }}
+        />
+
+        <HeardPanel
+          entries={wake.heardLog ?? []}
+          enabled={wakeEnabled && wake.supported}
         />
 
         {statusBanner && (
