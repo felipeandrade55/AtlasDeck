@@ -207,25 +207,34 @@ function buildConnectRequest(token: string | null): Record<string, unknown> {
 }
 
 function buildChatSendRequest(input: WsChatInput): Record<string, unknown> {
-  // `thinking` and `fastMode` are documented in the gateway schema
-  // (logs-chat.d.ts) as optional latency knobs. Defaults below favour
-  // speed for conversational use; override via env when debugging.
-  //   ATLAS_CHAT_THINKING=on|off|low|high  (default "off")
-  //   ATLAS_CHAT_FAST_MODE=true|false      (default true)
-  const thinking = process.env.ATLAS_CHAT_THINKING?.trim() || "off";
-  const fastMode = process.env.ATLAS_CHAT_FAST_MODE !== "false";
+  // `thinking` and `fastMode` are optional. The previous experiment
+  // (always sending `thinking: "off"` + `fastMode: true`) actually
+  // *worsened* latency on this OpenClaw build:
+  //   - `fastMode: true` maps to OpenAI `service_tier: priority`,
+  //     which routes through different (often slower-when-congested)
+  //     capacity tier;
+  //   - `thinking: "off"` rendered the assistant unable to reason
+  //     properly ("Respondi no chat" replies).
+  // Now we only forward each field when the operator opts in via env,
+  // matching the gateway's own defaults (agent-config driven).
+  //   ATLAS_CHAT_THINKING=off|minimal|low|medium|high|max
+  //   ATLAS_CHAT_FAST_MODE=true|false
+  const params: Record<string, unknown> = {
+    sessionKey: input.sessionKey,
+    message: input.prompt,
+    idempotencyKey: randomUUID(),
+    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+  };
+  const thinking = process.env.ATLAS_CHAT_THINKING?.trim();
+  if (thinking) params.thinking = thinking;
+  const fastMode = process.env.ATLAS_CHAT_FAST_MODE?.trim();
+  if (fastMode === "true") params.fastMode = true;
+  if (fastMode === "false") params.fastMode = false;
   return {
     type: "req",
     id: randomUUID(),
     method: "chat.send",
-    params: {
-      sessionKey: input.sessionKey,
-      message: input.prompt,
-      idempotencyKey: randomUUID(),
-      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
-      thinking,
-      fastMode,
-    },
+    params,
   };
 }
 

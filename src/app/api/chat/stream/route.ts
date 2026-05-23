@@ -66,7 +66,22 @@ function formatTimings(
     parts.push(`1st-delta=${formatMs(timings["first-delta"])}`);
   }
   if (timings["final"] != null) parts.push(`final=${formatMs(timings["final"])}`);
-  const stripped = baseDetail ? baseDetail.split("· ").filter((s) => !s.includes("=")).join("· ") : "";
+
+  // If 1st-delta arrived basically at the same instant as final, the
+  // gateway is buffering the whole reply instead of streaming. That
+  // matches the OpenClaw default `agents.defaults.blockStreamingDefault: "off"`.
+  // Surface an actionable hint instead of leaving the operator guessing.
+  if (
+    timings["first-delta"] != null &&
+    timings["final"] != null &&
+    Math.abs(timings["final"] - timings["first-delta"]) < 100
+  ) {
+    parts.push(
+      "buffered (set agents.defaults.blockStreamingDefault=on in openclaw.json)",
+    );
+  }
+
+  const stripped = baseDetail ? baseDetail.split("· ").filter((s) => !s.includes("=") && !s.includes("buffered")).join("· ") : "";
   const head = stripped ? stripped.trim().replace(/·\s*$/, "") : "";
   return head ? `${head} · ${parts.join(" · ")}` : parts.join(" · ");
 }
