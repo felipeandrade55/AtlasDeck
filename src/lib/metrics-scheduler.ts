@@ -85,6 +85,11 @@ async function sample(): Promise<void> {
     firstSampleDone = true;
 
     insertSamples(Date.now(), samples);
+
+    // Roll up immediately so the 1m bucket (which powers the default
+    // 12h/24h chart) shows up within one sample interval instead of
+    // waiting for the periodic rollup tick.
+    void rollup();
   } catch (err) {
     console.warn('[metrics-scheduler] sample failed:', err);
   } finally {

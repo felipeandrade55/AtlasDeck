@@ -122,59 +122,84 @@ function bucketStart(ts: number, bucket: BucketKey): number {
 }
 
 /**
- * Promote raw rows older than RAW_RETENTION_MS into 1m aggregates,
- * then cascade 1m→5m→1h→1d as each tier ages out of its retention window.
- * Idempotent: re-running with no new data is a no-op.
+ * Build any complete higher-tier buckets that don't exist yet, then prune
+ * each tier past its retention window. Idempotent — `INSERT OR IGNORE`
+ * makes re-runs free, and we only seal buckets whose window has fully
+ * elapsed, so partial data never gets frozen in.
+ *
+ * Buckets fill as soon as their window closes (not when raw retention
+ * expires), so the dashboard chart populates within ~1 minute on a fresh
+ * install instead of waiting 6h.
  */
 export function runRollup(now: number = Date.now()): void {
   const db = getDb();
 
-  // raw → 1m
-  const rawCutoff = now - RAW_RETENTION_MS;
-  const rawRows = db
-    .prepare('SELECT ts, metric, value FROM metrics_raw WHERE ts < ?')
-    .all(rawCutoff) as Array<{ ts: number; metric: string; value: number }>;
+  promoteRawToBucket(db, '1m', now);
+  promoteBucketCascade(db, '1m', '5m', now);
+  promoteBucketCascade(db, '5m', '1h', now);
+  promoteBucketCascade(db, '1h', '1d', now);
 
-  if (rawRows.length > 0) {
-    const buckets = new Map<string, { bucket: number; metric: string; vals: number[] }>();
-    for (const r of rawRows) {
-      const b = bucketStart(r.ts, '1m');
-      const key = `${r.metric}|${b}`;
-      let entry = buckets.get(key);
-      if (!entry) {
-        entry = { bucket: b, metric: r.metric, vals: [] };
-        buckets.set(key, entry);
-      }
-      entry.vals.push(r.value);
-    }
-    upsertAgg(db, '1m', Array.from(buckets.values()));
-    db.prepare('DELETE FROM metrics_raw WHERE ts < ?').run(rawCutoff);
-  }
+  db.prepare('DELETE FROM metrics_raw WHERE ts < ?').run(now - RAW_RETENTION_MS);
 
-  // 1m → 5m, 5m → 1h, 1h → 1d
-  cascadeAgg(db, '1m', '5m', now);
-  cascadeAgg(db, '5m', '1h', now);
-  cascadeAgg(db, '1h', '1d', now);
-
-  // Prune each tier past its retention.
   for (const bucket of Object.keys(RETENTION_BY_BUCKET) as BucketKey[]) {
     const cutoff = now - RETENTION_BY_BUCKET[bucket];
     db.prepare('DELETE FROM metrics_agg WHERE bucket = ? AND ts < ?').run(bucket, cutoff);
   }
 }
 
-function cascadeAgg(
+function promoteRawToBucket(
+  db: Database.Database,
+  bucket: BucketKey,
+  now: number
+): void {
+  const size = BUCKET_SIZE[bucket];
+  const currentBucketStart = Math.floor(now / size) * size;
+  const rows = db
+    .prepare('SELECT ts, metric, value FROM metrics_raw WHERE ts < ?')
+    .all(currentBucketStart) as Array<{ ts: number; metric: string; value: number }>;
+  if (rows.length === 0) return;
+
+  const buckets = new Map<string, { bucket: number; metric: string; vals: number[] }>();
+  for (const r of rows) {
+    const b = bucketStart(r.ts, bucket);
+    const key = `${r.metric}|${b}`;
+    let entry = buckets.get(key);
+    if (!entry) {
+      entry = { bucket: b, metric: r.metric, vals: [] };
+      buckets.set(key, entry);
+    }
+    entry.vals.push(r.value);
+  }
+
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO metrics_agg (bucket, ts, metric, min, max, avg, samples)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  const tx = db.transaction(() => {
+    for (const entry of buckets.values()) {
+      const min = Math.min(...entry.vals);
+      const max = Math.max(...entry.vals);
+      const sum = entry.vals.reduce((a, b) => a + b, 0);
+      const avg = sum / entry.vals.length;
+      insert.run(bucket, entry.bucket, entry.metric, min, max, avg, entry.vals.length);
+    }
+  });
+  tx();
+}
+
+function promoteBucketCascade(
   db: Database.Database,
   from: BucketKey,
   to: BucketKey,
   now: number
 ): void {
-  const cutoff = now - RETENTION_BY_BUCKET[from];
+  const toSize = BUCKET_SIZE[to];
+  const currentToStart = Math.floor(now / toSize) * toSize;
   const rows = db
     .prepare(
       'SELECT ts, metric, min, max, avg, samples FROM metrics_agg WHERE bucket = ? AND ts < ?'
     )
-    .all(from, cutoff) as Array<{
+    .all(from, currentToStart) as Array<{
     ts: number;
     metric: string;
     min: number;
@@ -182,7 +207,6 @@ function cascadeAgg(
     avg: number;
     samples: number;
   }>;
-
   if (rows.length === 0) return;
 
   const buckets = new Map<
@@ -211,13 +235,8 @@ function cascadeAgg(
   }
 
   const insert = db.prepare(`
-    INSERT INTO metrics_agg (bucket, ts, metric, min, max, avg, samples)
+    INSERT OR IGNORE INTO metrics_agg (bucket, ts, metric, min, max, avg, samples)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(bucket, metric, ts) DO UPDATE SET
-      min = MIN(min, excluded.min),
-      max = MAX(max, excluded.max),
-      avg = ((avg * samples) + (excluded.avg * excluded.samples)) / (samples + excluded.samples),
-      samples = samples + excluded.samples
   `);
   const tx = db.transaction(() => {
     for (const entry of buckets.values()) {
@@ -230,34 +249,6 @@ function cascadeAgg(
         entry.sum / entry.samples,
         entry.samples
       );
-    }
-    db.prepare('DELETE FROM metrics_agg WHERE bucket = ? AND ts < ?').run(from, cutoff);
-  });
-  tx();
-}
-
-function upsertAgg(
-  db: Database.Database,
-  bucket: BucketKey,
-  buckets: Array<{ bucket: number; metric: string; vals: number[] }>
-): void {
-  if (buckets.length === 0) return;
-  const insert = db.prepare(`
-    INSERT INTO metrics_agg (bucket, ts, metric, min, max, avg, samples)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(bucket, metric, ts) DO UPDATE SET
-      min = MIN(min, excluded.min),
-      max = MAX(max, excluded.max),
-      avg = ((avg * samples) + (excluded.avg * excluded.samples)) / (samples + excluded.samples),
-      samples = samples + excluded.samples
-  `);
-  const tx = db.transaction(() => {
-    for (const entry of buckets) {
-      const min = Math.min(...entry.vals);
-      const max = Math.max(...entry.vals);
-      const sum = entry.vals.reduce((a, b) => a + b, 0);
-      const avg = sum / entry.vals.length;
-      insert.run(bucket, entry.bucket, entry.metric, min, max, avg, entry.vals.length);
     }
   });
   tx();
