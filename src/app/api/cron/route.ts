@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { execSync } from "child_process";
 import { logActivity } from "@/lib/activities-db";
+import { reconcileScheduledRuns } from "@/lib/cron-runs-db";
 
 function getGatewayConfig() {
   try {
@@ -24,7 +25,37 @@ export async function GET() {
     });
 
     const data = JSON.parse(output);
-    const jobs = (data.jobs || []).map((job: Record<string, unknown>) => ({
+    const rawJobs = (data.jobs || []) as Array<Record<string, unknown>>;
+
+    // Reconcile scheduled runs from the gateway into `cron_runs` so the
+    // /cron stats dashboard reflects automatic executions, not just the
+    // "Run Now" button. Idempotent — safe to call on every poll.
+    try {
+      reconcileScheduledRuns(
+        rawJobs
+          .filter((j) => typeof j.id === "string")
+          .map((j) => {
+            const state =
+              (j.state as Record<string, unknown> | undefined) ?? {};
+            const lastRunMs = state.lastRunAtMs;
+            return {
+              jobId: j.id as string,
+              lastRun:
+                typeof lastRunMs === "number"
+                  ? new Date(lastRunMs).toISOString()
+                  : null,
+              lastStatus:
+                typeof state.lastRunStatus === "string"
+                  ? (state.lastRunStatus as string)
+                  : null,
+            };
+          }),
+      );
+    } catch (err) {
+      console.warn("[api/cron] reconcileScheduledRuns failed:", err);
+    }
+
+    const jobs = rawJobs.map((job: Record<string, unknown>) => ({
       id: job.id,
       agentId: job.agentId || "main",
       name: job.name || "Unnamed",

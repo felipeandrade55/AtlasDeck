@@ -36,6 +36,48 @@ type StatusFilter = "all" | "active" | "paused";
 type SortBy = "nextRun" | "lastRun" | "name" | "agentId";
 type SortOrder = "asc" | "desc";
 
+function formatDuration(ms: number): string {
+  if (!ms || ms < 0) return "0s";
+  if (ms < 1000) return `${ms}ms`;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rs = s % 60;
+  if (m < 60) return rs ? `${m}m ${rs}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return rm ? `${h}h ${rm}m` : `${h}h`;
+}
+
+function formatNextRun(iso: string | null | undefined, schedule: string): string {
+  if (!iso) return schedule;
+  const next = new Date(iso);
+  if (Number.isNaN(next.getTime())) return schedule;
+  const now = new Date();
+  const sameDay =
+    next.getFullYear() === now.getFullYear() &&
+    next.getMonth() === now.getMonth() &&
+    next.getDate() === now.getDate();
+  const tomorrow = new Date(now);
+  tomorrow.setDate(now.getDate() + 1);
+  const isTomorrow =
+    next.getFullYear() === tomorrow.getFullYear() &&
+    next.getMonth() === tomorrow.getMonth() &&
+    next.getDate() === tomorrow.getDate();
+  const hhmm = next.toLocaleTimeString("pt-BR", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  if (sameDay) return `hoje ${hhmm}`;
+  if (isTomorrow) return `amanhã ${hhmm}`;
+  return next.toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 export default function CronJobsPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -62,8 +104,9 @@ export default function CronJobsPage() {
   const [backupStats, setBackupStats] = useState<{
     totalBackups: number;
     totalSizeHuman: string;
-    lastSuccess?: { startedAt: string; sizeHuman: string };
-    config?: { enabled: boolean; schedule: string; retentionDays: number };
+    lastSuccess?: { startedAt: string; sizeHuman: string; durationMs?: number };
+    config?: { enabled: boolean; schedule: string; retentionCount: number };
+    nextBackupAt?: string | null;
   } | null>(null);
   const [backupLoading, setBackupLoading] = useState(false);
   const [backupActionLoading, setBackupActionLoading] = useState(false);
@@ -102,15 +145,17 @@ export default function CronJobsPage() {
           ? {
               startedAt: data.lastSuccess.startedAt,
               sizeHuman: data.lastSuccess.sizeHuman,
+              durationMs: data.lastSuccess.durationMs,
             }
           : undefined,
         config: data.config
           ? {
               enabled: data.config.enabled,
               schedule: data.config.schedule,
-              retentionDays: data.config.retentionDays,
+              retentionCount: data.config.retentionCount,
             }
           : undefined,
+        nextBackupAt: data.nextBackupAt ?? null,
       });
     } catch {
       // silently ignore backup fetch errors
@@ -756,12 +801,21 @@ export default function CronJobsPage() {
                       month: "short",
                       hour: "2-digit",
                       minute: "2-digit",
-                    })} · ${backupStats.lastSuccess.sizeHuman}`
+                    })}${
+                      typeof backupStats.lastSuccess.durationMs === "number"
+                        ? ` · ${formatDuration(
+                            backupStats.lastSuccess.durationMs
+                          )}`
+                        : ""
+                    } · ${backupStats.lastSuccess.sizeHuman}`
                   : backupStats?.totalBackups
                   ? `${backupStats.totalBackups} backup(s) · ${backupStats.totalSizeHuman}`
                   : "Nenhum backup realizado ainda"}
                 {backupStats?.config?.enabled &&
-                  ` · Próximo: ${backupStats.config.schedule}`}
+                  ` · Próximo: ${formatNextRun(
+                    backupStats.nextBackupAt,
+                    backupStats.config.schedule
+                  )}`}
               </p>
             </div>
           </div>
@@ -1037,46 +1091,8 @@ export default function CronJobsPage() {
             }}
           />
         </div>
-      ) : processedJobs.length === 0 ? (
-        <div style={{ textAlign: "center", padding: "4rem 0" }}>
-          <Clock className="w-8 h-8 mx-auto mb-4" style={{ color: "var(--text-muted)" }} />
-          <h3
-            style={{
-              fontSize: "1.125rem",
-              fontWeight: 500,
-              color: "var(--text-primary)",
-              marginBottom: "0.5rem",
-            }}
-          >
-            {jobs.length === 0
-              ? "Nenhuma tarefa agendada encontrada"
-              : "Nenhuma tarefa corresponde aos filtros"}
-          </h3>
-          <p style={{ color: "var(--text-secondary)" }}>
-            {jobs.length === 0
-              ? "Crie tarefas via Telegram ou OpenClaw CLI"
-              : "Tente ajustar a busca ou os filtros"}
-          </p>
-          {jobs.length > 0 && (
-            <button
-              onClick={() => {
-                setSearchQuery("");
-                setStatusFilter("all");
-              }}
-              className="mt-4 text-sm font-medium"
-              style={{
-                color: "var(--accent)",
-                background: "none",
-                border: "none",
-                cursor: "pointer",
-              }}
-            >
-              Limpar filtros
-            </button>
-          )}
-        </div>
       ) : viewMode === "timeline" ? (
-        /* Timeline View */
+        /* Timeline View — own empty-state handles zero jobs gracefully */
         <div
           className="rounded-xl overflow-hidden"
           style={{
@@ -1120,6 +1136,44 @@ export default function CronJobsPage() {
             </span>
           </div>
           <CronWeeklyTimeline jobs={processedJobs} />
+        </div>
+      ) : processedJobs.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "4rem 0" }}>
+          <Clock className="w-8 h-8 mx-auto mb-4" style={{ color: "var(--text-muted)" }} />
+          <h3
+            style={{
+              fontSize: "1.125rem",
+              fontWeight: 500,
+              color: "var(--text-primary)",
+              marginBottom: "0.5rem",
+            }}
+          >
+            {jobs.length === 0
+              ? "Nenhuma tarefa agendada encontrada"
+              : "Nenhuma tarefa corresponde aos filtros"}
+          </h3>
+          <p style={{ color: "var(--text-secondary)" }}>
+            {jobs.length === 0
+              ? "Crie tarefas via Telegram ou OpenClaw CLI"
+              : "Tente ajustar a busca ou os filtros"}
+          </p>
+          {jobs.length > 0 && (
+            <button
+              onClick={() => {
+                setSearchQuery("");
+                setStatusFilter("all");
+              }}
+              className="mt-4 text-sm font-medium"
+              style={{
+                color: "var(--accent)",
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+              }}
+            >
+              Limpar filtros
+            </button>
+          )}
         </div>
       ) : groupByAgent && groupedJobs ? (
         /* Grouped Cards View */

@@ -212,6 +212,63 @@ export function getGlobalStats(sinceDays: number = 7): {
   };
 }
 
+/**
+ * Reconcile scheduled runs reported by the OpenClaw gateway. The gateway
+ * keeps `state.lastRunAtMs` per job but does not push events to AtlasDeck;
+ * we close that gap by inserting one `cron_runs` row whenever a job's
+ * `lastRun` is newer than the last one we recorded. Idempotent via the
+ * synthetic id `${jobId}-${lastRunMs}-recon`, so repeated calls are
+ * harmless. Called from GET `/api/cron`, which the UI polls every 10s.
+ */
+export function reconcileScheduledRuns(
+  jobs: Array<{
+    jobId: string;
+    lastRun: string | null;
+    lastStatus?: string | null;
+  }>,
+): number {
+  const db = getDb();
+  const lookup = db.prepare(
+    `SELECT started_at FROM cron_runs WHERE job_id = ? ORDER BY started_at DESC LIMIT 1`,
+  );
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO cron_runs (id, job_id, started_at, completed_at, status, duration_ms, error, trigger_type, created_at)
+    VALUES (?, ?, ?, ?, ?, NULL, NULL, 'scheduled', ?)
+  `);
+  const nowIso = new Date().toISOString();
+  let inserted = 0;
+  for (const job of jobs) {
+    if (!job.lastRun) continue;
+    const lastRunMs = new Date(job.lastRun).getTime();
+    if (!Number.isFinite(lastRunMs)) continue;
+    const recorded = lookup.get(job.jobId) as
+      | { started_at: string }
+      | undefined;
+    if (
+      recorded &&
+      new Date(recorded.started_at).getTime() >= lastRunMs
+    ) {
+      continue;
+    }
+    const id = `${job.jobId}-${lastRunMs}-recon`;
+    const status = job.lastStatus === "error" ? "error" : "success";
+    try {
+      const result = insert.run(
+        id,
+        job.jobId,
+        job.lastRun,
+        job.lastRun,
+        status,
+        nowIso,
+      );
+      if (result.changes > 0) inserted += 1;
+    } catch {
+      // ignore: best-effort reconcile
+    }
+  }
+  return inserted;
+}
+
 export function cleanupOldRuns(retentionDays: number = 90): number {
   const db = getDb();
   const since = new Date();
