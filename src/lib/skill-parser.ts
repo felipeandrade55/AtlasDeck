@@ -293,19 +293,24 @@ function buildAgentSkillMap(): Map<string, string[]> {
     } catch {}
   }
 
-  for (const { id, workspace } of agentList) {
-    const skillsDir = path.join(workspace, 'skills');
+  const tagSkillsFromDir = (dir: string, agentId: string) => {
     try {
-      if (!fs.existsSync(skillsDir)) continue;
-      const skillDirs = fs.readdirSync(skillsDir, { withFileTypes: true });
+      if (!fs.existsSync(dir)) return;
+      const skillDirs = fs.readdirSync(dir, { withFileTypes: true });
       for (const d of skillDirs) {
         if (d.isDirectory()) {
           const existing = map.get(d.name) || [];
-          existing.push(id);
+          if (!existing.includes(agentId)) existing.push(agentId);
           map.set(d.name, existing);
         }
       }
     } catch {}
+  };
+
+  for (const { id, workspace } of agentList) {
+    tagSkillsFromDir(path.join(workspace, 'skills'), id);
+    // Codex per-agent home: <openclawDir>/agents/<id>/agent/codex-home/skills/
+    tagSkillsFromDir(path.join(openclawDir, 'agents', id, 'agent', 'codex-home', 'skills'), id);
   }
 
   return map;
@@ -319,16 +324,16 @@ function getAllWorkspaceSkillsDirs(openclawDir: string, configOverride?: string)
   if (configOverride) return [configOverride];
 
   const dirs: string[] = [];
+  const addDir = (p: string) => { if (!dirs.includes(p)) dirs.push(p); };
 
   // Primary: read agent workspace paths from openclaw.json
+  let agentIds: string[] = [];
   try {
     const cfg = JSON.parse(fs.readFileSync(path.join(openclawDir, 'openclaw.json'), 'utf-8'));
-    const agentList: Array<{ workspace?: string }> = cfg?.agents?.list || [];
+    const agentList: Array<{ id?: string; workspace?: string }> = cfg?.agents?.list || [];
     for (const agent of agentList) {
-      if (agent.workspace) {
-        const sd = path.join(agent.workspace, 'skills');
-        if (!dirs.includes(sd)) dirs.push(sd);
-      }
+      if (agent.workspace) addDir(path.join(agent.workspace, 'skills'));
+      if (agent.id) agentIds.push(agent.id);
     }
   } catch {}
 
@@ -338,11 +343,25 @@ function getAllWorkspaceSkillsDirs(openclawDir: string, configOverride?: string)
       const entries = fs.readdirSync(openclawDir, { withFileTypes: true });
       for (const e of entries) {
         if (e.isDirectory() && (e.name === 'workspace' || e.name.startsWith('workspace-'))) {
-          const sd = path.join(openclawDir, e.name, 'skills');
-          if (!dirs.includes(sd)) dirs.push(sd);
+          addDir(path.join(openclawDir, e.name, 'skills'));
         }
       }
     } catch {}
+  }
+
+  // Codex per-agent home: <openclawDir>/agents/<id>/agent/codex-home/skills/
+  // Use known agent ids from openclaw.json, plus scan the agents dir as fallback.
+  const agentsBase = path.join(openclawDir, 'agents');
+  if (agentIds.length === 0) {
+    try {
+      const entries = fs.readdirSync(agentsBase, { withFileTypes: true });
+      for (const e of entries) {
+        if (e.isDirectory() && !e.name.startsWith('.')) agentIds.push(e.name);
+      }
+    } catch {}
+  }
+  for (const id of agentIds) {
+    addDir(path.join(agentsBase, id, 'agent', 'codex-home', 'skills'));
   }
 
   // Always ensure workspace-infra/skills is included (standard install location)
