@@ -27,6 +27,7 @@ import {
   type ChatRole,
 } from "@/lib/chat-db";
 import { readOpenClawConfig } from "@/lib/openclaw-config";
+import { logActivity } from "@/lib/activities-db";
 
 export interface AvailableSession {
   agentId: string;
@@ -372,6 +373,50 @@ export function importOpenClawSessions(opts: ImportOptions = {}): ImportSummary 
           status: "complete",
         });
         added += 1;
+      }
+
+      // Mission Control activity log: one entry per *user turn* in the
+      // newly-imported slice. Duration is the wall-clock gap to the next
+      // assistant text in the same batch — captures Telegram / CLI / cron
+      // conversations that never went through /api/chat/stream.
+      for (let i = 0; i < records.length; i += 1) {
+        const u = records[i];
+        if (u.role !== "user" || !u.content.trim()) continue;
+        let nextAssistant: ParsedRecord | undefined;
+        for (let j = i + 1; j < records.length; j += 1) {
+          if (records[j].role === "assistant" && records[j].content.trim()) {
+            nextAssistant = records[j];
+            break;
+          }
+        }
+        const previewSrc = u.content.replace(/\s+/g, " ").trim();
+        const preview =
+          previewSrc.length > 80 ? `${previewSrc.slice(0, 77)}…` : previewSrc;
+        const duration_ms = nextAssistant
+          ? Math.max(
+              0,
+              new Date(nextAssistant.created_at).getTime() -
+                new Date(u.created_at).getTime(),
+            )
+          : null;
+        try {
+          logActivity(
+            "message",
+            `OpenClaw: ${preview}`,
+            nextAssistant ? "success" : "pending",
+            {
+              agent: session.agentId,
+              duration_ms,
+              metadata: {
+                source: "openclaw_import",
+                sessionId: session.sessionId,
+                threadId: thread.id,
+              },
+            },
+          );
+        } catch {
+          // Best-effort — never break the import on activity-log failure.
+        }
       }
 
       summary.imported += 1;

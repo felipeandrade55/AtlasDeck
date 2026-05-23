@@ -28,6 +28,7 @@ import {
   updateThread,
 } from "@/lib/chat-db";
 import { runOpenClawChat, type RunnerEvent } from "@/lib/openclaw-runner";
+import { logActivity, updateActivity } from "@/lib/activities-db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -140,6 +141,23 @@ export async function POST(req: NextRequest) {
     status: "complete",
   });
 
+  // Mission Control activity: open a "running" entry for this chat turn.
+  // Finalized in the stream's finally block with duration + token usage,
+  // so the dashboard reflects every chat interaction (not just CRUD).
+  const turnStart = Date.now();
+  const previewSrc = prompt.replace(/\s+/g, " ").trim();
+  const preview = previewSrc.length > 80 ? `${previewSrc.slice(0, 77)}…` : previewSrc;
+  let activityId: string | null = null;
+  try {
+    const act = logActivity("message", `Chat: ${preview}`, "running", {
+      agent: agentId,
+      metadata: { threadId: thread.id, source: "web" },
+    });
+    activityId = act.id;
+  } catch (err) {
+    console.warn("[chat/stream] logActivity failed:", err);
+  }
+
   // forceInline appends a routing hint *only* to the prompt we send to
   // OpenClaw — the persisted user message above stays as the original
   // text the operator typed, so the thread history doesn't get polluted
@@ -228,6 +246,17 @@ export async function POST(req: NextRequest) {
           status: assembled ? "complete" : "error",
           error: assembled ? null : "Resposta vazia do OpenClaw",
         });
+
+        if (activityId) {
+          try {
+            updateActivity(activityId, assembled ? "success" : "error", {
+              duration_ms: Date.now() - turnStart,
+              tokens_used: tokensIn + tokensOut,
+            });
+          } catch (err) {
+            console.warn("[chat/stream] updateActivity failed:", err);
+          }
+        }
 
         // If we learned the OpenClaw session id, attach it to the thread
         if (sessionId && !thread!.source_session_id) {
