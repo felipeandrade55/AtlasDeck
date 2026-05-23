@@ -202,13 +202,17 @@ export async function reconcile(
       console.warn("[reconcile] failed to update history:", err);
     }
 
-    // Fire notification on bell
+    // Fire notification on bell — agora com briefing detalhado.
     void notifyUpdateResult(
       updatedLive.status === "complete",
       updatedLive.fromSha,
       updatedLive.toSha,
-      durationMs,
-      updatedLive.error
+      {
+        durationMs,
+        errorMsg: updatedLive.error,
+        origin: updatedLive.origin || "manual",
+        phases: updatedLive.phases,
+      }
     );
 
     // Activity log

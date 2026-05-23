@@ -80,6 +80,8 @@ export function UpdatePanel() {
   const [reconnecting, setReconnecting] = useState(false);
   const [backupBeforeUpdate, setBackupBeforeUpdate] = useState(true);
   const [savingBackupConfig, setSavingBackupConfig] = useState(false);
+  const [autoUpdate, setAutoUpdate] = useState(true);
+  const [savingAutoUpdate, setSavingAutoUpdate] = useState(false);
 
   const logsEndRef = useRef<HTMLDivElement>(null);
   const offsetsRef = useRef({ logOffset: 0, phaseOffset: 0 });
@@ -118,7 +120,33 @@ export function UpdatePanel() {
       if (!res.ok) return;
       const config = await res.json() as UpdateConfig;
       setBackupBeforeUpdate(config.backupBeforeUpdate !== false);
+      setAutoUpdate(config.autoUpdate !== false);
     } catch {}
+  }, []);
+
+  const saveAutoUpdateConfig = useCallback(async (enabled: boolean) => {
+    setSavingAutoUpdate(true);
+    try {
+      const res = await fetch("/api/update/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoUpdate: enabled }),
+      });
+      const config = await res.json().catch(() => null) as UpdateConfig | { error?: string } | null;
+      if (!res.ok) {
+        throw new Error(config && "error" in config ? config.error : "Falha ao salvar auto-update");
+      }
+      if (config && "autoUpdate" in config) {
+        setAutoUpdate(config.autoUpdate !== false);
+      } else {
+        setAutoUpdate(enabled);
+      }
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : "Falha ao salvar auto-update");
+      throw err;
+    } finally {
+      setSavingAutoUpdate(false);
+    }
   }, []);
 
   const saveBackupConfig = useCallback(async (enabled: boolean) => {
@@ -610,6 +638,48 @@ export function UpdatePanel() {
                     </ul>
                   </div>
                 )}
+
+                <div
+                  className="mb-3 rounded-lg p-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+                  style={{
+                    backgroundColor: "var(--surface)",
+                    border: "1px solid var(--border)",
+                  }}
+                >
+                  <div>
+                    <div className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+                      Auto-update
+                    </div>
+                    <div className="text-xs" style={{ color: "var(--text-muted)" }}>
+                      {autoUpdate
+                        ? "Ativo: o sistema se atualiza sozinho quando detecta nova versão no GitHub. Você é avisado pelo sino antes e depois."
+                        : "Desativado: você precisa clicar em \"Atualizar Agora\" manualmente."}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={autoUpdate}
+                    disabled={savingAutoUpdate}
+                    onClick={() => {
+                      const next = !autoUpdate;
+                      setAutoUpdate(next);
+                      void saveAutoUpdateConfig(next).catch(() => setAutoUpdate(!next));
+                    }}
+                    className="relative inline-flex h-7 w-14 flex-shrink-0 items-center rounded-full transition-colors disabled:opacity-60"
+                    style={{
+                      backgroundColor: autoUpdate ? "var(--accent)" : "var(--card-elevated)",
+                      border: "1px solid var(--border)",
+                    }}
+                  >
+                    <span
+                      className="inline-block h-5 w-5 rounded-full bg-white transition-transform"
+                      style={{
+                        transform: autoUpdate ? "translateX(30px)" : "translateX(4px)",
+                      }}
+                    />
+                  </button>
+                </div>
 
                 <div
                   className="mb-4 rounded-lg p-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"

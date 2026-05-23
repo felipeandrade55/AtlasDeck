@@ -1,5 +1,7 @@
-import { checkForUpdates, readUpdateConfig } from "./update";
+import { addNotification } from "./notifications";
+import { checkForUpdates, getActiveUpdate, readUpdateConfig, writeUpdateConfig } from "./update";
 import { notifyIfNewUpdate } from "./update-notifier";
+import { triggerUpdate } from "./update-trigger";
 
 let started = false;
 let timer: NodeJS.Timeout | null = null;
@@ -11,8 +13,67 @@ async function tick() {
   try {
     const result = await checkForUpdates(true);
     await notifyIfNewUpdate(result);
+    await maybeAutoUpdate(result);
   } catch (err) {
     console.warn("[update-scheduler] check failed:", err);
+  }
+}
+
+/**
+ * Se autoUpdate=true e o scheduler acabou de detectar uma versão nova
+ * (que ainda não tentamos automaticamente), dispara o deploy.sh detached.
+ *
+ * Anti-loop: persiste `lastAutoUpdateAttemptSha` no config; só tenta de
+ * novo quando aparecer um SHA *diferente* do que já tentamos. Se o update
+ * falhar, o usuário ainda pode retry manual pela UI — esse path NÃO usa
+ * `lastAutoUpdateAttemptSha`.
+ */
+async function maybeAutoUpdate(result: Awaited<ReturnType<typeof checkForUpdates>>) {
+  if (!result.hasUpdate) return;
+
+  const config = readUpdateConfig();
+  if (!config.autoUpdate) return;
+
+  if (config.lastAutoUpdateAttemptSha === result.remoteSha) {
+    // Já tentamos auto-update para esta versão; não insistir.
+    return;
+  }
+
+  // Se já existe um update rodando (manual ou auto anterior), não disparar.
+  const active = getActiveUpdate();
+  if (active?.status === "running") return;
+
+  const short = result.remoteSha.slice(0, 7);
+  console.log(`[update-scheduler] auto-update disparando para ${short}`);
+
+  // Notifica que vai começar — separado da notificação "update disponível"
+  // para o usuário entender que é o sistema que está agindo.
+  try {
+    await addNotification(
+      "🤖 Auto-update iniciando",
+      `Versão nova detectada (${short}). O sistema vai se atualizar agora conforme a política de auto-update.`,
+      "info",
+      "/settings",
+      { remoteSha: result.remoteSha, origin: "auto" }
+    );
+  } catch (err) {
+    console.warn("[update-scheduler] failed to create starting notification:", err);
+  }
+
+  // Marca tentativa ANTES do trigger pra não disparar de novo se algo der pau.
+  writeUpdateConfig({ lastAutoUpdateAttemptSha: result.remoteSha });
+
+  const trigger = await triggerUpdate("auto");
+  if (!trigger.ok) {
+    console.warn(`[update-scheduler] auto-update failed to start: ${trigger.reason}`);
+    try {
+      await addNotification(
+        "❌ Auto-update não iniciou",
+        `Falha ao iniciar processo: ${trigger.error || trigger.reason || "erro desconhecido"}. Tente atualizar manualmente em Configurações.`,
+        "error",
+        "/settings"
+      );
+    } catch {}
   }
 }
 
@@ -33,7 +94,7 @@ export function startUpdateScheduler() {
 
   const intervalMs = Math.max(MIN_INTERVAL_MS, (config.checkIntervalMinutes || 5) * 60_000);
   console.log(
-    `[update-scheduler] iniciando — intervalo ${Math.round(intervalMs / 1000)}s`
+    `[update-scheduler] iniciando — intervalo ${Math.round(intervalMs / 1000)}s, autoUpdate=${config.autoUpdate}`
   );
 
   // Primeira execução após 10s (dá tempo do servidor estabilizar)

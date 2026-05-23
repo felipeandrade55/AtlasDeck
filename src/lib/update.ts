@@ -12,6 +12,17 @@ export interface UpdateConfig {
   repoName: string;
   branch: string;
   backupBeforeUpdate: boolean;
+  /**
+   * Auto-update: quando o scheduler detecta uma versão nova, dispara o
+   * deploy.sh automaticamente. Default true.
+   */
+  autoUpdate: boolean;
+  /**
+   * SHA da última versão para a qual o auto-update foi tentado — evita
+   * loop infinito de auto-disparo no mesmo SHA caso o update falhe.
+   * Limpo quando o usuário muda algo manualmente.
+   */
+  lastAutoUpdateAttemptSha: string | null;
   lastCheckedAt: string | null;
   lastNotifiedSha: string | null;
 }
@@ -65,6 +76,7 @@ export interface UpdateHistoryEntry {
   phases: UpdatePhase[];
   error?: string;
   logs?: string;
+  origin?: "manual" | "auto";
 }
 
 export interface UpdateLiveStatus {
@@ -82,6 +94,7 @@ export interface UpdateLiveStatus {
   logFile: string;
   statusFile: string;
   error?: string;
+  origin?: "manual" | "auto";
 }
 
 const DEFAULT_CONFIG: UpdateConfig = {
@@ -91,6 +104,8 @@ const DEFAULT_CONFIG: UpdateConfig = {
   repoName: "AtlasDeck",
   branch: "main",
   backupBeforeUpdate: true,
+  autoUpdate: true,
+  lastAutoUpdateAttemptSha: null,
   lastCheckedAt: null,
   lastNotifiedSha: null,
 };
@@ -273,7 +288,11 @@ export function getActiveUpdate(): UpdateLiveStatus | null {
       // Notifica o sino sobre a falha (import dinâmico para evitar ciclo)
       void import("./update-notifier")
         .then(({ notifyUpdateResult }) =>
-          notifyUpdateResult(false, status.fromSha, status.toSha, undefined, reconciled.error)
+          notifyUpdateResult(false, status.fromSha, status.toSha, {
+            errorMsg: reconciled.error,
+            origin: status.origin || "manual",
+            phases: status.phases,
+          })
         )
         .catch(() => {});
       return reconciled;
