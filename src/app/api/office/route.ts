@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { readFileSync, statSync, readdirSync } from "fs";
 import { join } from "path";
-import { getOpenClawDir, resolveOpenClawAgentsConfigPath } from "@/lib/openclaw-config";
+import { DEFAULT_AGENTS_CONFIG, getOpenClawDir, resolveOpenClawAgentsConfigPath } from "@/lib/openclaw-config";
 
 export const dynamic = "force-dynamic";
 
@@ -190,11 +190,13 @@ export async function GET() {
     // Try gateway first, fallback to file-based
     const gatewayStatus = await getAgentStatusFromGateway();
 
-    if (!config.agents?.list?.length) {
-      return NextResponse.json({ agents: [] });
-    }
+    // Office must never be empty — fall back to the bundled default roster when
+    // the user hasn't configured any agents yet (fresh install, empty list, etc.)
+    const agentList: any[] = config.agents?.list?.length
+      ? config.agents.list
+      : DEFAULT_AGENTS_CONFIG.agents.list;
 
-    const agents = config.agents.list.map((agent: any) => {
+    const agents = agentList.map((agent: any) => {
       const fallbackConfig = AGENT_CONFIG[agent.id as keyof typeof AGENT_CONFIG];
       const agentInfo = {
         emoji: agent.ui?.emoji || fallbackConfig?.emoji || "🤖",

@@ -3,7 +3,7 @@ import path from "path";
 
 const FALLBACK_AGENTS_CONFIG_PATH = path.join(process.cwd(), "data", "openclaw-fallback.json");
 
-const DEFAULT_AGENTS_CONFIG = {
+export const DEFAULT_AGENTS_CONFIG = {
   agents: {
     defaults: {
       model: {

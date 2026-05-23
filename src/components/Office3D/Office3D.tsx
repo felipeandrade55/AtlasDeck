@@ -34,7 +34,7 @@ export default function Office3D() {
           const data = await res.json();
           const newStates: Record<string, AgentState> = {};
           
-          if (data.agents && Array.isArray(data.agents)) {
+          if (data.agents && Array.isArray(data.agents) && data.agents.length > 0) {
             // Preset positions in the 3D office
             const presetPositions: [number, number, number][] = [
               [0, 0, 0],    // Center
