@@ -38,6 +38,7 @@ export type RunnerEvent =
   | { type: "tool_result"; id?: string; output: string }
   | { type: "session"; sessionId: string }
   | { type: "usage"; tokensIn: number; tokensOut: number; cost?: number; model?: string }
+  | { type: "timing"; phase: "handshake" | "hello-ok" | "chat-send" | "first-delta" | "final"; ms: number }
   | { type: "done" }
   | { type: "error"; message: string; code?: string };
 

@@ -40,6 +40,7 @@ export type WsChatEvent =
   | { type: "tool_result"; id?: string; output: string }
   | { type: "session"; sessionId: string }
   | { type: "usage"; tokensIn: number; tokensOut: number; cost?: number; model?: string }
+  | { type: "timing"; phase: "handshake" | "hello-ok" | "chat-send" | "first-delta" | "final"; ms: number }
   | { type: "done" }
   | { type: "error"; message: string; code?: string };
 
@@ -206,6 +207,13 @@ function buildConnectRequest(token: string | null): Record<string, unknown> {
 }
 
 function buildChatSendRequest(input: WsChatInput): Record<string, unknown> {
+  // `thinking` and `fastMode` are documented in the gateway schema
+  // (logs-chat.d.ts) as optional latency knobs. Defaults below favour
+  // speed for conversational use; override via env when debugging.
+  //   ATLAS_CHAT_THINKING=on|off|low|high  (default "off")
+  //   ATLAS_CHAT_FAST_MODE=true|false      (default true)
+  const thinking = process.env.ATLAS_CHAT_THINKING?.trim() || "off";
+  const fastMode = process.env.ATLAS_CHAT_FAST_MODE !== "false";
   return {
     type: "req",
     id: randomUUID(),
@@ -215,6 +223,8 @@ function buildChatSendRequest(input: WsChatInput): Record<string, unknown> {
       message: input.prompt,
       idempotencyKey: randomUUID(),
       ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+      thinking,
+      fastMode,
     },
   };
 }
@@ -299,6 +309,21 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
   let chatSendDispatched = false;
   const state: RunnerState = { runId: null, helloOk: false };
 
+  // Timing instrumentation — each phase records its delta from t0.
+  // The chat page surfaces these in the bubble badge so it's obvious
+  // whether the gateway is streaming token-by-token or batching the
+  // whole reply.
+  const t0 = Date.now();
+  let openedAt = 0;
+  let helloOkAt = 0;
+  let chatSentAt = 0;
+  let firstDeltaAt = 0;
+
+  type TimingPhase = "handshake" | "hello-ok" | "chat-send" | "first-delta" | "final";
+  const emitTiming = (phase: TimingPhase, at: number) => {
+    queue.push({ type: "timing", phase, ms: at - t0 });
+  };
+
   const wake = () => {
     if (resolveNext) {
       resolveNext();
@@ -324,10 +349,14 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
   const sendChatIfReady = () => {
     if (!state.helloOk || chatSendDispatched) return;
     chatSendDispatched = true;
+    chatSentAt = Date.now();
+    emitTiming("chat-send", chatSentAt);
     send(buildChatSendRequest(input));
   };
 
   ws.on("open", () => {
+    openedAt = Date.now();
+    emitTiming("handshake", openedAt);
     if (debug) console.log("[ws] open", winning.url);
     // Do nothing here — wait for connect.challenge from the server. Per
     // the protocol, the first frame the server sends is the challenge,
@@ -359,10 +388,20 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
 
     const events = translateMessage(parsed, state);
     if (events.length > 0) {
-      // hello-ok transitions to chat.send
       const sawHelloOk = events.some((e) => e.type === "session");
-      if (sawHelloOk) {
+      if (sawHelloOk && helloOkAt === 0) {
+        helloOkAt = Date.now();
+        emitTiming("hello-ok", helloOkAt);
         sendChatIfReady();
+      }
+      const hasToken = events.some((e) => e.type === "token");
+      if (hasToken && firstDeltaAt === 0) {
+        firstDeltaAt = Date.now();
+        emitTiming("first-delta", firstDeltaAt);
+      }
+      const isDone = events.some((e) => e.type === "done");
+      if (isDone) {
+        emitTiming("final", Date.now());
       }
       queue.push(...events);
       wake();

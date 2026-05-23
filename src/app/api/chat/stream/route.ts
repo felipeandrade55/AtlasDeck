@@ -50,6 +50,27 @@ function deriveTitleFromPrompt(prompt: string): string {
   return collapsed.length > 60 ? `${collapsed.slice(0, 57)}…` : collapsed;
 }
 
+function formatMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function formatTimings(
+  timings: Record<string, number>,
+  baseDetail: string | null,
+): string {
+  const parts: string[] = [];
+  if (timings["handshake"] != null) parts.push(`handshake=${formatMs(timings["handshake"])}`);
+  if (timings["hello-ok"] != null) parts.push(`hello-ok=${formatMs(timings["hello-ok"])}`);
+  if (timings["first-delta"] != null) {
+    parts.push(`1st-delta=${formatMs(timings["first-delta"])}`);
+  }
+  if (timings["final"] != null) parts.push(`final=${formatMs(timings["final"])}`);
+  const stripped = baseDetail ? baseDetail.split("· ").filter((s) => !s.includes("=")).join("· ") : "";
+  const head = stripped ? stripped.trim().replace(/·\s*$/, "") : "";
+  return head ? `${head} · ${parts.join(" · ")}` : parts.join(" · ");
+}
+
 export async function POST(req: NextRequest) {
   let body: ChatStreamBody;
   try {
@@ -113,6 +134,7 @@ export async function POST(req: NextRequest) {
   let sessionId: string | null = null;
   let providerForTurn: string | null = null;
   let providerDetailForTurn: string | null = null;
+  const timings: Record<string, number> = {};
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -245,6 +267,21 @@ export async function POST(req: NextRequest) {
               cost,
               model: evt.model,
             });
+            break;
+          case "timing":
+            // Track the gateway phase timings so the bubble badge can
+            // explain WHERE the latency is going (handshake vs LLM
+            // first-byte vs LLM final). Update the provider detail
+            // and re-emit the provider event so the badge refreshes
+            // live as each phase reports.
+            timings[evt.phase] = evt.ms;
+            providerDetailForTurn = formatTimings(timings, providerDetailForTurn);
+            if (providerForTurn) {
+              send("provider", {
+                provider: providerForTurn,
+                detail: providerDetailForTurn,
+              });
+            }
             break;
           case "done":
             // Handled by the loop break — finally block does the persistence.
