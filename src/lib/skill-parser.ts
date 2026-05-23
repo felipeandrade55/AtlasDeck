@@ -177,6 +177,40 @@ export function parseSkill(skillPath: string, skillName: string, agents: string[
 }
 
 /**
+ * Parse a standalone .md file as a Claude Code skill (flat layout).
+ * Used for skills that live as `<base>/<category>/<skill>.md` instead of
+ * the canonical `<base>/<skill>/SKILL.md`.
+ */
+function parseSkillFromMdFile(
+  filePath: string,
+  source: 'workspace' | 'system'
+): SkillInfo | null {
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const { frontMatter, body } = parseFrontMatter(content);
+
+    // Must have a name in frontmatter to qualify as a skill
+    if (!frontMatter.name) return null;
+
+    return {
+      id: frontMatter.name,
+      name: frontMatter.name,
+      description: frontMatter.description || extractFirstParagraph(body),
+      location: filePath,
+      source,
+      homepage: frontMatter.homepage,
+      emoji: frontMatter.metadata?.openclaw?.emoji,
+      fileCount: 1,
+      fullContent: content,
+      files: [path.basename(filePath)],
+      agents: [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Detect the OpenClaw/Codex installation directory.
  * Tries OPENCLAW_DIR env, then ~/.codex, then ~/.openclaw.
  */
@@ -330,6 +364,44 @@ export function scanAllSkills(): SkillInfo[] {
     } catch {}
   }
 
+  // Recursively discover .md files as flat-layout skills, up to maxDepth deep.
+  // Each .md file with a `name:` frontmatter is treated as a standalone skill.
+  function discoverFlatInDir(
+    basePath: string,
+    source: 'workspace' | 'system',
+    maxDepth = 3
+  ) {
+    if (!fs.existsSync(basePath)) return;
+    const visit = (dir: string, depth: number) => {
+      if (depth > maxDepth) return;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (entry.name.startsWith('.')) continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          // Skip dirs that look like canonical skill folders — discoverInDir handles those.
+          if (fs.existsSync(path.join(full, 'SKILL.md'))) continue;
+          visit(full, depth + 1);
+        } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
+          if (entry.name.toUpperCase() === 'SKILL.MD') continue;
+          if (seenPaths.has(full)) continue;
+          const skill = parseSkillFromMdFile(full, source);
+          if (!skill) continue;
+          if (seenNames.has(skill.id)) continue;
+          seenPaths.add(full);
+          seenNames.add(skill.id);
+          skills.push(skill);
+        }
+      }
+    };
+    visit(basePath, 0);
+  }
+
   // 1. Auto-discover system skills from default Linux path
   discoverInDir(systemPath, 'system');
 
@@ -338,6 +410,26 @@ export function scanAllSkills(): SkillInfo[] {
     const codexSystem = path.join(openclawDir, 'skills', '.system');
     discoverInDir(codexSystem, 'system');
   }
+
+  // 2b. Auto-discover Claude Code user-level skills (~/.claude/skills/)
+  // Supports both canonical (<skill>/SKILL.md) and flat (<category>/<skill>.md) layouts.
+  const claudeUserSkillsDir = path.join(os.homedir(), '.claude', 'skills');
+  discoverInDir(claudeUserSkillsDir, 'system');
+  discoverFlatInDir(claudeUserSkillsDir, 'system');
+
+  // 2c. Auto-discover Claude Code user-level plugin skills (~/.claude/plugins/*/skills/)
+  const claudePluginsDir = path.join(os.homedir(), '.claude', 'plugins');
+  try {
+    if (fs.existsSync(claudePluginsDir)) {
+      const pluginEntries = fs.readdirSync(claudePluginsDir, { withFileTypes: true });
+      for (const p of pluginEntries) {
+        if (!p.isDirectory() || p.name.startsWith('.')) continue;
+        const pluginSkills = path.join(claudePluginsDir, p.name, 'skills');
+        discoverInDir(pluginSkills, 'system');
+        discoverFlatInDir(pluginSkills, 'system');
+      }
+    }
+  } catch {}
 
   // 3. Auto-discover workspace skills from ALL workspace-*/skills directories
   const workspaceSkillsDirs = openclawDir
@@ -435,6 +527,8 @@ export function getSkillsScanInfo(): {
   openclawDir: string | null;
   systemPath: string;
   workspaceSkillsDirs: string[];
+  claudeUserSkillsDir: string;
+  claudePluginsDir: string;
   configPath: string;
   configLoaded: boolean;
   configuredSkills: string[];
@@ -451,6 +545,8 @@ export function getSkillsScanInfo(): {
     openclawDir,
     systemPath: config.systemSkillsPath || DEFAULT_SYSTEM_PATH,
     workspaceSkillsDirs: openclawDir ? getAllWorkspaceSkillsDirs(openclawDir, config.workspaceSkillsPath) : [],
+    claudeUserSkillsDir: path.join(os.homedir(), '.claude', 'skills'),
+    claudePluginsDir: path.join(os.homedir(), '.claude', 'plugins'),
     configPath: CONFIG_PATH,
     configLoaded,
     configuredSkills: config.skills.map((s) => s.name),
