@@ -25,6 +25,7 @@ export function useTtsEngine() {
   const fallback = useSpeechSynthesis();
   const [engine, setEngine] = useState<TtsEngine>("web_speech");
   const [voiceLabel, setVoiceLabel] = useState<string>("Web Speech");
+  const [lastError, setLastError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const objectUrlRef = useRef<string | null>(null);
   const cancelledRef = useRef(false);
@@ -85,8 +86,24 @@ export function useTtsEngine() {
         body: JSON.stringify({ text }),
       });
       if (!res.ok || !res.body) {
+        // Surface the upstream error so the page can show a toast — the
+        // silent fallback to Web Speech was hiding Fish Audio / ElevenLabs
+        // misconfiguration and making the user think TTS was just broken.
+        let detail = `HTTP ${res.status}`;
+        try {
+          const data = await res.json();
+          if (typeof data?.error === "string") detail = data.error;
+        } catch {
+          try {
+            const text = await res.text();
+            if (text) detail = text.slice(0, 240);
+          } catch {}
+        }
+        setLastError(detail);
         return false;
       }
+      // Clear any previous error since the cloud TTS just worked.
+      setLastError(null);
       const blob = await res.blob();
       if (cancelledRef.current) return true;
       const url = URL.createObjectURL(blob);
@@ -101,10 +118,12 @@ export function useTtsEngine() {
         };
         audio.onerror = () => {
           cleanupAudio();
+          setLastError("Falha ao reproduzir áudio do TTS no <audio>");
           resolve(false);
         };
-        audio.play().catch(() => {
+        audio.play().catch((err) => {
           cleanupAudio();
+          setLastError(`Browser bloqueou play(): ${(err as Error).message}`);
           resolve(false);
         });
       });
@@ -143,6 +162,8 @@ export function useTtsEngine() {
     refresh,
     engine,
     voiceLabel,
+    lastError,
+    clearError: () => setLastError(null),
     supported:
       fallback.supported || engine === "elevenlabs" || engine === "fishaudio",
   };

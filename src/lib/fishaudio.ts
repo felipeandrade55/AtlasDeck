@@ -141,7 +141,12 @@ export async function streamFishAudioTts(
     headers: {
       Authorization: `Bearer ${config.apiKey}`,
       "Content-Type": "application/json",
+      // Fish Audio's docs use a `model` header to route to a particular
+      // TTS engine ("s1", "s1-pro", "s2", "speech-1.5", ...). We send
+      // both the lowercase and the capitalised variant since some
+      // builds appear to be case-sensitive.
       model: config.model,
+      Model: config.model,
       Accept: "audio/mpeg",
     },
     body: JSON.stringify(body),

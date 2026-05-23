@@ -684,6 +684,31 @@ export default function ChatPage() {
         {statusBanner && (
           <div style={bannerStyle}>{statusBanner}</div>
         )}
+        {tts.lastError && (
+          <div style={bannerStyle}>
+            <span style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+              <span>
+                ⚠ TTS ({tts.engine}) falhou — usando voz do browser como fallback.{" "}
+                <strong>Detalhe:</strong> {tts.lastError}
+              </span>
+              <button
+                type="button"
+                onClick={tts.clearError}
+                style={{
+                  background: "transparent",
+                  border: "1px solid var(--danger, #ef4444)",
+                  borderRadius: 4,
+                  color: "var(--danger, #ef4444)",
+                  fontSize: 10,
+                  padding: "2px 8px",
+                  cursor: "pointer",
+                }}
+              >
+                Dispensar
+              </button>
+            </span>
+          </div>
+        )}
         {wakeTeaser && (
           <div style={wakeTeaserStyle}>🎙 {wakeTeaser}</div>
         )}

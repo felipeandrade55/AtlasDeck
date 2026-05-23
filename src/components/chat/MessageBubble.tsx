@@ -103,9 +103,12 @@ export function MessageBubble({ message, agent, onSpeak, isSpeaking }: MessageBu
           message.totalMs) && (
           <div style={usageStyle(isUser)}>
             {message.provider && (
-              <span style={providerBadgeStyle(message.provider)}>
+              <span
+                style={providerBadgeStyle(message.provider)}
+                title={message.providerDetail ?? undefined}
+              >
                 {providerLabel(message.provider)}
-                {message.providerDetail && ` · ${message.providerDetail.slice(0, 20)}`}
+                {message.providerDetail && ` · ${message.providerDetail.slice(0, 120)}`}
               </span>
             )}
             {message.firstTokenMs != null && (
@@ -299,15 +302,18 @@ function providerBadgeStyle(provider: string): CSSProperties {
       ? "#6366f1"
       : "var(--text-muted)";
   return {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: "1px 6px",
+    display: "inline-block",
+    padding: "2px 6px",
     borderRadius: 4,
     border: `1px solid ${color}`,
     color,
     fontSize: 9,
     fontWeight: 600,
     letterSpacing: 0.4,
+    maxWidth: "100%",
+    whiteSpace: "normal",
+    wordBreak: "break-word",
+    lineHeight: 1.3,
   };
 }
 

@@ -21,6 +21,7 @@
  * SSE route already knows how to forward.
  */
 import { randomUUID } from "crypto";
+import WebSocket from "ws";
 import { getOpenClawGatewayInfo } from "@/lib/openclaw-config";
 
 export interface WsChatInput {
@@ -53,16 +54,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+interface WsCandidate {
+  url: string;
+  /** Optional bearer token to attach via Authorization header. */
+  token: string | null;
+}
+
 /**
  * Build the candidate WebSocket URLs to try in order. Gateways differ
  * across builds: some expose chat on `/`, others on `/ws` or `/api/ws`.
- * We probe each in sequence until one accepts the handshake; the
- * winner is reused for the rest of the turn.
+ * We also vary how the bearer token is delivered — some gateways want
+ * it in the URL query string, others expect a header (which the `ws`
+ * npm package supports, unlike the browser WebSocket API). Each combo
+ * is tried in sequence until one accepts the handshake.
  */
-function buildWsUrlCandidates(): string[] {
+function buildWsUrlCandidates(): WsCandidate[] {
   const info = getOpenClawGatewayInfo();
   const baseUrl = info.url.replace(/^http/, "ws").replace(/\/$/, "");
-  const params = info.token
+  const queryParams = info.token
     ? `?${new URLSearchParams({
         token: info.token,
         access_token: info.token,
@@ -72,7 +81,18 @@ function buildWsUrlCandidates(): string[] {
   const paths = process.env.ATLAS_CHAT_WS_PATH?.trim()
     ? [process.env.ATLAS_CHAT_WS_PATH.trim()]
     : ["/", "/ws", "/api/ws", "/gateway/ws", "/chat"];
-  return paths.map((p) => `${baseUrl}${p === "/" ? "" : p}${params}`);
+  const out: WsCandidate[] = [];
+  for (const p of paths) {
+    const prefix = p === "/" ? "" : p;
+    // First try with Authorization header (matches the HTTP API auth flow
+    // most gateways expose) + no query token.
+    if (info.token) {
+      out.push({ url: `${baseUrl}${prefix}`, token: info.token });
+    }
+    // Then with token-in-query, no header (for builds that ignore headers).
+    out.push({ url: `${baseUrl}${prefix}${queryParams}`, token: null });
+  }
+  return out;
 }
 
 /**
@@ -204,31 +224,35 @@ function translateMessage(raw: unknown, state: { runId: string | null }): WsChat
  * events as they arrive. The generator returns once a "done" event is
  * observed, an error is emitted, or the input AbortSignal fires.
  */
-export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsChatEvent> {
-  if (typeof WebSocket === "undefined") {
-    yield {
-      type: "error",
-      code: "NO_WS",
-      message: "Runtime nao tem WebSocket global. Atualize o Node ou rode em ambiente moderno.",
-    };
-    return;
+function openWs(candidate: WsCandidate): WebSocket {
+  const headers: Record<string, string> = {};
+  if (candidate.token) {
+    headers.Authorization = `Bearer ${candidate.token}`;
   }
+  return new WebSocket(candidate.url, { headers });
+}
 
+function describe(candidate: WsCandidate): string {
+  return `${candidate.url} (${candidate.token ? "header bearer" : "query token"})`;
+}
+
+export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsChatEvent> {
   const candidates = buildWsUrlCandidates();
   const debug = process.env.MEMORY_DEBUG === "1";
 
-  // Probe each candidate until one accepts the upgrade. We do a quick
-  // 1.5s handshake test per URL — connecting via WebSocket is cheap so
-  // probing 3-4 paths is still well under the runner's overall budget.
-  let url: string | null = null;
-  let probeError = "";
+  // Probe each candidate until one accepts the upgrade. Each attempt
+  // gets up to 1.5s; we collect *all* failure reasons so the SSE
+  // bubble can surface a useful diagnostic (eg. "5 paths · last:
+  // closed 4401 invalid token").
+  let winning: WsCandidate | null = null;
+  const probeErrors: string[] = [];
   for (const candidate of candidates) {
     const probeOk = await new Promise<boolean>((resolve) => {
       let probe: WebSocket;
       try {
-        probe = new WebSocket(candidate);
+        probe = openWs(candidate);
       } catch (err) {
-        probeError = `${candidate}: ${(err as Error).message}`;
+        probeErrors.push(`${describe(candidate)}: ${(err as Error).message}`);
         resolve(false);
         return;
       }
@@ -236,49 +260,51 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
         try {
           probe.close();
         } catch {}
-        probeError = `${candidate}: handshake timeout (1.5s)`;
+        probeErrors.push(`${describe(candidate)}: handshake timeout 1.5s`);
         resolve(false);
       }, 1500);
-      probe.onopen = () => {
+      probe.once("open", () => {
         clearTimeout(timer);
         try {
           probe.close(1000, "probe ok");
         } catch {}
         resolve(true);
-      };
-      probe.onerror = () => {
+      });
+      probe.once("error", (err: Error) => {
         clearTimeout(timer);
-        probeError = `${candidate}: connection refused or closed`;
+        probeErrors.push(`${describe(candidate)}: ${err.message}`);
         resolve(false);
-      };
-      probe.onclose = (ev) => {
+      });
+      probe.once("close", (code: number, reason: Buffer) => {
         clearTimeout(timer);
-        if (ev.code !== 1000) {
-          probeError = `${candidate}: closed (${ev.code} ${ev.reason || ""})`.trim();
+        if (code !== 1000) {
+          probeErrors.push(
+            `${describe(candidate)}: closed ${code} ${reason.toString() || ""}`.trim(),
+          );
           resolve(false);
         }
-      };
+      });
     });
     if (probeOk) {
-      url = candidate;
-      if (debug) console.log("[ws] probe accepted:", candidate);
+      winning = candidate;
+      if (debug) console.log("[ws] probe accepted:", describe(candidate));
       break;
     }
-    if (debug) console.log("[ws] probe rejected:", candidate);
+    if (debug) console.log("[ws] probe rejected:", probeErrors[probeErrors.length - 1]);
   }
 
-  if (!url) {
+  if (!winning) {
     yield {
       type: "error",
       code: "WS_HANDSHAKE_TIMEOUT",
-      message: `Gateway nao aceitou nenhum dos paths probados (${candidates.length}). Ultimo erro: ${probeError || "desconhecido"}`,
+      message: `Gateway nao aceitou nenhum dos ${candidates.length} probes. ${probeErrors.slice(-3).join(" · ")}`,
     };
     return;
   }
 
   let ws: WebSocket;
   try {
-    ws = new WebSocket(url);
+    ws = openWs(winning);
   } catch (err) {
     yield {
       type: "error",
@@ -300,8 +326,8 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
     }
   };
 
-  ws.onopen = () => {
-    if (debug) console.log("[ws] open", url);
+  ws.on("open", () => {
+    if (debug) console.log("[ws] open", winning.url);
     const req: RpcRequest = {
       id: randomUUID(),
       method: "chat.send",
@@ -324,10 +350,10 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
       });
       wake();
     }
-  };
+  });
 
-  ws.onmessage = (event) => {
-    const text = typeof event.data === "string" ? event.data : "";
+  ws.on("message", (data: Buffer) => {
+    const text = data.toString("utf8");
     if (!text) return;
     if (debug) console.log("[ws] msg", text.slice(0, 200));
     let parsed: unknown;
@@ -341,32 +367,32 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
       queue.push(...events);
       wake();
     }
-  };
+  });
 
-  ws.onerror = (event) => {
-    if (debug) console.log("[ws] error", event);
+  ws.on("error", (err: Error) => {
+    if (debug) console.log("[ws] error", err.message);
     queue.push({
       type: "error",
       code: "WS_ERROR",
-      message: "Erro na conexao com o gateway WebSocket",
+      message: `Erro na conexao WebSocket: ${err.message}`,
     });
     wake();
-  };
+  });
 
-  ws.onclose = (event) => {
-    if (debug) console.log("[ws] close", event.code, event.reason);
+  ws.on("close", (code: number, reason: Buffer) => {
+    if (debug) console.log("[ws] close", code, reason.toString());
     closed = true;
     // If we closed without ever getting a "done", surface a soft error
     // so the runner can fall back to CLI.
-    if (event.code !== 1000) {
+    if (code !== 1000) {
       queue.push({
         type: "error",
-        code: `WS_CLOSE_${event.code}`,
-        message: `Gateway fechou a conexao (${event.code} ${event.reason || ""})`.trim(),
+        code: `WS_CLOSE_${code}`,
+        message: `Gateway fechou a conexao (${code} ${reason.toString() || ""})`.trim(),
       });
     }
     wake();
-  };
+  });
 
   const handshakeDeadline = Date.now() + DEFAULT_HANDSHAKE_TIMEOUT_MS;
   const overallDeadline = Date.now() + DEFAULT_OVERALL_TIMEOUT_MS;
@@ -393,7 +419,7 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
   try {
     // Wait for first byte until handshake deadline; if WS never opens
     // (refused, wrong path), bail early so the runner falls back.
-    while (queue.length === 0 && ws.readyState !== WebSocket.OPEN) {
+    while (queue.length === 0 && ws.readyState !== ws.OPEN) {
       if (Date.now() > handshakeDeadline) {
         yield {
           type: "error",
