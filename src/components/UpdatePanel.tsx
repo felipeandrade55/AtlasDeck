@@ -349,27 +349,35 @@ export function UpdatePanel() {
   }, [applyPhaseUpdate, fetchCheck, fetchHistory]);
 
   // Mount: checagem inicial + recuperação de update em andamento
+  // Reage a um update detectado em andamento (manual, auto ou SSH externo).
+  // Chamado tanto no mount quanto no polling de status enquanto idle.
+  const attachToRunningUpdate = useCallback((live: UpdateLiveStatus) => {
+    setLiveStatus(live);
+    setStatus("updating");
+    const hasBackup = live.phases.some((p) => p.name === "backup");
+    initPhases(hasBackup);
+    setPhases((prev) =>
+      prev.map((p) => {
+        const lp = live.phases.find((x) => x.name === p.name);
+        return lp ? { ...p, ...lp } : p;
+      })
+    );
+    offsetsRef.current = { logOffset: 0, phaseOffset: 0 };
+    connectStream();
+  }, [connectStream, initPhases]);
+
   useEffect(() => {
+    let cancelled = false;
+
     void (async () => {
-      // Verifica se há update já rodando (sobreviveu a restart do servidor)
+      // Verifica se há update já rodando (sobreviveu a restart do servidor
+      // OU foi disparado pelo auto-update do scheduler antes desta página abrir).
       try {
         const res = await fetch("/api/update/status");
         const data = await res.json();
+        if (cancelled) return;
         if (data.active && data.status?.status === "running") {
-          // Reanexa ao stream
-          const live = data.status as UpdateLiveStatus;
-          setLiveStatus(live);
-          setStatus("updating");
-          const hasBackup = live.phases.some((p) => p.name === "backup");
-          initPhases(hasBackup);
-          setPhases((prev) =>
-            prev.map((p) => {
-              const lp = live.phases.find((x) => x.name === p.name);
-              return lp ? { ...p, ...lp } : p;
-            })
-          );
-          offsetsRef.current = { logOffset: 0, phaseOffset: 0 };
-          connectStream();
+          attachToRunningUpdate(data.status as UpdateLiveStatus);
           return;
         }
       } catch {}
@@ -380,17 +388,40 @@ export function UpdatePanel() {
 
     void fetchHistory();
 
-    // Polling para detectar updates (mantém a checagem mesmo sem o servidor falar com GitHub)
-    const interval = setInterval(() => {
-      // Não força check durante updating
+    // Polling A — check remoto (GitHub) a cada 5min. Não roda durante updating.
+    const remoteCheckInterval = setInterval(() => {
       setStatus((prev) => {
         if (prev !== "updating") void fetchCheck();
         return prev;
       });
     }, 5 * 60 * 1000);
 
+    // Polling B — status local a cada 8s. Detecta update iniciado por fora
+    // (auto-update do scheduler, SSH manual, etc.) sem precisar de F5.
+    // Custo: ler 1 arquivo JSON pequeno. Não roda durante updating (o stream
+    // SSE já cobre esse caso) nem durante o estado de erro inicial do mount.
+    const statusPollInterval = setInterval(() => {
+      setStatus((prev) => {
+        if (prev === "updating") return prev;
+        void (async () => {
+          try {
+            const res = await fetch("/api/update/status", { cache: "no-store" });
+            if (!res.ok) return;
+            const data = await res.json();
+            if (cancelled) return;
+            if (data.active && data.status?.status === "running") {
+              attachToRunningUpdate(data.status as UpdateLiveStatus);
+            }
+          } catch {}
+        })();
+        return prev;
+      });
+    }, 8_000);
+
     return () => {
-      clearInterval(interval);
+      cancelled = true;
+      clearInterval(remoteCheckInterval);
+      clearInterval(statusPollInterval);
       if (eventSourceRef.current) {
         try {
           eventSourceRef.current.close();
