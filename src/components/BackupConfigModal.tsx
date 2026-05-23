@@ -19,7 +19,7 @@ import {
 interface BackupConfig {
   enabled: boolean;
   schedule: string;
-  retentionDays: number;
+  retentionCount: number;
   destination: string;
   includeEnv: boolean;
 }
@@ -33,7 +33,7 @@ interface BackupConfigModalProps {
 const DEFAULT_CONFIG: BackupConfig = {
   enabled: true,
   schedule: "04:00",
-  retentionDays: 5,
+  retentionCount: 7,
   destination: "./data/backups",
   includeEnv: true,
 };
@@ -81,7 +81,7 @@ export function BackupConfigModal({
         body: JSON.stringify({
           enabled: config.enabled,
           schedule: config.schedule,
-          retentionDays: config.retentionDays,
+          retentionCount: config.retentionCount,
           destination: config.destination,
         }),
       });
@@ -374,14 +374,14 @@ export function BackupConfigModal({
                         className="text-sm font-medium"
                         style={{ color: "var(--text-primary)" }}
                       >
-                        Manter backups por
+                        Manter últimos
                       </span>
                     </div>
                     <span
                       className="text-sm font-bold"
                       style={{ color: "var(--accent)" }}
                     >
-                      {config.retentionDays} dias
+                      {config.retentionCount} backup{config.retentionCount === 1 ? "" : "s"}
                     </span>
                   </div>
 
@@ -389,20 +389,20 @@ export function BackupConfigModal({
                     type="range"
                     min={1}
                     max={30}
-                    value={config.retentionDays}
+                    value={config.retentionCount}
                     onChange={(e) =>
                       setConfig((c) => ({
                         ...c,
-                        retentionDays: parseInt(e.target.value),
+                        retentionCount: parseInt(e.target.value),
                       }))
                     }
                     className="w-full"
                     style={{ accentColor: "var(--accent)" }}
                   />
                   <div className="flex justify-between text-xs" style={{ color: "var(--text-muted)" }}>
-                    <span>1 dia</span>
-                    <span>15 dias</span>
-                    <span>30 dias</span>
+                    <span>1</span>
+                    <span>15</span>
+                    <span>30</span>
                   </div>
                 </div>
 
@@ -487,7 +487,7 @@ export function BackupConfigModal({
                       className="font-medium"
                       style={{ color: "var(--text-primary)" }}
                     >
-                      {config.retentionDays} dias
+                      Últimos {config.retentionCount} backup{config.retentionCount === 1 ? "" : "s"}
                     </span>
                   </div>
                   <div className="flex items-center justify-between text-sm">

@@ -28,26 +28,27 @@ export async function POST(request: NextRequest) {
     const {
       enabled,
       schedule,
-      retentionDays,
+      retentionCount,
       destination,
     }: {
       enabled?: boolean;
       schedule?: string;
-      retentionDays?: number;
+      retentionCount?: number;
       destination?: string;
     } = body;
 
     const current = readBackupConfig();
 
-    // Update config
+    // Update config (legacy retentionDays is dropped once a new count is saved).
     const nextConfig = {
       ...current,
       enabled: enabled ?? current.enabled,
       schedule: schedule ?? current.schedule,
-      retentionDays:
-        retentionDays !== undefined ? retentionDays : current.retentionDays,
+      retentionCount:
+        retentionCount !== undefined ? retentionCount : current.retentionCount,
       destination: destination ?? current.destination,
     };
+    delete (nextConfig as { retentionDays?: number }).retentionDays;
     writeBackupConfig(nextConfig);
 
     // Parse schedule HH:MM into hours and minutes

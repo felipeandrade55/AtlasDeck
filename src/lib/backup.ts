@@ -5,6 +5,7 @@
  */
 
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { execSync, exec } from "child_process";
 import { promisify } from "util";
@@ -15,11 +16,23 @@ const execAsync = promisify(exec);
 export interface BackupConfig {
   enabled: boolean;
   schedule: string; // cron-like or HH:MM
-  retentionDays: number;
+  /** Number of most recent backups to keep — anything older is discarded. */
+  retentionCount: number;
+  /** @deprecated legacy day-based retention. Kept on disk for migration only. */
+  retentionDays?: number;
   destination: string;
   includeEnv: boolean;
   lastBackupAt?: string;
   nextBackupAt?: string;
+}
+
+export interface BackupOrigin {
+  homeDir: string;
+  platform: NodeJS.Platform;
+  hostname: string;
+  user: string;
+  nodeVersion: string;
+  openclawDir?: string;
 }
 
 export interface BackupEntry {
@@ -34,6 +47,7 @@ export interface BackupEntry {
   durationMs?: number;
   error?: string;
   includedPaths: string[];
+  origin?: BackupOrigin;
 }
 
 export interface BackupManifest {
@@ -49,11 +63,24 @@ export interface BackupResult {
   archivePath: string;
 }
 
+/**
+ * Default backup destination lives *outside* the project tree so that even
+ * custom configurations cannot accidentally recurse (compacting backups into
+ * backups). Falls back to `./data/backups` only when HOME is unavailable.
+ */
+function defaultDestination(): string {
+  try {
+    return path.join(os.homedir(), "AtlasDeckBackups");
+  } catch {
+    return "./data/backups";
+  }
+}
+
 const DEFAULT_CONFIG: BackupConfig = {
   enabled: true,
   schedule: "04:00",
-  retentionDays: 5,
-  destination: "./data/backups",
+  retentionCount: 7,
+  destination: defaultDestination(),
   includeEnv: true,
 };
 
@@ -69,10 +96,33 @@ export function readBackupConfig(): BackupConfig {
   try {
     const raw = fs.readFileSync(configPath(), "utf-8");
     const parsed = JSON.parse(raw) as Partial<BackupConfig>;
-    return { ...DEFAULT_CONFIG, ...parsed };
+    const merged: BackupConfig = { ...DEFAULT_CONFIG, ...parsed };
+    // Legacy configs only had `retentionDays` — fall back to the new default
+    // (keep last 7 backups) so a fresh feature ships with no manual edit.
+    if (typeof parsed.retentionCount !== "number") {
+      merged.retentionCount = DEFAULT_CONFIG.retentionCount;
+    }
+    return merged;
   } catch {
     return { ...DEFAULT_CONFIG };
   }
+}
+
+/**
+ * Resolve the schedule string ("HH:MM") into the next absolute Date when it
+ * will fire, relative to `fromDate`. Returns null if the string is malformed.
+ */
+export function computeNextRun(schedule: string, fromDate: Date = new Date()): Date | null {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(schedule || "");
+  if (!m) return null;
+  const h = Math.min(23, parseInt(m[1], 10));
+  const min = Math.min(59, parseInt(m[2], 10));
+  const next = new Date(fromDate);
+  next.setHours(h, min, 0, 0);
+  if (next.getTime() <= fromDate.getTime()) {
+    next.setDate(next.getDate() + 1);
+  }
+  return next;
 }
 
 export function writeBackupConfig(config: BackupConfig): void {
@@ -191,6 +241,29 @@ function discoverPaths(): { label: string; path: string }[] {
     console.warn("[backup] Could not discover OpenClaw paths:", err);
   }
 
+  // Claude Code user-level data (~/.claude/)
+  // The OpenClaw-created skills live here, not under ~/.codex, so they must be
+  // captured for a full restore on another machine.
+  try {
+    const claudeDir = path.join(os.homedir(), ".claude");
+    if (fs.existsSync(claudeDir)) {
+      const claudeTargets = [
+        { label: "claude-skills", rel: "skills" },
+        { label: "claude-plugins", rel: "plugins" },
+        { label: "claude-settings", rel: "settings.json" },
+        { label: "claude-projects", rel: "projects" },
+      ];
+      for (const t of claudeTargets) {
+        const full = path.join(claudeDir, t.rel);
+        if (fs.existsSync(full)) {
+          paths.push({ label: t.label, path: full });
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("[backup] Could not discover Claude Code paths:", err);
+  }
+
   return paths;
 }
 
@@ -219,11 +292,28 @@ export async function runBackup(): Promise<BackupResult> {
     console.log(lineWithTime);
   };
 
+  let openclawDirForOrigin: string | undefined;
+  try {
+    openclawDirForOrigin = getOpenClawDir();
+  } catch {
+    openclawDirForOrigin = undefined;
+  }
+
+  const origin: BackupOrigin = {
+    homeDir: os.homedir(),
+    platform: process.platform,
+    hostname: os.hostname(),
+    user: os.userInfo().username,
+    nodeVersion: process.version,
+    openclawDir: openclawDirForOrigin,
+  };
+
   log("============================================");
   log("OpenClaw + Dashboard Backup Started");
   log(`Timestamp: ${ts}`);
   log(`Destination: ${dest}`);
-  log(`Retention policy: ${config.retentionDays} days`);
+  log(`Retention policy: keep last ${config.retentionCount} backup(s)`);
+  log(`Origin: ${origin.user}@${origin.hostname} (${origin.platform}) home=${origin.homeDir}`);
   log("============================================");
 
   const includedPaths: string[] = [];
@@ -238,6 +328,26 @@ export async function runBackup(): Promise<BackupResult> {
       includedPaths.push(s.path);
     }
 
+    // Drop an origin manifest inside ./data so the tarball is self-describing.
+    // ./data is already part of the source set, so the file lands at the
+    // predictable path data/backup-origin.json after restore.
+    const dataDir = path.join(process.cwd(), "data");
+    fs.mkdirSync(dataDir, { recursive: true });
+    const originFile = path.join(dataDir, "backup-origin.json");
+    fs.writeFileSync(
+      originFile,
+      JSON.stringify(
+        {
+          ...origin,
+          timestamp: startedAt.toISOString(),
+          includedPaths: sources,
+        },
+        null,
+        2
+      ),
+      "utf-8"
+    );
+
     // Build tar command
     // Use a temp file list to handle spaces and special chars safely
     const listFile = path.join(dest, `.backup-list-${ts}.txt`);
@@ -245,7 +355,24 @@ export async function runBackup(): Promise<BackupResult> {
     fs.writeFileSync(listFile, listContent, "utf-8");
 
     log(`Creating archive: ${archiveName}`);
-    const tarCmd = `tar --exclude="node_modules" --exclude=".next" --exclude="data/backups" --exclude=".git" --exclude="*.tar.gz" --exclude="*.log" -czf "${archivePath}" -T "${listFile}"`;
+    // Dynamic exclusion: always exclude the backup destination itself (whatever
+    // it is configured to), to prevent recursive "backup of backups" growth.
+    // tar excludes match anywhere in the path so we feed multiple variants.
+    const destAbs = path.resolve(dest);
+    const destRelFromCwd = path.relative(process.cwd(), destAbs);
+    const destExcludes = new Set<string>();
+    destExcludes.add(destAbs);
+    if (destRelFromCwd && !destRelFromCwd.startsWith("..")) {
+      destExcludes.add(destRelFromCwd);
+      destExcludes.add(`./${destRelFromCwd}`);
+    }
+    destExcludes.add(path.basename(destAbs));
+    const destExcludeFlags = [...destExcludes].map((d) => `--exclude="${d}"`).join(" ");
+
+    const tarCmd =
+      `tar --exclude="node_modules" --exclude=".next" --exclude=".git" ` +
+      `--exclude="*.tar.gz" --exclude="*.log" ${destExcludeFlags} ` +
+      `-czf "${archivePath}" -T "${listFile}"`;
     await execAsync(tarCmd, { timeout: 300000, encoding: "utf-8" });
 
     fs.unlinkSync(listFile);
@@ -287,14 +414,7 @@ export async function runBackup(): Promise<BackupResult> {
   // Write log file
   fs.writeFileSync(logPath, logLines.join("\n") + "\n", "utf-8");
 
-  // Apply retention
-  try {
-    applyRetention(dest, config.retentionDays, log);
-  } catch (err) {
-    log(`Retention cleanup warning: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  // Update manifest
+  // Update manifest first so retention can act on a single source of truth.
   const manifest = readManifest(dest);
   const archiveStats = fs.existsSync(archivePath) ? fs.statSync(archivePath) : { size: 0 };
 
@@ -310,12 +430,20 @@ export async function runBackup(): Promise<BackupResult> {
     durationMs,
     error: errorMsg,
     includedPaths,
+    origin,
   };
 
   manifest.entries.unshift(entry);
   manifest.config = config;
   manifest.totalSizeBytes = manifest.entries.reduce((sum, e) => sum + e.sizeBytes, 0);
   writeManifest(dest, manifest);
+
+  // Apply retention against the updated manifest (count-based).
+  try {
+    applyRetention(dest, config.retentionCount, log);
+  } catch (err) {
+    log(`Retention cleanup warning: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   // Update config lastBackupAt
   config.lastBackupAt = startedAt.toISOString();
@@ -331,28 +459,302 @@ export async function runBackup(): Promise<BackupResult> {
 
 function applyRetention(
   dest: string,
-  retentionDays: number,
+  retentionCount: number,
   log: (line: string) => void
 ) {
-  if (retentionDays <= 0) return;
+  if (retentionCount <= 0) return;
 
-  const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
-  const files = fs.readdirSync(dest);
-  let removed = 0;
+  const manifest = readManifest(dest);
+  if (manifest.entries.length <= retentionCount) return;
 
-  for (const file of files) {
-    if (file === "manifest.json") continue;
-    const fullPath = path.join(dest, file);
-    const stat = fs.statSync(fullPath);
-    if (stat.mtime.getTime() < cutoff) {
-      fs.unlinkSync(fullPath);
-      removed++;
-      log(`Retention: removed old file ${file}`);
-    }
+  // Sort by startedAt desc; keep the most recent N, evict the rest from disk.
+  const sorted = [...manifest.entries].sort(
+    (a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()
+  );
+  const toKeep = sorted.slice(0, retentionCount);
+  const toRemove = sorted.slice(retentionCount);
+
+  const keepFiles = new Set<string>();
+  for (const e of toKeep) {
+    keepFiles.add(e.filename);
+    if (e.logFile) keepFiles.add(e.logFile);
   }
 
+  let removed = 0;
+  for (const entry of toRemove) {
+    const archivePath = path.join(dest, entry.filename);
+    const logPath = entry.logFile ? path.join(dest, entry.logFile) : null;
+    try {
+      if (fs.existsSync(archivePath)) fs.unlinkSync(archivePath);
+    } catch {}
+    try {
+      if (logPath && fs.existsSync(logPath)) fs.unlinkSync(logPath);
+    } catch {}
+    removed++;
+    log(`Retention: removed old backup ${entry.filename}`);
+  }
+
+  // Also sweep any orphan archive/log files not present in the kept set
+  // (e.g. leftovers from manual deletions outside the manifest).
+  try {
+    const onDisk = fs.readdirSync(dest);
+    for (const file of onDisk) {
+      if (file === "manifest.json") continue;
+      if (file.startsWith(".backup-list-")) continue;
+      if (!file.endsWith(".tar.gz") && !file.endsWith(".log")) continue;
+      if (keepFiles.has(file)) continue;
+      const full = path.join(dest, file);
+      try {
+        fs.unlinkSync(full);
+      } catch {}
+    }
+  } catch {}
+
+  manifest.entries = toKeep;
+  manifest.totalSizeBytes = toKeep.reduce((sum, e) => sum + e.sizeBytes, 0);
+  writeManifest(dest, manifest);
+
   if (removed > 0) {
-    log(`Retention policy applied: ${removed} file(s) removed (> ${retentionDays} days)`);
+    log(`Retention policy applied: kept ${toKeep.length}, removed ${removed} older`);
+  }
+}
+
+export interface RestorePreview {
+  origin: BackupOrigin | null;
+  currentHome: string;
+  currentPlatform: NodeJS.Platform;
+  needsRemap: boolean;
+  platformMismatch: boolean;
+  mappings: Array<{ from: string; to: string; exists: boolean }>;
+  archivePath: string;
+  entries: number; // total entries in tar
+  uncompressedBytes: number; // approximate (sum of sizes)
+}
+
+export interface RestoreResult {
+  success: boolean;
+  preview: RestorePreview;
+  restored: Array<{ source: string; target: string; bytes: number }>;
+  skipped: Array<{ source: string; reason: string }>;
+  staging: string;
+  durationMs: number;
+  error?: string;
+}
+
+interface RestoreOptions {
+  dryRun?: boolean;
+  /** When true, overwrite existing files at the target. Default true. */
+  overwrite?: boolean;
+  /** When true, keep the staging directory after restore. */
+  keepStaging?: boolean;
+  /** Override target home directory (defaults to os.homedir()). */
+  targetHomeDir?: string;
+}
+
+/**
+ * Inspect a backup archive without extracting it.
+ * Reads `data/backup-origin.json` from inside the tar and computes the
+ * path mappings that would be applied if restored on this machine.
+ */
+export async function previewRestore(archivePath: string): Promise<RestorePreview> {
+  if (!fs.existsSync(archivePath)) {
+    throw new Error(`Archive not found: ${archivePath}`);
+  }
+
+  // Read origin file directly from tar (no extract)
+  let origin: BackupOrigin | null = null;
+  let entries = 0;
+  try {
+    const listing = execSync(`tar -tzf "${archivePath}"`, { encoding: "utf-8", maxBuffer: 1024 * 1024 * 64 });
+    const lines = listing.split("\n").filter(Boolean);
+    entries = lines.length;
+    const originEntry = lines.find((l) => l.endsWith("data/backup-origin.json"));
+    if (originEntry) {
+      const { stdout } = await execAsync(`tar -xzOf "${archivePath}" "${originEntry}"`, {
+        maxBuffer: 1024 * 1024 * 8,
+        encoding: "utf-8",
+      });
+      const parsed = JSON.parse(stdout) as BackupOrigin & { includedPaths?: Array<{ label: string; path: string }> };
+      origin = {
+        homeDir: parsed.homeDir,
+        platform: parsed.platform,
+        hostname: parsed.hostname,
+        user: parsed.user,
+        nodeVersion: parsed.nodeVersion,
+        openclawDir: parsed.openclawDir,
+      };
+    }
+  } catch (err) {
+    throw new Error(`Failed to read archive: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const currentHome = os.homedir();
+  const currentPlatform = process.platform;
+  const platformMismatch = !!origin && origin.platform !== currentPlatform;
+  const needsRemap = !!origin && origin.homeDir !== currentHome;
+
+  // Compute candidate mappings: only when origin homeDir is known
+  const mappings: Array<{ from: string; to: string; exists: boolean }> = [];
+  if (origin) {
+    const fromBase = origin.homeDir;
+    const toBase = currentHome;
+    mappings.push({ from: fromBase, to: toBase, exists: fs.existsSync(toBase) });
+  }
+
+  return {
+    origin,
+    currentHome,
+    currentPlatform,
+    needsRemap,
+    platformMismatch,
+    mappings,
+    archivePath,
+    entries,
+    uncompressedBytes: 0, // tar -tzf doesn't give sizes cheaply; left at 0 unless needed
+  };
+}
+
+/**
+ * Restore a backup archive to the current machine.
+ *
+ * Strategy: extract everything to a staging directory, then move/copy files
+ * from `<staging>/<oldHome-without-leading-slash>/...` into `<currentHome>/...`.
+ * The dashboard's project tree (cwd) is also restored if present in the tar.
+ *
+ * Notes:
+ *   - Platform mismatches (e.g. linux→darwin) are blocked unless caller passes
+ *     overwrite=true AND understands the risk (no automatic remap for
+ *     Windows-style paths today — only POSIX homes).
+ *   - With dryRun=true, no files are moved; a plan is returned in `restored`.
+ */
+export async function restoreBackup(
+  archivePath: string,
+  opts: RestoreOptions = {}
+): Promise<RestoreResult> {
+  const start = Date.now();
+  const overwrite = opts.overwrite !== false;
+  const dryRun = !!opts.dryRun;
+  const keepStaging = !!opts.keepStaging;
+  const targetHome = opts.targetHomeDir || os.homedir();
+
+  const preview = await previewRestore(archivePath);
+
+  if (preview.platformMismatch) {
+    throw new Error(
+      `Platform mismatch: backup from ${preview.origin?.platform}, restoring on ${preview.currentPlatform}. ` +
+        `Cross-platform restore is not supported (path separators and home layouts differ).`
+    );
+  }
+  if (!preview.origin) {
+    throw new Error(
+      "Backup is missing data/backup-origin.json — cannot determine original home directory. " +
+        "This archive was likely created before the origin-metadata feature was added."
+    );
+  }
+
+  // Staging directory under data/.restore-staging/<ts>
+  const ts = timestampForFile();
+  const staging = path.join(process.cwd(), "data", ".restore-staging", ts);
+  fs.mkdirSync(staging, { recursive: true });
+
+  // Extract everything into staging
+  try {
+    await execAsync(`tar -xzf "${archivePath}" -C "${staging}"`, {
+      timeout: 600000,
+      maxBuffer: 1024 * 1024 * 64,
+      encoding: "utf-8",
+    });
+  } catch (err) {
+    throw new Error(
+      `Extraction failed: ${err instanceof Error ? err.message : String(err)}. Staging: ${staging}`
+    );
+  }
+
+  const oldHome = preview.origin.homeDir;
+  // tar strips leading '/', so paths inside staging look like:
+  //   <staging>/Users/oldUser/.claude/...           (was /Users/oldUser/.claude/...)
+  //   <staging>/Users/oldUser/Dev/AtlasDeck/data    (project dir, also under old home if old project was inside old home)
+  // We rebuild absolute targets by replacing the old-home prefix with targetHome.
+
+  const oldHomeKey = oldHome.replace(/^\/+/, "").replace(/\/+$/, ""); // 'Users/felipeandrade'
+  const restored: Array<{ source: string; target: string; bytes: number }> = [];
+  const skipped: Array<{ source: string; reason: string }> = [];
+
+  // Discover top-level "anchor" directories inside the staging dir.
+  // We walk recursively under the old-home prefix and move everything.
+  const oldHomeStaging = path.join(staging, oldHomeKey);
+  if (!fs.existsSync(oldHomeStaging)) {
+    // No old-home prefix in archive — nothing to remap to home. The archive
+    // may still contain absolute paths outside the home (e.g. /etc/...), but
+    // we deliberately do NOT touch those for safety.
+    skipped.push({
+      source: staging,
+      reason: `No '${oldHomeKey}' prefix found inside archive; nothing to restore to current home.`,
+    });
+  } else {
+    await walkAndPlan(oldHomeStaging, targetHome, restored, skipped, overwrite, dryRun);
+  }
+
+  // Cleanup staging unless asked to keep
+  if (!keepStaging) {
+    try {
+      fs.rmSync(staging, { recursive: true, force: true });
+    } catch {}
+  }
+
+  return {
+    success: true,
+    preview,
+    restored,
+    skipped,
+    staging,
+    durationMs: Date.now() - start,
+  };
+}
+
+async function walkAndPlan(
+  stagingHomeRoot: string,
+  targetHome: string,
+  restored: Array<{ source: string; target: string; bytes: number }>,
+  skipped: Array<{ source: string; reason: string }>,
+  overwrite: boolean,
+  dryRun: boolean
+) {
+  const stack: string[] = [stagingHomeRoot];
+  while (stack.length) {
+    const current = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const source = path.join(current, entry.name);
+      const relFromHome = path.relative(stagingHomeRoot, source);
+      const target = path.join(targetHome, relFromHome);
+      if (entry.isDirectory()) {
+        if (!dryRun) fs.mkdirSync(target, { recursive: true });
+        stack.push(source);
+        continue;
+      }
+      if (entry.isFile()) {
+        const exists = fs.existsSync(target);
+        if (exists && !overwrite) {
+          skipped.push({ source, reason: "target exists; overwrite=false" });
+          continue;
+        }
+        let bytes = 0;
+        try {
+          bytes = fs.statSync(source).size;
+        } catch {}
+        if (!dryRun) {
+          fs.mkdirSync(path.dirname(target), { recursive: true });
+          fs.copyFileSync(source, target);
+        }
+        restored.push({ source, target, bytes });
+      }
+    }
   }
 }
 
@@ -388,6 +790,7 @@ export function getBackupStats(dest?: string) {
   const lastSuccess = manifest.entries.find((e) => e.status === "success");
   const totalBackups = manifest.entries.length;
   const totalSize = manifest.totalSizeBytes;
+  const nextRun = config.enabled ? computeNextRun(config.schedule) : null;
 
   return {
     config,
@@ -395,6 +798,7 @@ export function getBackupStats(dest?: string) {
     totalBackups,
     totalSizeBytes: totalSize,
     totalSizeHuman: formatBytes(totalSize),
+    nextBackupAt: nextRun ? nextRun.toISOString() : null,
     entries: manifest.entries,
   };
 }
@@ -410,7 +814,19 @@ export function scheduleSystemCron(
   enable: boolean
 ): { success: boolean; message: string } {
   const marker = "# mission-control-backup";
-  const command = `cd ${projectDir} && npx tsx scripts/backup.ts >> /var/log/mission-control-backup.log 2>&1`;
+  // Log to a path the cron-running user can write to — /var/log needs root on
+  // macOS and many Linux distros, which would silently break the install.
+  const logFile = path.join(projectDir, "data", "backup-cron.log");
+  // Cron runs with a very minimal PATH; resolve `npx` to an absolute path so
+  // the line works on fresh installs without the user editing PATH= entries.
+  let npxBin = "npx";
+  try {
+    const resolved = execSync("command -v npx", { encoding: "utf-8" }).trim();
+    if (resolved) npxBin = resolved;
+  } catch {
+    // fall back to bare `npx` — user can edit crontab manually if PATH is bare
+  }
+  const command = `cd ${projectDir} && ${npxBin} tsx scripts/backup.ts >> "${logFile}" 2>&1`;
   const cronLine = `${scheduleMinutes} ${scheduleHours} * * * ${command} ${marker}`;
 
   try {
@@ -444,6 +860,49 @@ export function scheduleSystemCron(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { success: false, message: msg };
+  }
+}
+
+/**
+ * Idempotently install the backup cron if config.enabled=true and no cron line
+ * is currently registered. Meant to be called at server startup so a fresh
+ * install gets the 04:00 nightly backup without the user having to open the UI.
+ *
+ * Returns { changed: true } when the crontab was actually modified.
+ */
+export function ensureBackupCronInstalled(projectDir: string = process.cwd()):
+  | { changed: false; reason: string }
+  | { changed: true; message: string } {
+  if (process.platform === "win32") {
+    return { changed: false, reason: "platform=win32 (cron not supported)" };
+  }
+
+  const config = readBackupConfig();
+  if (!config.enabled) {
+    return { changed: false, reason: "config.enabled=false" };
+  }
+
+  const status = getSystemCronStatus();
+  if (status.scheduled) {
+    return { changed: false, reason: "cron already installed" };
+  }
+
+  // Parse schedule like "HH:MM" — fall back to 04:00 on parse failure.
+  const m = /^(\d{1,2}):(\d{2})$/.exec(config.schedule || "");
+  const hours = m ? Math.min(23, parseInt(m[1], 10)) : 4;
+  const minutes = m ? Math.min(59, parseInt(m[2], 10)) : 0;
+
+  try {
+    const res = scheduleSystemCron(projectDir, minutes, hours, true);
+    if (res.success) {
+      return { changed: true, message: res.message };
+    }
+    return { changed: false, reason: `scheduleSystemCron failed: ${res.message}` };
+  } catch (err) {
+    return {
+      changed: false,
+      reason: `unexpected error: ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
 }
 
