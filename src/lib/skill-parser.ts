@@ -211,6 +211,38 @@ function parseSkillFromMdFile(
 }
 
 /**
+ * Walk a tree looking for directories literally named `skills`, up to maxDepth.
+ * Returns paths to every such directory. Does NOT recurse into `skills/` itself —
+ * the caller is responsible for discovering individual skills inside.
+ */
+function findSkillsDirsRecursively(root: string, maxDepth: number): string[] {
+  const result: string[] = [];
+  if (!fs.existsSync(root)) return result;
+
+  const visit = (dir: string, depth: number) => {
+    if (depth > maxDepth) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.name === 'skills') {
+        result.push(full);
+        continue;
+      }
+      visit(full, depth + 1);
+    }
+  };
+
+  visit(root, 0);
+  return result;
+}
+
+/**
  * Detect the OpenClaw/Codex installation directory.
  * Tries OPENCLAW_DIR env, then ~/.codex, then ~/.openclaw.
  */
@@ -417,19 +449,15 @@ export function scanAllSkills(): SkillInfo[] {
   discoverInDir(claudeUserSkillsDir, 'system');
   discoverFlatInDir(claudeUserSkillsDir, 'system');
 
-  // 2c. Auto-discover Claude Code user-level plugin skills (~/.claude/plugins/*/skills/)
+  // 2c. Auto-discover Claude Code user-level plugin skills — walk recursively
+  // for any `skills/` directory. Covers ~/.claude/plugins/<plugin>/skills/ plus
+  // marketplace layouts like ~/.claude/plugins/marketplaces/<m>/plugins/<p>/skills/
+  // and ~/.claude/plugins/marketplaces/<m>/external_plugins/<p>/skills/.
   const claudePluginsDir = path.join(os.homedir(), '.claude', 'plugins');
-  try {
-    if (fs.existsSync(claudePluginsDir)) {
-      const pluginEntries = fs.readdirSync(claudePluginsDir, { withFileTypes: true });
-      for (const p of pluginEntries) {
-        if (!p.isDirectory() || p.name.startsWith('.')) continue;
-        const pluginSkills = path.join(claudePluginsDir, p.name, 'skills');
-        discoverInDir(pluginSkills, 'system');
-        discoverFlatInDir(pluginSkills, 'system');
-      }
-    }
-  } catch {}
+  for (const sd of findSkillsDirsRecursively(claudePluginsDir, 5)) {
+    discoverInDir(sd, 'system');
+    discoverFlatInDir(sd, 'system');
+  }
 
   // 3. Auto-discover workspace skills from ALL workspace-*/skills directories
   const workspaceSkillsDirs = openclawDir
