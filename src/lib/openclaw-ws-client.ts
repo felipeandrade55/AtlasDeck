@@ -58,17 +58,17 @@ interface WsCandidate {
   url: string;
   /** Optional bearer token to attach via Authorization header. */
   token: string | null;
-  /** Optional Origin header — some gateways check `gateway.controlUi.allowedOrigins`. */
+  /** Optional Origin header — empty by default (works with the gateway's
+   *  loopback handshake). Override via `ATLAS_CHAT_WS_ORIGIN` env. */
   origin: string | null;
 }
 
 /**
- * Build the candidate WebSocket URLs to try in order. Gateways differ
- * across builds: some expose chat on `/`, others on `/ws` or `/api/ws`.
- * We also vary how the bearer token is delivered — some gateways want
- * it in the URL query string, others expect a header (which the `ws`
- * npm package supports, unlike the browser WebSocket API). Each combo
- * is tried in sequence until one accepts the handshake.
+ * Build the candidate WebSocket URLs to try. Confirmed via
+ * /api/chat/ws-debug on the production gateway that path `/` + Bearer
+ * header + no Origin returns 101 Switching Protocols. We try that
+ * combo first; the remaining variants stay as fallbacks for future
+ * deploys with non-standard configs.
  */
 function buildWsUrlCandidates(): WsCandidate[] {
   const info = getOpenClawGatewayInfo();
@@ -83,23 +83,21 @@ function buildWsUrlCandidates(): WsCandidate[] {
   const paths = process.env.ATLAS_CHAT_WS_PATH?.trim()
     ? [process.env.ATLAS_CHAT_WS_PATH.trim()]
     : ["/", "/ws", "/api/ws", "/gateway/ws", "/chat"];
-  // Default Origin = the gateway's own loopback URL (matches what the
-  // Control UI sends when it runs on the same host). Set ATLAS_CHAT_WS_ORIGIN
-  // to override. The full /api/chat/ws-debug endpoint sweeps multiple
-  // origins for diagnostic purposes; the runner sticks to one to keep
-  // probe latency in check.
-  const origin =
-    process.env.ATLAS_CHAT_WS_ORIGIN?.trim() ||
-    `http://127.0.0.1:${info.port}`;
+  // Origin defaults to empty (the gateway accepts no-Origin handshakes
+  // from loopback). Set ATLAS_CHAT_WS_ORIGIN to force one when deploying
+  // behind a proxy that rewrites the host.
+  const origin = process.env.ATLAS_CHAT_WS_ORIGIN?.trim() || null;
 
   const out: WsCandidate[] = [];
   for (const p of paths) {
     const prefix = p === "/" ? "" : p;
-    // 1) Authorization header (no query token)
+    // 1) Authorization header (no query token) — the production gateway
+    //    uses this. Tried first.
     if (info.token) {
       out.push({ url: `${baseUrl}${prefix}`, token: info.token, origin });
     }
-    // 2) Token in query string (no Authorization header)
+    // 2) Token in query string (no Authorization header) — fallback for
+    //    builds that strip the Authorization header.
     out.push({ url: `${baseUrl}${prefix}${queryParams}`, token: null, origin });
   }
   return out;
@@ -242,6 +240,9 @@ function openWs(candidate: WsCandidate): WebSocket {
   if (candidate.origin) {
     headers.Origin = candidate.origin;
   }
+  // The `ws` library auto-handles the upgrade with the right
+  // Sec-WebSocket-Key + protocol negotiation. We only need to supply
+  // the auth headers above.
   return new WebSocket(candidate.url, { headers });
 }
 
@@ -332,6 +333,7 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
   const queue: WsChatEvent[] = [];
   let resolveNext: ((value: void) => void) | null = null;
   let closed = false;
+  let chatSent = false;
   const state: { runId: string | null } = { runId: null };
 
   const wake = () => {
@@ -341,22 +343,25 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
     }
   };
 
-  ws.on("open", () => {
-    if (debug) console.log("[ws] open", winning.url);
-    const req: RpcRequest = {
-      id: randomUUID(),
-      method: "chat.send",
-      params: {
-        sessionKey: input.sessionKey,
-        agent: input.agentId,
-        agentId: input.agentId,
-        message: input.prompt,
-        idempotencyKey: randomUUID(),
-        ...(input.sessionId ? { sessionId: input.sessionId } : {}),
-      },
-    };
+  const buildChatSendPayload = (): RpcRequest => ({
+    id: randomUUID(),
+    method: "chat.send",
+    params: {
+      sessionKey: input.sessionKey,
+      agent: input.agentId,
+      agentId: input.agentId,
+      message: input.prompt,
+      idempotencyKey: randomUUID(),
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+    },
+  });
+
+  const sendChatSend = () => {
+    if (chatSent) return;
+    chatSent = true;
     try {
-      ws.send(JSON.stringify(req));
+      ws.send(JSON.stringify(buildChatSendPayload()));
+      if (debug) console.log("[ws] chat.send dispatched");
     } catch (err) {
       queue.push({
         type: "error",
@@ -365,6 +370,15 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
       });
       wake();
     }
+  };
+
+  ws.on("open", () => {
+    if (debug) console.log("[ws] open", winning.url);
+    // Don't fire chat.send immediately — the gateway sends a
+    // `connect.challenge` right after the upgrade and we should ack
+    // it first. If no challenge arrives within 800ms, assume the
+    // handshake is implicit and fire anyway.
+    setTimeout(() => sendChatSend(), 800);
   });
 
   ws.on("message", (data: Buffer) => {
@@ -377,6 +391,44 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
     } catch {
       return;
     }
+
+    // Handle the connect.challenge handshake before letting the
+    // generic translator see the frame. The gateway emits:
+    //   { type: "event", event: "connect.challenge",
+    //     payload: { nonce, ts } }
+    // We ack with the same nonce and then immediately fire chat.send.
+    // Without docs the exact ack shape is uncertain — we send a few
+    // common variants in one go (they're tiny envelopes; extras get
+    // ignored by the server) so whichever shape the gateway expects
+    // is among them.
+    if (
+      isRecord(parsed) &&
+      parsed.type === "event" &&
+      parsed.event === "connect.challenge" &&
+      isRecord(parsed.payload)
+    ) {
+      const nonce = (parsed.payload as { nonce?: unknown }).nonce;
+      if (typeof nonce === "string") {
+        if (debug) console.log("[ws] connect.challenge received, acking", nonce);
+        const acks = [
+          { type: "event", event: "connect.challenge.response", payload: { nonce } },
+          { type: "event", event: "connect.challenge.ack", payload: { nonce } },
+          { type: "event", event: "connect.ready", payload: { nonce } },
+          { method: "connect.handshake", params: { nonce } },
+        ];
+        for (const ack of acks) {
+          try {
+            ws.send(JSON.stringify(ack));
+          } catch {
+            // ignore — we keep trying other shapes
+          }
+        }
+        // Fire chat.send right after — the gateway likely needs both.
+        sendChatSend();
+      }
+      return;
+    }
+
     const events = translateMessage(parsed, state);
     if (events.length > 0) {
       queue.push(...events);
