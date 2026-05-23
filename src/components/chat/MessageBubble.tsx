@@ -77,7 +77,14 @@ export function MessageBubble({ message, agent, onSpeak, isSpeaking }: MessageBu
             </button>
           )}
         </div>
-        <div style={bubbleStyle({ isUser, isError, isStreaming })}>
+        <div style={bubbleStyle({ isUser, isError, isStreaming, isStub: !!message.stubReply })}>
+          {!isUser && message.stubReply && (
+            <div style={stubBadgeStyle}>
+              ⚠ <strong>Stub de notificação</strong> — esta bolha não é a resposta real.
+              O agente roteou o conteúdo para outro canal (ex.: Telegram). Use{" "}
+              <em>Forçar resposta direta</em> no banner acima para reenviar.
+            </div>
+          )}
           {isUser ? (
             <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>{message.content}</p>
           ) : (
@@ -178,10 +185,12 @@ function bubbleStyle({
   isUser,
   isError,
   isStreaming,
+  isStub,
 }: {
   isUser: boolean;
   isError: boolean;
   isStreaming: boolean;
+  isStub: boolean;
 }): CSSProperties {
   return {
     padding: "10px 14px",
@@ -190,9 +199,15 @@ function bubbleStyle({
       ? "var(--accent-soft)"
       : isError
       ? "var(--danger-soft, rgba(239,68,68,0.15))"
+      : isStub
+      ? "rgba(234,179,8,0.08)"
       : "var(--surface)",
     border: `1px solid ${
-      isError ? "var(--danger, #ef4444)" : "var(--border)"
+      isError
+        ? "var(--danger, #ef4444)"
+        : isStub
+        ? "rgba(234,179,8,0.45)"
+        : "var(--border)"
     }`,
     color: "var(--text-primary)",
     fontSize: 14,
@@ -201,6 +216,18 @@ function bubbleStyle({
     position: "relative",
   };
 }
+
+const stubBadgeStyle: CSSProperties = {
+  display: "block",
+  marginBottom: 8,
+  padding: "6px 8px",
+  borderRadius: 6,
+  background: "rgba(234,179,8,0.14)",
+  border: "1px solid rgba(234,179,8,0.5)",
+  color: "#facc15",
+  fontSize: 11,
+  lineHeight: 1.4,
+};
 
 const toolWrapStyle: CSSProperties = {
   margin: "4px auto",

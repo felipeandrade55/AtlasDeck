@@ -15,6 +15,12 @@ export interface SendOptions {
   agentId: string;
   message: string;
   workspace?: string | null;
+  /**
+   * When true, the server appends a routing hint to the prompt asking
+   * the agent to reply inline (used by the "Forçar resposta direta"
+   * button after a stub-reply is detected).
+   */
+  forceInline?: boolean;
   onMeta?: (meta: StreamMeta) => void;
   onProvider?: (payload: { provider: string; detail?: string; buffered?: boolean }) => void;
   onToken?: (delta: string) => void;
@@ -55,6 +61,7 @@ export function useChatStream() {
           agentId: opts.agentId,
           message: opts.message,
           workspace: opts.workspace ?? undefined,
+          forceInline: opts.forceInline === true ? true : undefined,
         }),
         signal: ac.signal,
       });

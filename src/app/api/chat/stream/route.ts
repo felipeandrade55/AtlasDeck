@@ -37,7 +37,21 @@ interface ChatStreamBody {
   agentId?: string;
   message?: string;
   workspace?: string;
+  /**
+   * When true, the route appends a routing hint to the prompt sent to
+   * OpenClaw asking the agent to reply directly in this session instead
+   * of routing the real answer to another channel (Telegram, etc.). The
+   * hint is NOT persisted on the user message — chat-db stores the
+   * original prompt so the conversation log stays clean.
+   */
+  forceInline?: boolean;
 }
+
+const FORCE_INLINE_HINT =
+  "\n\n[atlas:hint] Esta sessão é `web:atlasdeck` e o usuário está olhando aqui agora. " +
+  "Responda diretamente nesta sessão com o conteúdo completo. NÃO use `sessions_send`, " +
+  "nem trate este turno como notificação para outro canal (Telegram/etc.). " +
+  "Mande a resposta real aqui no chat.";
 
 function sseLine(event: string, data: unknown): string {
   const payload = typeof data === "string" ? data : JSON.stringify(data);
@@ -126,6 +140,12 @@ export async function POST(req: NextRequest) {
     status: "complete",
   });
 
+  // forceInline appends a routing hint *only* to the prompt we send to
+  // OpenClaw — the persisted user message above stays as the original
+  // text the operator typed, so the thread history doesn't get polluted
+  // when the user clicks "Forçar resposta direta" from the stub banner.
+  const effectivePrompt = body.forceInline ? `${prompt}${FORCE_INLINE_HINT}` : prompt;
+
   // Pre-create assistant message in streaming state so the UI gets an ID up front.
   const assistantMsg = appendMessage({
     thread_id: thread.id,
@@ -180,7 +200,7 @@ export async function POST(req: NextRequest) {
       try {
         for await (const evt of runOpenClawChat({
           agentId,
-          prompt,
+          prompt: effectivePrompt,
           threadId: thread!.id,
           sessionId: thread!.source_session_id,
           workspace: thread!.workspace,

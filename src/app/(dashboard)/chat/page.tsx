@@ -90,6 +90,17 @@ export default function ChatPage() {
     [threads, activeThreadId],
   );
 
+  // Last user prompt powers the "Forçar resposta direta" retry button:
+  // when the agent answered with a stub, we resend the most recent user
+  // turn with `forceInline: true` so the server appends a routing hint.
+  const lastUserPrompt = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === "user" && m.content?.trim()) return m.content;
+    }
+    return null;
+  }, [messages]);
+
   const loadAgents = useCallback(async () => {
     try {
       const res = await fetch("/api/agents");
@@ -229,7 +240,7 @@ export default function ChatPage() {
   );
 
   const handleSend = useCallback(
-    async (text: string) => {
+    async (text: string, opts?: { forceInline?: boolean }) => {
       const threadId = await ensureThread();
       const agentId = selectedAgent;
       const userTempId = `tmp-user-${Date.now()}`;
@@ -285,6 +296,7 @@ export default function ChatPage() {
         threadId: threadId ?? undefined,
         agentId,
         message: text,
+        forceInline: opts?.forceInline,
         onMeta: (meta) => {
           realAssistantId = meta.assistantMessageId;
           if (!activeThreadId) setActiveThreadId(meta.threadId);
@@ -744,18 +756,33 @@ export default function ChatPage() {
                 Para streaming real (1º token em ~2s), edite{" "}
                 <code style={inlineCodeStyle}>~/.openclaw/openclaw.json</code> no servidor e adicione em{" "}
                 <code style={inlineCodeStyle}>agents.defaults</code>:
-                <pre style={preStyle}>{`"blockStreamingDefault": "on",
-"blockStreamingBreak": "text_end",
-"blockStreamingChunk": { "minChars": 50, "maxChars": 200 }`}</pre>
+                <pre style={preStyle}>{BUFFERED_CONFIG_SNIPPET}</pre>
                 Depois: <code style={inlineCodeStyle}>systemctl restart openclaw-gateway</code>
               </span>
-              <button
-                type="button"
-                onClick={() => setAgentDiagnostics((d) => ({ ...d, buffered: false }))}
-                style={dismissBtnStyle}
-              >
-                Dispensar
-              </button>
+              <span style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(BUFFERED_CONFIG_SNIPPET);
+                      setStatusBanner("✓ Config copiada — cole em ~/.openclaw/openclaw.json");
+                      setTimeout(() => setStatusBanner((s) => (s?.startsWith("✓ Config") ? null : s)), 4000);
+                    } catch {
+                      setStatusBanner("⚠ Não foi possível copiar — copie manualmente");
+                    }
+                  }}
+                  style={primaryBtnStyle}
+                >
+                  Copiar JSON
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAgentDiagnostics((d) => ({ ...d, buffered: false }))}
+                  style={dismissBtnStyle}
+                >
+                  Dispensar
+                </button>
+              </span>
             </span>
           </div>
         )}
@@ -772,13 +799,36 @@ export default function ChatPage() {
                 de rota condicionais por <code style={inlineCodeStyle}>sessionKey</code>, e remova/ajuste para
                 que <code style={inlineCodeStyle}>web:atlasdeck</code> seja tratado como chat direto.
               </span>
-              <button
-                type="button"
-                onClick={() => setAgentDiagnostics((d) => ({ ...d, stubReply: false }))}
-                style={dismissBtnStyle}
-              >
-                Dispensar
-              </button>
+              <span style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
+                <button
+                  type="button"
+                  disabled={stream.isStreaming || !lastUserPrompt}
+                  onClick={() => {
+                    if (!lastUserPrompt) return;
+                    setAgentDiagnostics((d) => ({ ...d, stubReply: false }));
+                    void handleSend(lastUserPrompt, { forceInline: true });
+                  }}
+                  style={{
+                    ...primaryBtnStyle,
+                    opacity: stream.isStreaming || !lastUserPrompt ? 0.5 : 1,
+                    cursor: stream.isStreaming || !lastUserPrompt ? "not-allowed" : "pointer",
+                  }}
+                  title={
+                    !lastUserPrompt
+                      ? "Nenhuma pergunta recente"
+                      : "Reenvia a última pergunta com hint forçando o agente a responder aqui"
+                  }
+                >
+                  Forçar resposta direta
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAgentDiagnostics((d) => ({ ...d, stubReply: false }))}
+                  style={dismissBtnStyle}
+                >
+                  Dispensar
+                </button>
+              </span>
             </span>
           </div>
         )}
@@ -970,6 +1020,23 @@ const dismissBtnStyle: CSSProperties = {
   cursor: "pointer",
   flexShrink: 0,
 };
+
+const primaryBtnStyle: CSSProperties = {
+  background: "#f59e0b",
+  border: "1px solid #f59e0b",
+  borderRadius: 4,
+  color: "#1f1408",
+  fontSize: 10,
+  fontWeight: 600,
+  padding: "3px 8px",
+  cursor: "pointer",
+  flexShrink: 0,
+  whiteSpace: "nowrap",
+};
+
+const BUFFERED_CONFIG_SNIPPET = `"blockStreamingDefault": "on",
+"blockStreamingBreak": "text_end",
+"blockStreamingChunk": { "minChars": 50, "maxChars": 200 }`;
 
 const messageScrollStyle: CSSProperties = {
   flex: 1,
