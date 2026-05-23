@@ -1,8 +1,34 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { Cpu, HardDrive, MemoryStick, Network, Server, ShieldCheck, RotateCw, Wifi, Monitor, Play, Square, X, Loader2, Terminal, ArrowDown, ArrowUp, Thermometer, Pause, RefreshCw, Trash2, Plus } from "lucide-react";
 import { OpenClawConfigPanel } from "@/components/OpenClawConfigPanel";
+import { MetricChart } from "@/components/system/MetricChart";
+import type { RangeKey, SeriesResponse } from "@/lib/metrics-db";
+
+const RANGE_OPTIONS: { id: RangeKey; label: string }[] = [
+  { id: "3h", label: "3h" },
+  { id: "12h", label: "12h" },
+  { id: "24h", label: "24h" },
+  { id: "72h", label: "72h" },
+  { id: "7d", label: "7d" },
+  { id: "30d", label: "30d" },
+];
+
+// Recharts can't read CSS vars, so we mirror the theme tokens as hex.
+const METRIC_PALETTE = {
+  success: "#22c55e",
+  warning: "#f59e0b",
+  error: "#ef4444",
+  info: "#3b82f6",
+  accent: "#FF3B30",
+};
+
+function colorForPct(pct: number): string {
+  if (pct < 60) return METRIC_PALETTE.success;
+  if (pct < 85) return METRIC_PALETTE.warning;
+  return METRIC_PALETTE.error;
+}
 
 type SystemTab = "hardware" | "services" | "openclaw";
 
@@ -101,6 +127,47 @@ export default function SystemMonitorPage() {
   const [newRuleProtocol, setNewRuleProtocol] = useState("any");
   const [newRuleType, setNewRuleType] = useState("allow");
   const logsEndRef = useRef<HTMLDivElement>(null);
+
+  // Hardware time-series state
+  const [range, setRange] = useState<RangeKey>(() => {
+    if (typeof window === "undefined") return "24h";
+    const stored = localStorage.getItem("system_hw_range") as RangeKey | null;
+    return stored && RANGE_OPTIONS.some(r => r.id === stored) ? stored : "24h";
+  });
+  const [metricsData, setMetricsData] = useState<SeriesResponse | null>(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("system_hw_range", range);
+    }
+  }, [range]);
+
+  const fetchMetrics = useCallback(async () => {
+    setMetricsLoading(true);
+    try {
+      const res = await fetch(`/api/system/metrics?range=${range}`);
+      if (res.ok) {
+        const data = (await res.json()) as SeriesResponse;
+        setMetricsData(data);
+      }
+    } catch (error) {
+      console.error("Failed to fetch metrics:", error);
+    } finally {
+      setMetricsLoading(false);
+    }
+  }, [range]);
+
+  useEffect(() => {
+    if (selectedTab !== "hardware") return;
+    fetchMetrics();
+  }, [selectedTab, fetchMetrics]);
+
+  useEffect(() => {
+    if (selectedTab !== "hardware" || !autoRefresh) return;
+    const id = setInterval(fetchMetrics, 30_000);
+    return () => clearInterval(id);
+  }, [selectedTab, autoRefresh, fetchMetrics]);
 
   const fetchSystemData = async () => {
     try {
@@ -394,115 +461,180 @@ export default function SystemMonitorPage() {
 
       {/* Hardware Tab */}
       {selectedTab === "hardware" && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* CPU */}
-          <div className="p-6 rounded-xl" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg" style={{ backgroundColor: "var(--card-elevated)" }}>
-                  <Cpu className="w-5 h-5" style={{ color: cpuColor }} />
-                </div>
-                <div>
-                  <h3 className="font-semibold" style={{ color: "var(--text-primary)" }}>CPU</h3>
-                  <p className="text-sm" style={{ color: "var(--text-secondary)" }}>{systemData.cpu.cores.length} cores</p>
-                </div>
-              </div>
-              <div className="flex flex-col items-end">
-                <span className="text-2xl font-bold" style={{ color: cpuColor }}>{systemData.cpu.usage}%</span>
-                {systemData.cpu.temperature > 0 && (
-                  <div className="flex items-center gap-1 mt-1 text-xs font-medium px-2 py-0.5 rounded" style={{ backgroundColor: systemData.cpu.temperature > 80 ? "var(--error-bg)" : "var(--card-elevated)", color: systemData.cpu.temperature > 80 ? "var(--error)" : "var(--text-secondary)" }}>
-                    <Thermometer className="w-3 h-3" />
-                    {systemData.cpu.temperature}°C
-                  </div>
-                )}
-              </div>
+        <div className="space-y-4">
+          {/* Range selector */}
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-1 p-1 rounded-full" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
+              {RANGE_OPTIONS.map(opt => {
+                const active = range === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    onClick={() => setRange(opt.id)}
+                    className="px-3 py-1 text-xs font-medium rounded-full transition-all"
+                    style={{
+                      backgroundColor: active ? "var(--accent)" : "transparent",
+                      color: active ? "#fff" : "var(--text-secondary)",
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
             </div>
-            <div className="h-2 rounded-full overflow-hidden mb-3" style={{ backgroundColor: "var(--card-elevated)" }}>
-              <div className="h-full transition-all duration-500" style={{ width: `${systemData.cpu.usage}%`, backgroundColor: cpuColor }} />
-            </div>
-            <div className="flex justify-between text-sm" style={{ color: "var(--text-secondary)" }}>
-              <span>Carga Média</span>
-              <span>{systemData.cpu.loadAvg[0]?.toFixed(2)} / {systemData.cpu.loadAvg[1]?.toFixed(2)} / {systemData.cpu.loadAvg[2]?.toFixed(2)}</span>
-            </div>
-          </div>
-
-          {/* RAM */}
-          <div className="p-6 rounded-xl" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg" style={{ backgroundColor: "var(--card-elevated)" }}>
-                  <MemoryStick className="w-5 h-5" style={{ color: ramColor }} />
-                </div>
-                <div>
-                  <h3 className="font-semibold" style={{ color: "var(--text-primary)" }}>RAM</h3>
-                  <p className="text-sm" style={{ color: "var(--text-secondary)" }}>{systemData.ram.used.toFixed(1)}GB / {systemData.ram.total.toFixed(1)}GB</p>
-                </div>
-              </div>
-              <span className="text-2xl font-bold" style={{ color: ramColor }}>{ramPercent.toFixed(0)}%</span>
-            </div>
-            <div className="h-2 rounded-full overflow-hidden" style={{ backgroundColor: "var(--card-elevated)" }}>
-              <div className="h-full transition-all duration-500" style={{ width: `${ramPercent}%`, backgroundColor: ramColor }} />
+            <div className="text-xs flex items-center gap-2" style={{ color: "var(--text-muted)" }}>
+              {metricsLoading && <Loader2 className="w-3 h-3 animate-spin" />}
+              {metricsData && (
+                <span>
+                  resolução {metricsData.bucket === "raw" ? "30s" : metricsData.bucket} ·{" "}
+                  {(metricsData.metrics.cpu_usage?.length ?? 0)} pontos
+                </span>
+              )}
             </div>
           </div>
 
-          {/* Disk */}
-          <div className="p-6 rounded-xl" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* CPU */}
+            <div className="p-6 rounded-xl" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg" style={{ backgroundColor: "var(--card-elevated)" }}>
+                    <Cpu className="w-5 h-5" style={{ color: cpuColor }} />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold" style={{ color: "var(--text-primary)" }}>CPU</h3>
+                    <p className="text-sm" style={{ color: "var(--text-secondary)" }}>{systemData.cpu.cores.length} cores</p>
+                  </div>
+                </div>
+                <div className="flex flex-col items-end">
+                  <span className="text-2xl font-bold" style={{ color: cpuColor }}>{systemData.cpu.usage}%</span>
+                  {systemData.cpu.temperature > 0 && (
+                    <div className="flex items-center gap-1 mt-1 text-xs font-medium px-2 py-0.5 rounded" style={{ backgroundColor: systemData.cpu.temperature > 80 ? "var(--error-bg)" : "var(--card-elevated)", color: systemData.cpu.temperature > 80 ? "var(--error)" : "var(--text-secondary)" }}>
+                      <Thermometer className="w-3 h-3" />
+                      {systemData.cpu.temperature}°C
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="h-2 rounded-full overflow-hidden mb-3" style={{ backgroundColor: "var(--card-elevated)" }}>
+                <div className="h-full transition-all duration-500" style={{ width: `${systemData.cpu.usage}%`, backgroundColor: cpuColor }} />
+              </div>
+              <div className="flex justify-between text-sm mb-3" style={{ color: "var(--text-secondary)" }}>
+                <span>Carga Média</span>
+                <span>{systemData.cpu.loadAvg[0]?.toFixed(2)} / {systemData.cpu.loadAvg[1]?.toFixed(2)} / {systemData.cpu.loadAvg[2]?.toFixed(2)}</span>
+              </div>
+              <MetricChart
+                data={metricsData?.metrics.cpu_usage ?? []}
+                color={colorForPct(systemData.cpu.usage)}
+                unit="%"
+                label="CPU"
+                yDomain={[0, 100]}
+              />
+            </div>
+
+            {/* RAM */}
+            <div className="p-6 rounded-xl" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg" style={{ backgroundColor: "var(--card-elevated)" }}>
+                    <MemoryStick className="w-5 h-5" style={{ color: ramColor }} />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold" style={{ color: "var(--text-primary)" }}>RAM</h3>
+                    <p className="text-sm" style={{ color: "var(--text-secondary)" }}>{systemData.ram.used.toFixed(1)}GB / {systemData.ram.total.toFixed(1)}GB</p>
+                  </div>
+                </div>
+                <span className="text-2xl font-bold" style={{ color: ramColor }}>{ramPercent.toFixed(0)}%</span>
+              </div>
+              <div className="h-2 rounded-full overflow-hidden mb-3" style={{ backgroundColor: "var(--card-elevated)" }}>
+                <div className="h-full transition-all duration-500" style={{ width: `${ramPercent}%`, backgroundColor: ramColor }} />
+              </div>
+              <MetricChart
+                data={metricsData?.metrics.ram_used_pct ?? []}
+                color={colorForPct(ramPercent)}
+                unit="%"
+                label="RAM"
+                yDomain={[0, 100]}
+              />
+            </div>
+
+            {/* Disk */}
+            <div className="p-6 rounded-xl" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg" style={{ backgroundColor: "var(--card-elevated)" }}>
+                    <HardDrive className="w-5 h-5" style={{ color: diskColor }} />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold" style={{ color: "var(--text-primary)" }}>Disk</h3>
+                    <p className="text-sm" style={{ color: "var(--text-secondary)" }}>{systemData.disk.used.toFixed(1)}GB / {systemData.disk.total.toFixed(1)}GB</p>
+                  </div>
+                </div>
+                <span className="text-2xl font-bold" style={{ color: diskColor }}>{systemData.disk.percent.toFixed(0)}%</span>
+              </div>
+              <div className="h-2 rounded-full overflow-hidden mb-3" style={{ backgroundColor: "var(--card-elevated)" }}>
+                <div className="h-full transition-all duration-500" style={{ width: `${systemData.disk.percent}%`, backgroundColor: diskColor }} />
+              </div>
+              <MetricChart
+                data={metricsData?.metrics.disk_used_pct ?? []}
+                color={colorForPct(systemData.disk.percent)}
+                unit="%"
+                label="Disk"
+                yDomain={[0, 100]}
+              />
+            </div>
+
+            {/* Network */}
+            <div className="p-6 rounded-xl" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
+              <div className="flex items-center gap-3 mb-4">
                 <div className="p-2 rounded-lg" style={{ backgroundColor: "var(--card-elevated)" }}>
-                  <HardDrive className="w-5 h-5" style={{ color: diskColor }} />
+                  <Network className="w-5 h-5" style={{ color: METRIC_PALETTE.info }} />
                 </div>
                 <div>
-                  <h3 className="font-semibold" style={{ color: "var(--text-primary)" }}>Disk</h3>
-                  <p className="text-sm" style={{ color: "var(--text-secondary)" }}>{systemData.disk.used.toFixed(1)}GB / {systemData.disk.total.toFixed(1)}GB</p>
+                  <h3 className="font-semibold" style={{ color: "var(--text-primary)" }}>Network</h3>
+                  <p className="text-sm" style={{ color: "var(--text-secondary)" }}>Live I/O</p>
                 </div>
               </div>
-              <span className="text-2xl font-bold" style={{ color: diskColor }}>{systemData.disk.percent.toFixed(0)}%</span>
-            </div>
-            <div className="h-2 rounded-full overflow-hidden" style={{ backgroundColor: "var(--card-elevated)" }}>
-              <div className="h-full transition-all duration-500" style={{ width: `${systemData.disk.percent}%`, backgroundColor: diskColor }} />
-            </div>
-          </div>
-
-          {/* Network */}
-          <div className="p-6 rounded-xl" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
-            <div className="flex items-center gap-3 mb-4">
-              <div className="p-2 rounded-lg" style={{ backgroundColor: "var(--card-elevated)" }}>
-                <Network className="w-5 h-5" style={{ color: "var(--info, #3b82f6)" }} />
-              </div>
-              <div>
-                <h3 className="font-semibold" style={{ color: "var(--text-primary)" }}>Network</h3>
-                <p className="text-sm" style={{ color: "var(--text-secondary)" }}>Live I/O</p>
-              </div>
-            </div>
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-sm" style={{ color: "var(--text-secondary)" }}>
-                  <ArrowDown className="w-4 h-4" style={{ color: "var(--success)" }} />
-                  <span>RX (in)</span>
-                </div>
-                <span className="font-mono text-sm" style={{ color: "var(--text-primary)" }}>{systemData.network.rx.toFixed(2)} MB/s</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-sm" style={{ color: "var(--text-secondary)" }}>
-                  <ArrowUp className="w-4 h-4" style={{ color: "var(--accent)" }} />
-                  <span>TX (out)</span>
-                </div>
-                <span className="font-mono text-sm" style={{ color: "var(--text-primary)" }}>{systemData.network.tx.toFixed(2)} MB/s</span>
-              </div>
-              {/* Mini bar viz */}
-              <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.75rem" }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: "0.25rem" }}>RX</div>
-                  <div className="h-1 rounded-full overflow-hidden" style={{ backgroundColor: "var(--card-elevated)" }}>
-                    <div className="h-full transition-all duration-1000" style={{ width: `${Math.min(systemData.network.rx * 10, 100)}%`, backgroundColor: "var(--success)" }} />
+              <div className="space-y-2 mb-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-sm" style={{ color: "var(--text-secondary)" }}>
+                    <ArrowDown className="w-4 h-4" style={{ color: "var(--success)" }} />
+                    <span>RX (in)</span>
                   </div>
+                  <span className="font-mono text-sm" style={{ color: "var(--text-primary)" }}>{systemData.network.rx.toFixed(2)} MB/s</span>
                 </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: "0.25rem" }}>TX</div>
-                  <div className="h-1 rounded-full overflow-hidden" style={{ backgroundColor: "var(--card-elevated)" }}>
-                    <div className="h-full transition-all duration-1000" style={{ width: `${Math.min(systemData.network.tx * 10, 100)}%`, backgroundColor: "var(--accent)" }} />
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-sm" style={{ color: "var(--text-secondary)" }}>
+                    <ArrowUp className="w-4 h-4" style={{ color: "var(--accent)" }} />
+                    <span>TX (out)</span>
                   </div>
+                  <span className="font-mono text-sm" style={{ color: "var(--text-primary)" }}>{systemData.network.tx.toFixed(2)} MB/s</span>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: "var(--text-muted)" }}>RX</div>
+                  <MetricChart
+                    data={metricsData?.metrics.net_rx_mbps ?? []}
+                    color={METRIC_PALETTE.success}
+                    unit=" MB/s"
+                    label="RX"
+                    height={100}
+                    precision={2}
+                    showStats={false}
+                  />
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: "var(--text-muted)" }}>TX</div>
+                  <MetricChart
+                    data={metricsData?.metrics.net_tx_mbps ?? []}
+                    color={METRIC_PALETTE.accent}
+                    unit=" MB/s"
+                    label="TX"
+                    height={100}
+                    precision={2}
+                    showStats={false}
+                  />
                 </div>
               </div>
             </div>
