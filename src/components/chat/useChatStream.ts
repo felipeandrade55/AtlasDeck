@@ -16,13 +16,13 @@ export interface SendOptions {
   message: string;
   workspace?: string | null;
   onMeta?: (meta: StreamMeta) => void;
-  onProvider?: (payload: { provider: string; detail?: string }) => void;
+  onProvider?: (payload: { provider: string; detail?: string; buffered?: boolean }) => void;
   onToken?: (delta: string) => void;
   onToolUse?: (payload: { id?: string; name: string; input: unknown }) => void;
   onToolResult?: (payload: { id?: string; output: string }) => void;
   onUsage?: (payload: { tokensIn: number; tokensOut: number; cost?: number; model?: string }) => void;
   onError?: (message: string) => void;
-  onDone?: (payload: { assistantMessageId: string; content: string; tokensIn: number; tokensOut: number; cost: number; provider?: string; providerDetail?: string }) => void;
+  onDone?: (payload: { assistantMessageId: string; content: string; tokensIn: number; tokensOut: number; cost: number; provider?: string; providerDetail?: string; buffered?: boolean; stubReply?: boolean }) => void;
 }
 
 /**
@@ -119,6 +119,7 @@ function parseEvent(raw: string, opts: SendOptions) {
       opts.onProvider?.({
         provider: String(data.provider ?? "unknown"),
         detail: data.detail as string | undefined,
+        buffered: data.buffered === true,
       });
       break;
     case "token":
@@ -157,6 +158,8 @@ function parseEvent(raw: string, opts: SendOptions) {
         cost: Number(data.cost ?? 0),
         provider: data.provider as string | undefined,
         providerDetail: data.providerDetail as string | undefined,
+        buffered: data.buffered === true,
+        stubReply: data.stubReply === true,
       });
       break;
   }

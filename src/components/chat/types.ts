@@ -48,6 +48,19 @@ export interface ChatMessage {
   providerDetail?: string;
   firstTokenMs?: number;
   totalMs?: number;
+  /**
+   * True when the gateway buffered the whole reply instead of streaming
+   * — heuristic: `first-delta` arrived at the same instant as `final`.
+   * Surfaces a banner in the chat with the config the user needs to flip
+   * on the server.
+   */
+  buffered?: boolean;
+  /**
+   * True when the agent reply was a stub like "Respondi no chat" — i.e.
+   * the agent treated the chat as a notification and routed the real
+   * answer elsewhere. Surfaces a banner pointing at AGENTS.md.
+   */
+  stubReply?: boolean;
 }
 
 export interface AgentSummary {

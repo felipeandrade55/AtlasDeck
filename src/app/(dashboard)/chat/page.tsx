@@ -62,6 +62,18 @@ export default function ChatPage() {
   const [showWakeModal, setShowWakeModal] = useState(false);
   const [wakeEnabled, setWakeEnabled] = useState(true);
   const [wakeTeaser, setWakeTeaser] = useState<string | null>(null);
+  /**
+   * Persistent diagnostics inferred from the last few assistant turns:
+   *  - `buffered`: the OpenClaw gateway buffered the whole reply
+   *    (1st-delta arrived together with final). Needs
+   *    `agents.defaults.blockStreamingDefault: "on"` server-side.
+   *  - `stubReply`: the agent answered with a stub like "Respondi no chat",
+   *    meaning AGENTS.md/TOOLS.md is routing the real answer elsewhere.
+   */
+  const [agentDiagnostics, setAgentDiagnostics] = useState<{
+    buffered: boolean;
+    stubReply: boolean;
+  }>({ buffered: false, stubReply: false });
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const stream = useChatStream();
   const tts = useTtsEngine();
@@ -284,14 +296,17 @@ export default function ChatPage() {
             }),
           );
         },
-        onProvider: ({ provider, detail }) => {
+        onProvider: ({ provider, detail, buffered }) => {
           setMessages((prev) =>
             prev.map((m) =>
               m.id === realAssistantId
-                ? { ...m, provider, providerDetail: detail }
+                ? { ...m, provider, providerDetail: detail, buffered }
                 : m,
             ),
           );
+          if (buffered) {
+            setAgentDiagnostics((d) => ({ ...d, buffered: true }));
+          }
         },
         onToken: (delta) => {
           if (firstTokenAt === null) firstTokenAt = Date.now();
@@ -374,7 +389,7 @@ export default function ChatPage() {
             ),
           );
         },
-        onDone: ({ content, provider, providerDetail }) => {
+        onDone: ({ content, provider, providerDetail, buffered, stubReply }) => {
           const totalMs = Date.now() - startedAt;
           setMessages((prev) =>
             prev.map((m) =>
@@ -385,11 +400,19 @@ export default function ChatPage() {
                     status: content ? "complete" : "error",
                     provider: provider ?? m.provider,
                     providerDetail: providerDetail ?? m.providerDetail,
+                    buffered: buffered ?? m.buffered,
+                    stubReply: stubReply ?? m.stubReply,
                     totalMs,
                   }
                 : m,
             ),
           );
+          if (buffered || stubReply) {
+            setAgentDiagnostics((d) => ({
+              buffered: d.buffered || !!buffered,
+              stubReply: d.stubReply || !!stubReply,
+            }));
+          }
           // Refresh threads list to update lastMessageAt / counts
           loadThreads();
           // Auto-TTS
@@ -712,6 +735,53 @@ export default function ChatPage() {
         {wakeTeaser && (
           <div style={wakeTeaserStyle}>🎙 {wakeTeaser}</div>
         )}
+        {agentDiagnostics.buffered && (
+          <div style={diagnosticBannerStyle}>
+            <span style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+              <span>
+                <strong>⚡ Latência: gateway está bufferizando a resposta inteira</strong>
+                <br />
+                Para streaming real (1º token em ~2s), edite{" "}
+                <code style={inlineCodeStyle}>~/.openclaw/openclaw.json</code> no servidor e adicione em{" "}
+                <code style={inlineCodeStyle}>agents.defaults</code>:
+                <pre style={preStyle}>{`"blockStreamingDefault": "on",
+"blockStreamingBreak": "text_end",
+"blockStreamingChunk": { "minChars": 50, "maxChars": 200 }`}</pre>
+                Depois: <code style={inlineCodeStyle}>systemctl restart openclaw-gateway</code>
+              </span>
+              <button
+                type="button"
+                onClick={() => setAgentDiagnostics((d) => ({ ...d, buffered: false }))}
+                style={dismissBtnStyle}
+              >
+                Dispensar
+              </button>
+            </span>
+          </div>
+        )}
+        {agentDiagnostics.stubReply && (
+          <div style={diagnosticBannerStyle}>
+            <span style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+              <span>
+                <strong>⚠ Agente respondeu como notificação (&ldquo;Respondi no chat&rdquo;)</strong>
+                <br />
+                Isso indica que o <code style={inlineCodeStyle}>AGENTS.md</code> /{" "}
+                <code style={inlineCodeStyle}>TOOLS.md</code> do agente <code style={inlineCodeStyle}>main</code>{" "}
+                está roteando a resposta real para outro canal (ex: Telegram) e tratando esta sessão como notificação.
+                Verifique em <code style={inlineCodeStyle}>~/.openclaw/workspace/AGENTS.md</code> se há regras
+                de rota condicionais por <code style={inlineCodeStyle}>sessionKey</code>, e remova/ajuste para
+                que <code style={inlineCodeStyle}>web:atlasdeck</code> seja tratado como chat direto.
+              </span>
+              <button
+                type="button"
+                onClick={() => setAgentDiagnostics((d) => ({ ...d, stubReply: false }))}
+                style={dismissBtnStyle}
+              >
+                Dispensar
+              </button>
+            </span>
+          </div>
+        )}
 
         <div style={messageScrollStyle}>
           <div style={messageListStyle}>
@@ -860,6 +930,45 @@ const wakeTeaserStyle: CSSProperties = {
   borderBottom: "1px solid var(--accent)",
   color: "var(--accent)",
   fontSize: 12,
+};
+
+const diagnosticBannerStyle: CSSProperties = {
+  padding: "10px 20px",
+  background: "rgba(245, 158, 11, 0.12)",
+  borderBottom: "1px solid #f59e0b",
+  color: "#f59e0b",
+  fontSize: 12,
+  lineHeight: 1.5,
+};
+
+const inlineCodeStyle: CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  background: "rgba(0,0,0,0.25)",
+  padding: "1px 5px",
+  borderRadius: 3,
+  fontSize: 11,
+};
+
+const preStyle: CSSProperties = {
+  margin: "6px 0",
+  padding: "8px 10px",
+  background: "rgba(0,0,0,0.35)",
+  borderRadius: 6,
+  fontFamily: "var(--font-mono)",
+  fontSize: 11,
+  color: "var(--text-primary)",
+  overflowX: "auto",
+};
+
+const dismissBtnStyle: CSSProperties = {
+  background: "transparent",
+  border: "1px solid #f59e0b",
+  borderRadius: 4,
+  color: "#f59e0b",
+  fontSize: 10,
+  padding: "2px 8px",
+  cursor: "pointer",
+  flexShrink: 0,
 };
 
 const messageScrollStyle: CSSProperties = {

@@ -110,7 +110,7 @@ function probe(
     const key = randomBytes(16).toString("base64");
     const req = buildRequest(host, port, attempt, token, key);
     const socket = net.connect(port, host);
-    let chunks: Buffer[] = [];
+    const chunks: Buffer[] = [];
     let settled = false;
 
     const finish = (error: string | null) => {

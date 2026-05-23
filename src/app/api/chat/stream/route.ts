@@ -150,6 +150,8 @@ export async function POST(req: NextRequest) {
   let providerForTurn: string | null = null;
   let providerDetailForTurn: string | null = null;
   const timings: Record<string, number> = {};
+  let bufferedDetected = false;
+  let stubReplyDetected = false;
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -222,6 +224,8 @@ export async function POST(req: NextRequest) {
           cost,
           provider: providerForTurn,
           providerDetail: providerDetailForTurn,
+          buffered: bufferedDetected,
+          stubReply: stubReplyDetected,
         });
         try {
           controller.close();
@@ -241,6 +245,25 @@ export async function POST(req: NextRequest) {
             break;
           case "token":
             assembled += evt.delta;
+            // Detect "stub reply" pattern: the agent acknowledges that
+            // it routed the real answer elsewhere instead of replying
+            // in the chat. Common phrases observed:
+            //   "Respondi no chat"
+            //   "Respondi no chat com ..."
+            // These usually mean the agent's AGENTS.md/TOOLS.md is
+            // configured to deliver via `sessions_send` to another
+            // channel (Telegram, etc.) and treat /chat as notification.
+            if (!stubReplyDetected) {
+              const trimmedLow = assembled.trim().toLowerCase();
+              if (
+                trimmedLow.startsWith("respondi no chat") ||
+                trimmedLow.startsWith("respondi via chat") ||
+                trimmedLow.startsWith("já respondi") ||
+                trimmedLow.startsWith("ja respondi")
+              ) {
+                stubReplyDetected = true;
+              }
+            }
             send("token", { delta: evt.delta });
             // Throttled persistence: update content every ~256 chars
             if (assembled.length % 256 < evt.delta.length) {
@@ -291,10 +314,20 @@ export async function POST(req: NextRequest) {
             // live as each phase reports.
             timings[evt.phase] = evt.ms;
             providerDetailForTurn = formatTimings(timings, providerDetailForTurn);
+            // Heuristic: gateway buffered the reply if first-delta and
+            // final arrived within 100ms of each other.
+            if (
+              timings["first-delta"] != null &&
+              timings["final"] != null &&
+              Math.abs(timings["final"] - timings["first-delta"]) < 100
+            ) {
+              bufferedDetected = true;
+            }
             if (providerForTurn) {
               send("provider", {
                 provider: providerForTurn,
                 detail: providerDetailForTurn,
+                buffered: bufferedDetected,
               });
             }
             break;

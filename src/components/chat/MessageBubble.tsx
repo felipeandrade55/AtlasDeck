@@ -108,7 +108,7 @@ export function MessageBubble({ message, agent, onSpeak, isSpeaking }: MessageBu
                 title={message.providerDetail ?? undefined}
               >
                 {providerLabel(message.provider)}
-                {message.providerDetail && ` · ${message.providerDetail.slice(0, 120)}`}
+                {message.providerDetail && ` · ${message.providerDetail.slice(0, 240)}`}
               </span>
             )}
             {message.firstTokenMs != null && (
