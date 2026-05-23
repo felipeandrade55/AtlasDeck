@@ -58,6 +58,8 @@ interface WsCandidate {
   url: string;
   /** Optional bearer token to attach via Authorization header. */
   token: string | null;
+  /** Optional Origin header — some gateways check `gateway.controlUi.allowedOrigins`. */
+  origin: string | null;
 }
 
 /**
@@ -81,16 +83,24 @@ function buildWsUrlCandidates(): WsCandidate[] {
   const paths = process.env.ATLAS_CHAT_WS_PATH?.trim()
     ? [process.env.ATLAS_CHAT_WS_PATH.trim()]
     : ["/", "/ws", "/api/ws", "/gateway/ws", "/chat"];
+  // Default Origin = the gateway's own loopback URL (matches what the
+  // Control UI sends when it runs on the same host). Set ATLAS_CHAT_WS_ORIGIN
+  // to override. The full /api/chat/ws-debug endpoint sweeps multiple
+  // origins for diagnostic purposes; the runner sticks to one to keep
+  // probe latency in check.
+  const origin =
+    process.env.ATLAS_CHAT_WS_ORIGIN?.trim() ||
+    `http://127.0.0.1:${info.port}`;
+
   const out: WsCandidate[] = [];
   for (const p of paths) {
     const prefix = p === "/" ? "" : p;
-    // First try with Authorization header (matches the HTTP API auth flow
-    // most gateways expose) + no query token.
+    // 1) Authorization header (no query token)
     if (info.token) {
-      out.push({ url: `${baseUrl}${prefix}`, token: info.token });
+      out.push({ url: `${baseUrl}${prefix}`, token: info.token, origin });
     }
-    // Then with token-in-query, no header (for builds that ignore headers).
-    out.push({ url: `${baseUrl}${prefix}${queryParams}`, token: null });
+    // 2) Token in query string (no Authorization header)
+    out.push({ url: `${baseUrl}${prefix}${queryParams}`, token: null, origin });
   }
   return out;
 }
@@ -229,11 +239,16 @@ function openWs(candidate: WsCandidate): WebSocket {
   if (candidate.token) {
     headers.Authorization = `Bearer ${candidate.token}`;
   }
+  if (candidate.origin) {
+    headers.Origin = candidate.origin;
+  }
   return new WebSocket(candidate.url, { headers });
 }
 
 function describe(candidate: WsCandidate): string {
-  return `${candidate.url} (${candidate.token ? "header bearer" : "query token"})`;
+  const auth = candidate.token ? "header bearer" : "query token";
+  const origin = candidate.origin ? ` origin=${candidate.origin}` : "";
+  return `${candidate.url} (${auth}${origin})`;
 }
 
 export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsChatEvent> {
