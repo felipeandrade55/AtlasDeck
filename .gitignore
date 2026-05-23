@@ -56,3 +56,9 @@ next-env.d.ts
 
 # backup files
 *.bak
+
+# openWakeWord runtime — copied by `npm run postinstall`, never committed
+public/openwakeword/ort-wasm-simd-threaded.wasm
+public/openwakeword/ort-wasm-simd-threaded.mjs
+public/openwakeword/ort-wasm-simd-threaded.jsep.wasm
+public/openwakeword/ort-wasm-simd-threaded.jsep.mjs

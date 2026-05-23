@@ -6,7 +6,7 @@
  * head/tail preview so the UI can confirm what is saved.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { getSettings, setSettings } from "@/lib/memory-db";
+import { getSettings, setSettings, type WakeEngine } from "@/lib/memory-db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -38,7 +38,23 @@ export async function GET() {
   const envKey = process.env.PORCUPINE_ACCESS_KEY?.trim() || null;
   const s = getSettings();
   const accessKey = envKey || s.porcupine_access_key;
+  // openWakeWord is configured by default — the models ship in /public.
+  // We only check that the directory is reachable by trusting the bundle.
   return NextResponse.json({
+    engine: s.wake_engine,
+    porcupine: {
+      configured: !!accessKey,
+      accessKeyPreview: preview(accessKey),
+      source: envKey ? "env" : s.porcupine_access_key ? "memory_settings" : null,
+      keyword: s.porcupine_keyword || "Jarvis",
+      availableKeywords: VALID_KEYWORDS,
+    },
+    openwakeword: {
+      configured: true,
+      keyword: "hey_jarvis",
+      threshold: s.openwakeword_threshold,
+    },
+    // Legacy top-level fields kept so the older Porcupine modal still works
     configured: !!accessKey,
     accessKeyPreview: preview(accessKey),
     source: envKey ? "env" : s.porcupine_access_key ? "memory_settings" : null,
@@ -48,8 +64,10 @@ export async function GET() {
 }
 
 interface PatchBody {
+  engine?: WakeEngine;
   accessKey?: string | null;
   keyword?: string | null;
+  openwakewordThreshold?: number;
 }
 
 export async function PATCH(req: NextRequest) {
@@ -61,6 +79,10 @@ export async function PATCH(req: NextRequest) {
   }
 
   const patch: Record<string, string | null> = {};
+
+  if (body.engine === "openwakeword" || body.engine === "porcupine") {
+    patch.wake_engine = body.engine;
+  }
   if (body.accessKey !== undefined) {
     const v = body.accessKey?.trim();
     patch.porcupine_access_key = v && v.length > 0 ? v : null;
@@ -76,6 +98,12 @@ export async function PATCH(req: NextRequest) {
         { error: `Keyword must be one of: ${VALID_KEYWORDS.join(", ")}` },
         { status: 400 },
       );
+    }
+  }
+  if (body.openwakewordThreshold !== undefined) {
+    const n = Number(body.openwakewordThreshold);
+    if (Number.isFinite(n) && n >= 0.05 && n <= 0.95) {
+      patch.openwakeword_threshold = String(n);
     }
   }
 

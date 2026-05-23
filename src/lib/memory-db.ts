@@ -753,7 +753,11 @@ export interface MemorySettings {
   tts_provider: TtsProvider;
   porcupine_access_key: string | null;
   porcupine_keyword: string;
+  wake_engine: WakeEngine;
+  openwakeword_threshold: number;
 }
+
+export type WakeEngine = "openwakeword" | "porcupine";
 
 export type TtsProvider = "elevenlabs" | "fishaudio";
 
@@ -783,6 +787,8 @@ const DEFAULT_SETTINGS: MemorySettings = {
   tts_provider: "elevenlabs",
   porcupine_access_key: null,
   porcupine_keyword: "Jarvis",
+  wake_engine: "openwakeword",
+  openwakeword_threshold: 0.5,
 };
 
 function parseNullableFloat(value: string | undefined): number | null {
@@ -853,7 +859,23 @@ export function getSettings(): MemorySettings {
     porcupine_access_key: parseNullableString(map.get("porcupine_access_key")),
     porcupine_keyword:
       map.get("porcupine_keyword") ?? DEFAULT_SETTINGS.porcupine_keyword,
+    wake_engine: parseWakeEngine(map.get("wake_engine")),
+    openwakeword_threshold: parseThreshold(
+      map.get("openwakeword_threshold"),
+      DEFAULT_SETTINGS.openwakeword_threshold,
+    ),
   };
+}
+
+function parseWakeEngine(value: string | undefined): WakeEngine {
+  return value === "porcupine" ? "porcupine" : "openwakeword";
+}
+
+function parseThreshold(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const n = parseFloat(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(0.95, Math.max(0.05, n));
 }
 
 export function setSettings(patch: Partial<MemorySettings>): MemorySettings {

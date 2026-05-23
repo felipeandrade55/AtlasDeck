@@ -3,12 +3,22 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { CheckCircle2, ExternalLink, X } from "lucide-react";
 
+type WakeEngine = "openwakeword" | "porcupine";
+
 interface WakeConfig {
-  configured: boolean;
-  accessKeyPreview: string | null;
-  source: "env" | "memory_settings" | null;
-  keyword: string;
-  availableKeywords: string[];
+  engine: WakeEngine;
+  porcupine: {
+    configured: boolean;
+    accessKeyPreview: string | null;
+    source: "env" | "memory_settings" | null;
+    keyword: string;
+    availableKeywords: string[];
+  };
+  openwakeword: {
+    configured: boolean;
+    keyword: string;
+    threshold: number;
+  };
 }
 
 interface WakeWordSettingsModalProps {
@@ -19,8 +29,10 @@ interface WakeWordSettingsModalProps {
 export function WakeWordSettingsModal({ open, onClose }: WakeWordSettingsModalProps) {
   const [config, setConfig] = useState<WakeConfig | null>(null);
   const [loading, setLoading] = useState(false);
+  const [engine, setEngine] = useState<WakeEngine>("openwakeword");
   const [accessKey, setAccessKey] = useState("");
   const [keyword, setKeyword] = useState("Jarvis");
+  const [threshold, setThreshold] = useState(0.5);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -31,7 +43,9 @@ export function WakeWordSettingsModal({ open, onClose }: WakeWordSettingsModalPr
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as WakeConfig;
       setConfig(data);
-      if (data.keyword) setKeyword(data.keyword);
+      setEngine(data.engine);
+      setKeyword(data.porcupine.keyword || "Jarvis");
+      setThreshold(data.openwakeword.threshold ?? 0.5);
     } catch (err) {
       console.error(err);
       setError((err as Error).message);
@@ -52,9 +66,13 @@ export function WakeWordSettingsModal({ open, onClose }: WakeWordSettingsModalPr
     setSaving(true);
     setError(null);
     try {
-      const patch: Record<string, string | null> = {};
-      if (accessKey.trim()) patch.accessKey = accessKey.trim();
-      if (keyword.trim()) patch.keyword = keyword.trim();
+      const patch: Record<string, unknown> = { engine };
+      if (engine === "porcupine") {
+        if (accessKey.trim()) patch.accessKey = accessKey.trim();
+        if (keyword.trim()) patch.keyword = keyword.trim();
+      } else {
+        patch.openwakewordThreshold = threshold;
+      }
       const res = await fetch("/api/chat/wake-config", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
@@ -72,9 +90,9 @@ export function WakeWordSettingsModal({ open, onClose }: WakeWordSettingsModalPr
     } finally {
       setSaving(false);
     }
-  }, [accessKey, keyword]);
+  }, [engine, accessKey, keyword, threshold]);
 
-  const handleClear = useCallback(async () => {
+  const handleClearPorcupine = useCallback(async () => {
     setSaving(true);
     setError(null);
     try {
@@ -100,11 +118,9 @@ export function WakeWordSettingsModal({ open, onClose }: WakeWordSettingsModalPr
       <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
         <header style={modalHeaderStyle}>
           <div>
-            <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>
-              Wake word (Picovoice Porcupine)
-            </h2>
+            <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Wake word</h2>
             <p style={{ margin: "4px 0 0 0", fontSize: 12, color: "var(--text-muted)" }}>
-              Detector acústico que reconhece &ldquo;Jarvis&rdquo; sem depender do ASR do Chrome.
+              Detecta &ldquo;Hey Jarvis&rdquo; acusticamente sem depender do ASR do Chrome.
             </p>
           </div>
           <button type="button" onClick={onClose} style={iconButtonStyle}>
@@ -117,116 +133,183 @@ export function WakeWordSettingsModal({ open, onClose }: WakeWordSettingsModalPr
 
           {config && (
             <>
-              <section style={statusBox(config.configured)}>
-                <strong>
-                  {config.configured ? "✅ Configurado" : "⚠ Não configurado"}
-                </strong>
-                {config.configured && (
-                  <div style={{ marginTop: 4, fontSize: 12 }}>
-                    Fonte: <code>{config.source}</code> · access key{" "}
-                    <code>{config.accessKeyPreview}</code> · keyword{" "}
-                    <code>{config.keyword}</code>
-                  </div>
-                )}
-              </section>
-
               <section style={fieldset}>
-                <h3 style={sectionTitle}>Como configurar</h3>
-                <ol style={stepsStyle}>
-                  <li>
-                    Acesse{" "}
-                    <a
-                      href="https://console.picovoice.ai/"
-                      target="_blank"
-                      rel="noreferrer"
-                      style={linkStyle}
-                    >
-                      console.picovoice.ai{" "}
-                      <ExternalLink size={10} />
-                    </a>{" "}
-                    e crie uma conta grátis
-                  </li>
-                  <li>Copie o AccessKey do dashboard</li>
-                  <li>Cole no campo abaixo + salve</li>
-                  <li>
-                    Recarregue o /chat — o badge Wake muda para verde
-                    &ldquo;Porcupine ativo&rdquo;
-                  </li>
-                </ol>
-              </section>
-
-              <section style={fieldset}>
-                <h3 style={sectionTitle}>Credenciais</h3>
-
-                <label style={label}>
-                  AccessKey (Picovoice)
-                  <input
-                    type="password"
-                    placeholder={
-                      config.configured
-                        ? "(salva — apague para limpar ou cole nova)"
-                        : "AccessKey copiada do dashboard"
-                    }
-                    value={accessKey}
-                    onChange={(e) => setAccessKey(e.target.value)}
-                    style={input}
+                <h3 style={sectionTitle}>Engine ativo</h3>
+                <div style={engineGridStyle}>
+                  <EngineCard
+                    label="openWakeWord"
+                    badge="Apache 2.0 · sem cadastro"
+                    description="Modelos ONNX rodando 100% no browser. Vem pré-configurado, sem AccessKey."
+                    selected={engine === "openwakeword"}
+                    onClick={() => setEngine("openwakeword")}
                   />
-                </label>
-
-                <label style={label}>
-                  Palavra-gatilho
-                  <select
-                    value={keyword}
-                    onChange={(e) => setKeyword(e.target.value)}
-                    style={input}
-                  >
-                    {config.availableKeywords.map((k) => (
-                      <option key={k} value={k}>
-                        {k}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <div style={buttonRow}>
-                  <button
-                    type="button"
-                    onClick={handleSave}
-                    disabled={saving}
-                    style={primaryButton(saving)}
-                  >
-                    {saving ? "Salvando…" : "Salvar"}
-                  </button>
-                  {config.configured && config.source === "memory_settings" && (
-                    <button
-                      type="button"
-                      onClick={handleClear}
-                      disabled={saving}
-                      style={secondaryButton(saving)}
-                    >
-                      Remover
-                    </button>
-                  )}
+                  <EngineCard
+                    label="Picovoice Porcupine"
+                    badge="Free tier ≤3 users"
+                    description="Engine comercial com tier grátis para uso pessoal. Mais preciso (<0.1 FA/h) mas exige conta no console.picovoice.ai."
+                    selected={engine === "porcupine"}
+                    onClick={() => setEngine("porcupine")}
+                  />
                 </div>
-                {error && <div style={errorBox}>⚠ {error}</div>}
               </section>
 
-              <section style={fieldset}>
-                <h3 style={sectionTitle}>Como funciona</h3>
-                <p style={muted}>
-                  Porcupine faz reconhecimento <strong>acústico</strong> direto
-                  do áudio do microfone — não depende do Web Speech transcrever
-                  &ldquo;Jarvis&rdquo; corretamente. Quando detecta a
-                  palavra-gatilho, o AtlasDeck abre uma janela de captura via
-                  Web Speech para você falar o comando (o ASR pt-BR é bom para
-                  frases completas, só falha em palavras isoladas).
-                </p>
-                <p style={muted}>
-                  Sem AccessKey configurada, voltamos a usar Web Speech também
-                  para o wake — o que muitas vezes falha de pegar
-                  &ldquo;Jarvis&rdquo;/&ldquo;Atlas&rdquo;.
-                </p>
-              </section>
+              {engine === "openwakeword" ? (
+                <>
+                  <section style={statusBox(config.openwakeword.configured)}>
+                    <strong>
+                      {config.openwakeword.configured ? "✅ Pronto" : "⚠ Modelos não encontrados"}
+                    </strong>
+                    <div style={{ marginTop: 4, fontSize: 12 }}>
+                      Wake word: <code>hey_jarvis</code> (Apache-2.0, pré-treinado).
+                      Modelos servidos de <code>/openwakeword/</code>.
+                    </div>
+                  </section>
+
+                  <section style={fieldset}>
+                    <h3 style={sectionTitle}>Sensibilidade</h3>
+                    <label style={label}>
+                      Threshold (atual: <strong>{threshold.toFixed(2)}</strong>)
+                      <input
+                        type="range"
+                        min={0.1}
+                        max={0.9}
+                        step={0.05}
+                        value={threshold}
+                        onChange={(e) => setThreshold(Number(e.target.value))}
+                        style={{ width: "100%" }}
+                      />
+                      <span style={{ ...muted, marginTop: 4 }}>
+                        Menor = mais sensível (mais false-alarms). Maior = mais
+                        rigoroso (pode perder wakes). <code>0.5</code> é o default
+                        do openWakeWord.
+                      </span>
+                    </label>
+                    <div style={buttonRow}>
+                      <button
+                        type="button"
+                        onClick={handleSave}
+                        disabled={saving}
+                        style={primaryButton(saving)}
+                      >
+                        {saving ? "Salvando…" : "Salvar"}
+                      </button>
+                    </div>
+                  </section>
+
+                  <section style={fieldset}>
+                    <h3 style={sectionTitle}>Como funciona</h3>
+                    <p style={muted}>
+                      openWakeWord roda 3 modelos ONNX no browser via
+                      onnxruntime-web: melspectrogram → embedding → classifier.
+                      Cada ~80ms ele avalia o áudio e emite uma probabilidade
+                      de wake. Se passar do threshold, o AtlasDeck abre uma
+                      janela de captura via Web Speech (que é boa para frases
+                      completas) para o comando.
+                    </p>
+                    <p style={muted}>
+                      Acurácia esperada: ~95% recall com ~0.3 false-alarms/hora.
+                      Treinar uma wake word custom (ex: &ldquo;Atlas&rdquo;) é
+                      possível via Google Colab do openWakeWord — fica como
+                      upgrade futuro.
+                    </p>
+                  </section>
+                </>
+              ) : (
+                <>
+                  <section style={statusBox(config.porcupine.configured)}>
+                    <strong>
+                      {config.porcupine.configured
+                        ? "✅ Configurado"
+                        : "⚠ AccessKey necessária"}
+                    </strong>
+                    {config.porcupine.configured && (
+                      <div style={{ marginTop: 4, fontSize: 12 }}>
+                        Fonte: <code>{config.porcupine.source}</code> · access
+                        key <code>{config.porcupine.accessKeyPreview}</code> ·
+                        keyword <code>{config.porcupine.keyword}</code>
+                      </div>
+                    )}
+                  </section>
+
+                  <section style={fieldset}>
+                    <h3 style={sectionTitle}>Como obter a AccessKey</h3>
+                    <ol style={stepsStyle}>
+                      <li>
+                        Acesse{" "}
+                        <a
+                          href="https://console.picovoice.ai/"
+                          target="_blank"
+                          rel="noreferrer"
+                          style={linkStyle}
+                        >
+                          console.picovoice.ai <ExternalLink size={10} />
+                        </a>{" "}
+                        e cria conta grátis (sem cartão)
+                      </li>
+                      <li>Copia o AccessKey do dashboard</li>
+                      <li>Cola abaixo + salva</li>
+                    </ol>
+                  </section>
+
+                  <section style={fieldset}>
+                    <h3 style={sectionTitle}>Credenciais</h3>
+
+                    <label style={label}>
+                      AccessKey (Picovoice)
+                      <input
+                        type="password"
+                        placeholder={
+                          config.porcupine.configured
+                            ? "(salva — apague para limpar ou cole nova)"
+                            : "AccessKey copiada do dashboard"
+                        }
+                        value={accessKey}
+                        onChange={(e) => setAccessKey(e.target.value)}
+                        style={input}
+                      />
+                    </label>
+
+                    <label style={label}>
+                      Palavra-gatilho
+                      <select
+                        value={keyword}
+                        onChange={(e) => setKeyword(e.target.value)}
+                        style={input}
+                      >
+                        {config.porcupine.availableKeywords.map((k) => (
+                          <option key={k} value={k}>
+                            {k}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <div style={buttonRow}>
+                      <button
+                        type="button"
+                        onClick={handleSave}
+                        disabled={saving}
+                        style={primaryButton(saving)}
+                      >
+                        {saving ? "Salvando…" : "Salvar"}
+                      </button>
+                      {config.porcupine.configured &&
+                        config.porcupine.source === "memory_settings" && (
+                          <button
+                            type="button"
+                            onClick={handleClearPorcupine}
+                            disabled={saving}
+                            style={secondaryButton(saving)}
+                          >
+                            Remover access key
+                          </button>
+                        )}
+                    </div>
+                  </section>
+                </>
+              )}
+
+              {error && <div style={errorBox}>⚠ {error}</div>}
             </>
           )}
         </div>
@@ -234,6 +317,60 @@ export function WakeWordSettingsModal({ open, onClose }: WakeWordSettingsModalPr
     </div>
   );
 }
+
+function EngineCard({
+  label,
+  badge,
+  description,
+  selected,
+  onClick,
+}: {
+  label: string;
+  badge: string;
+  description: string;
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        textAlign: "left",
+        padding: 12,
+        borderRadius: 8,
+        background: selected ? "var(--accent-soft)" : "var(--bg)",
+        border: `1px solid ${selected ? "var(--accent)" : "var(--border)"}`,
+        cursor: "pointer",
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        {selected && (
+          <CheckCircle2
+            size={14}
+            style={{ color: "var(--accent)", flexShrink: 0 }}
+          />
+        )}
+        <span style={{ fontWeight: 600, fontSize: 13 }}>{label}</span>
+      </div>
+      <div style={{ fontSize: 10, color: "var(--text-muted)", letterSpacing: 0.3 }}>
+        {badge}
+      </div>
+      <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.4 }}>
+        {description}
+      </div>
+    </button>
+  );
+}
+
+const engineGridStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "1fr 1fr",
+  gap: 8,
+};
 
 const backdropStyle: CSSProperties = {
   position: "fixed",
@@ -247,7 +384,7 @@ const backdropStyle: CSSProperties = {
 };
 
 const modalStyle: CSSProperties = {
-  width: "min(640px, 95vw)",
+  width: "min(680px, 95vw)",
   maxHeight: "85vh",
   background: "var(--surface)",
   border: "1px solid var(--border)",
@@ -290,7 +427,9 @@ const iconButtonStyle: CSSProperties = {
 function statusBox(ok: boolean): CSSProperties {
   return {
     padding: "10px 12px",
-    background: ok ? "var(--accent-soft)" : "var(--danger-soft, rgba(239,68,68,0.1))",
+    background: ok
+      ? "var(--accent-soft)"
+      : "var(--danger-soft, rgba(239,68,68,0.1))",
     border: `1px solid ${ok ? "var(--accent)" : "var(--danger, #ef4444)"}`,
     borderRadius: 8,
     color: ok ? "var(--accent)" : "var(--danger, #ef4444)",
@@ -393,6 +532,3 @@ const errorBox: CSSProperties = {
   color: "var(--danger, #ef4444)",
   fontSize: 12,
 };
-
-// Suppress unused warning for the imported icon when no checkmark is rendered.
-void CheckCircle2;

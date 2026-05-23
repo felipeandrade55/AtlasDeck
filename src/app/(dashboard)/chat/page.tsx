@@ -23,6 +23,7 @@ import { PushToTalkOverlay } from "@/components/chat/PushToTalkOverlay";
 import { useChatStream } from "@/components/chat/useChatStream";
 import { usePushToTalk } from "@/components/chat/usePushToTalk";
 import { usePorcupineWakeWord } from "@/components/chat/usePorcupineWakeWord";
+import { useOpenWakeWord } from "@/components/chat/useOpenWakeWord";
 import { useFollowUpCapture } from "@/components/chat/useFollowUpCapture";
 import { useTtsEngine } from "@/components/chat/useTtsEngine";
 import { useWakeWord } from "@/components/chat/useWakeWord";
@@ -432,25 +433,71 @@ export default function ChatPage() {
     },
   });
 
-  // Porcupine is the canonical wake-word engine: it does acoustic
-  // detection on raw audio and works regardless of how the browser's
-  // pt-BR ASR mishears the trigger. We pause Web Speech wake whenever
-  // Porcupine is available so they do not fight for the microphone.
-  const porcupine = usePorcupineWakeWord({
-    enabled: wakeEnabled,
+  // The chat page supports two acoustic wake engines: openWakeWord
+  // (Apache-2.0 default — runs ONNX models in the browser, no setup)
+  // and Picovoice Porcupine (free tier, more accurate but requires
+  // an AccessKey). The user picks via WakeWordSettingsModal; we read
+  // the choice from /api/chat/wake-config and activate one hook at a
+  // time so they don't fight for the microphone.
+  const [wakeEngine, setWakeEngine] = useState<"openwakeword" | "porcupine">("openwakeword");
+  const [openWakeThreshold, setOpenWakeThreshold] = useState(0.5);
+
+  const refreshWakeConfig = useCallback(async () => {
+    try {
+      const res = await fetch("/api/chat/wake-config");
+      if (!res.ok) return;
+      const data = (await res.json()) as {
+        engine?: "openwakeword" | "porcupine";
+        openwakeword?: { threshold?: number };
+      };
+      if (data.engine === "openwakeword" || data.engine === "porcupine") {
+        setWakeEngine(data.engine);
+      }
+      if (typeof data.openwakeword?.threshold === "number") {
+        setOpenWakeThreshold(data.openwakeword.threshold);
+      }
+    } catch {
+      // keep defaults
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshWakeConfig();
+  }, [refreshWakeConfig]);
+
+  const handleWakeFired = useCallback(() => {
+    setWakeTeaser("🎙 Detectado! Pode falar seu comando.");
+    followUp.arm();
+  }, [followUp]);
+
+  const openWake = useOpenWakeWord({
+    enabled: wakeEnabled && wakeEngine === "openwakeword",
     paused:
       stream.isStreaming ||
       speakingId !== null ||
       pushToTalk.holding ||
       followUp.active,
-    onWake: () => {
-      setWakeTeaser("🎙 Detectado! Pode falar seu comando.");
-      followUp.arm();
-    },
+    threshold: openWakeThreshold,
+    onWake: handleWakeFired,
   });
 
-  const webSpeechWakeActive =
-    wakeEnabled && porcupine.available !== true;
+  const porcupine = usePorcupineWakeWord({
+    enabled: wakeEnabled && wakeEngine === "porcupine",
+    paused:
+      stream.isStreaming ||
+      speakingId !== null ||
+      pushToTalk.holding ||
+      followUp.active,
+    onWake: handleWakeFired,
+  });
+
+  // Web Speech wake is only used when no acoustic engine is active —
+  // its pt-BR accuracy is poor, so we keep it as a last-resort fallback
+  // when openWakeWord and Porcupine are both off.
+  const acousticActive =
+    (wakeEngine === "openwakeword" && openWake.holding) ||
+    (wakeEngine === "porcupine" && porcupine.holding);
+  const webSpeechWakeActive = wakeEnabled && !acousticActive;
 
   const wake = useWakeWord({
     enabled: webSpeechWakeActive,
@@ -458,6 +505,7 @@ export default function ChatPage() {
       stream.isStreaming ||
       speakingId !== null ||
       pushToTalk.holding ||
+      openWake.holding ||
       porcupine.holding,
     phrases: WAKE_PHRASES,
     onWake: ({ command }) => {
@@ -524,9 +572,9 @@ export default function ChatPage() {
             >
               {ttsEnabled ? <Volume2 size={16} /> : <VolumeX size={16} />}
               {ttsEnabled ? "Voz ON" : "Voz OFF"}
-              {tts.engine === "elevenlabs" && (
+              {(tts.engine === "elevenlabs" || tts.engine === "fishaudio") && (
                 <span style={{ fontSize: 10, opacity: 0.7, marginLeft: 2 }}>
-                  · 11labs
+                  · {tts.engine === "fishaudio" ? "fish" : "11labs"}
                 </span>
               )}
             </button>
@@ -534,7 +582,7 @@ export default function ChatPage() {
               type="button"
               onClick={() => setShowVoiceModal(true)}
               style={toggleButtonStyle(false)}
-              title="Configurar voz (ElevenLabs)"
+              title="Configurar voz (ElevenLabs / Fish Audio)"
             >
               <SettingsIcon size={14} />
             </button>
@@ -549,7 +597,17 @@ export default function ChatPage() {
             </button>
             <WakeIndicator
               state={
-                porcupine.available
+                wakeEngine === "openwakeword"
+                  ? openWake.state === "listening"
+                    ? "listening"
+                    : openWake.state === "activated"
+                    ? "activated"
+                    : openWake.state === "loading"
+                    ? "listening"
+                    : openWake.state === "error"
+                    ? "error"
+                    : wake.state
+                  : porcupine.available
                   ? porcupine.state === "listening"
                     ? "listening"
                     : porcupine.state === "activated"
@@ -561,16 +619,20 @@ export default function ChatPage() {
                     : wake.state
                   : wake.state
               }
-              enabled={
-                wakeEnabled && (Boolean(porcupine.available) || wake.supported)
-              }
+              enabled={wakeEnabled}
               phrases={
-                porcupine.available
+                wakeEngine === "openwakeword"
+                  ? ["Hey Jarvis (openWakeWord)"]
+                  : porcupine.available
                   ? ["Jarvis (Porcupine)"]
                   : WAKE_PHRASES
               }
               lastHeard={
-                porcupine.available
+                wakeEngine === "openwakeword"
+                  ? openWake.errorMessage
+                    ? openWake.errorMessage
+                    : `score ${openWake.lastScore.toFixed(2)}`
+                  : porcupine.available
                   ? porcupine.errorMessage || "Porcupine ativo"
                   : wake.lastHeard
               }
@@ -603,7 +665,10 @@ export default function ChatPage() {
 
         <WakeWordSettingsModal
           open={showWakeModal}
-          onClose={() => setShowWakeModal(false)}
+          onClose={() => {
+            setShowWakeModal(false);
+            void refreshWakeConfig();
+          }}
         />
 
         <HeardPanel
