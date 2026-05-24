@@ -6,73 +6,112 @@
  * Executes a fixed catalog of recovery / diagnostic commands. The action name
  * is the *only* user-controlled input — no arbitrary strings are passed to the
  * shell. Use this instead of /api/terminal whenever possible.
+ *
+ * Some actions (gateway-restart, gateway-logs) use the gateway-control lib
+ * to adapt across systemd / PM2 / bare-process installs, so the recovery
+ * panel keeps working regardless of how the user launched OpenClaw.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+
+import { gatewayLogs, restartGateway, detectGatewayRuntime } from '@/lib/gateway-control';
 
 const execAsync = promisify(exec);
 
 type Severity = 'safe' | 'caution' | 'destructive';
 
 interface ActionDef {
-  cmd: string;
   description: string;
   severity: Severity;
   timeoutMs?: number;
   /** If true, the action restarts the dashboard itself and the response will be lost. */
   selfDisruptive?: boolean;
+  /** Either a shell command OR a run() handler. Exactly one must be set. */
+  cmd?: string;
+  run?: () => Promise<{ output: string; success: boolean; error?: string }>;
 }
 
 const ACTIONS: Record<string, ActionDef> = {
-  // ─── OpenClaw gateway via systemd ────────────────────────────
-  'gateway-status': {
-    cmd: 'systemctl status openclaw-gateway --no-pager -l',
-    description: 'Mostra o status do serviço openclaw-gateway',
-    severity: 'safe',
-  },
+  // ─── OpenClaw gateway (adaptive: systemd → PM2 → bare process) ──
   'gateway-restart': {
-    cmd: 'systemctl restart openclaw-gateway',
-    description: 'Reinicia o gateway do OpenClaw',
+    description: 'Reinicia o gateway do OpenClaw (systemd, PM2 ou processo)',
     severity: 'caution',
+    run: async () => {
+      const r = await restartGateway();
+      return {
+        success: r.success,
+        output: `[runtime: ${r.runtime}]\n${r.output}`,
+        error: r.success ? undefined : 'Falha ao reiniciar o gateway — veja o log acima',
+      };
+    },
   },
-  'gateway-start': {
-    cmd: 'systemctl start openclaw-gateway',
-    description: 'Inicia o gateway do OpenClaw',
-    severity: 'caution',
-  },
-  'gateway-stop': {
-    cmd: 'systemctl stop openclaw-gateway',
-    description: 'Para o gateway do OpenClaw',
-    severity: 'destructive',
+  'gateway-status': {
+    description: 'Mostra como o gateway está rodando (systemd, PM2 ou processo)',
+    severity: 'safe',
+    run: async () => {
+      const runtime = await detectGatewayRuntime();
+      const lines: string[] = [`Runtime detectado: ${runtime}`];
+      if (runtime === 'systemd') {
+        const r = await execSafe('systemctl status openclaw-gateway --no-pager -l', 8000);
+        lines.push(r.output);
+      } else if (runtime === 'pm2') {
+        const r = await execSafe('pm2 list 2>&1', 8000);
+        lines.push(r.output);
+      } else if (runtime === 'process') {
+        const r = await execSafe('pgrep -af openclaw 2>/dev/null || true', 5000);
+        lines.push(r.output || '(nenhum)');
+      } else {
+        lines.push('Nenhum gateway em execução. Sugestões:');
+        lines.push('  - openclaw daemon start');
+        lines.push('  - pm2 start openclaw-gateway');
+        lines.push('  - systemctl start openclaw-gateway (se houver unit)');
+      }
+      return { success: true, output: lines.join('\n') };
+    },
   },
   'gateway-logs': {
-    cmd: 'journalctl -u openclaw-gateway -n 200 --no-pager',
-    description: 'Últimas 200 linhas de log do gateway',
+    description: 'Últimas linhas de log do gateway (journalctl, PM2 ou arquivo)',
     severity: 'safe',
+    run: async () => {
+      const r = await gatewayLogs({ lines: 200 });
+      return {
+        success: r.found,
+        output: `[fonte: ${r.source}]\n${r.output}`,
+      };
+    },
   },
   'gateway-logs-errors': {
-    cmd: 'journalctl -u openclaw-gateway -n 200 --no-pager -p err',
-    description: 'Últimos erros do gateway',
+    description: 'Últimos erros do gateway (journalctl, PM2 ou arquivo)',
     severity: 'safe',
+    run: async () => {
+      const r = await gatewayLogs({ lines: 200, errorsOnly: true });
+      return {
+        success: r.found,
+        output: `[fonte: ${r.source}]\n${r.output}`,
+      };
+    },
   },
 
   // ─── OpenClaw CLI ────────────────────────────────────────────
+  // `timeout` prefix avoids the CLI hanging for 15s+ when the daemon is down
   'openclaw-status': {
-    cmd: 'openclaw status',
+    cmd: 'timeout 8s openclaw status 2>&1',
     description: 'Status geral do OpenClaw',
     severity: 'safe',
+    timeoutMs: 10_000,
   },
   'openclaw-doctor': {
-    cmd: 'openclaw doctor',
+    cmd: 'timeout 55s openclaw doctor 2>&1',
     description: 'Executa o diagnóstico completo do OpenClaw',
     severity: 'safe',
     timeoutMs: 60_000,
   },
   'openclaw-version': {
-    cmd: 'openclaw --version',
+    cmd: 'timeout 5s openclaw --version 2>&1',
     description: 'Versão instalada do OpenClaw',
     severity: 'safe',
+    timeoutMs: 8_000,
   },
   'openclaw-update': {
     cmd: 'openclaw update',
@@ -158,12 +197,47 @@ const ACTIONS: Record<string, ActionDef> = {
 
   // ─── Auto-restart do dashboard (use com cuidado) ─────────────
   'mission-control-restart': {
-    cmd: 'systemctl restart mission-control',
+    cmd: 'systemctl restart mission-control 2>&1 || pm2 restart atlasdeck 2>&1 || pm2 restart mission-control 2>&1',
     description: 'Reinicia o próprio AtlasDeck (a página vai cair por alguns segundos)',
     severity: 'destructive',
     selfDisruptive: true,
   },
 };
+
+interface SafeExecResult {
+  success: boolean;
+  output: string;
+  error?: string;
+}
+
+async function execSafe(cmd: string, timeoutMs: number): Promise<SafeExecResult> {
+  try {
+    const { stdout, stderr } = await execAsync(cmd, {
+      timeout: timeoutMs,
+      maxBuffer: 2 * 1024 * 1024,
+      shell: '/bin/bash',
+    });
+    return {
+      success: true,
+      output: (stdout || '') + (stderr ? `\n[stderr]\n${stderr}` : ''),
+    };
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException & {
+      stdout?: string;
+      stderr?: string;
+      killed?: boolean;
+      signal?: string;
+    };
+    const killedByTimeout = err.killed && err.signal === 'SIGTERM';
+    return {
+      success: false,
+      output: (err.stdout || '') + (err.stderr ? `\n[stderr]\n${err.stderr}` : ''),
+      error: killedByTimeout
+        ? `Comando excedeu o timeout de ${timeoutMs}ms`
+        : err.message || String(e),
+    };
+  }
+}
 
 export function GET() {
   // Expose the catalog so the UI can render it dynamically
@@ -191,44 +265,57 @@ export async function POST(request: NextRequest) {
 
   const def = ACTIONS[id];
   if (!def) {
-    return NextResponse.json({
-      error: `Action "${id}" não está no catálogo`,
-      hint: 'Chame GET /api/recovery/action para listar as actions válidas.',
-    }, { status: 400 });
+    return NextResponse.json(
+      {
+        error: `Action "${id}" não está no catálogo`,
+        hint: 'Chame GET /api/recovery/action para listar as actions válidas.',
+      },
+      { status: 400 },
+    );
   }
 
-  const timeout = def.timeoutMs ?? 15_000;
   const started = Date.now();
 
-  try {
-    const { stdout, stderr } = await execAsync(def.cmd, {
-      timeout,
-      maxBuffer: 2 * 1024 * 1024,
-      shell: '/bin/bash',
-    });
-    const duration = Date.now() - started;
-    return NextResponse.json({
-      success: true,
-      action: id,
-      description: def.description,
-      severity: def.severity,
-      durationMs: duration,
-      output: (stdout || '') + (stderr ? `\n[stderr]\n${stderr}` : ''),
-    });
-  } catch (e) {
-    const err = e as NodeJS.ErrnoException & { stdout?: string; stderr?: string; killed?: boolean; signal?: string };
-    const duration = Date.now() - started;
-    const killedByTimeout = err.killed && err.signal === 'SIGTERM';
-    return NextResponse.json({
-      success: false,
-      action: id,
-      description: def.description,
-      severity: def.severity,
-      durationMs: duration,
-      output: (err.stdout || '') + (err.stderr ? `\n[stderr]\n${err.stderr}` : ''),
-      error: killedByTimeout
-        ? `Comando excedeu o timeout de ${timeout}ms`
-        : err.message || String(e),
-    }, { status: 200 }); // 200 with success:false so the UI can render the output
+  if (def.run) {
+    try {
+      const r = await def.run();
+      return NextResponse.json({
+        success: r.success,
+        action: id,
+        description: def.description,
+        severity: def.severity,
+        durationMs: Date.now() - started,
+        output: r.output,
+        error: r.error,
+      });
+    } catch (e) {
+      return NextResponse.json({
+        success: false,
+        action: id,
+        description: def.description,
+        severity: def.severity,
+        durationMs: Date.now() - started,
+        output: '',
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
   }
+
+  if (!def.cmd) {
+    return NextResponse.json(
+      { error: `Action "${id}" sem cmd nem run() — bug do catálogo` },
+      { status: 500 },
+    );
+  }
+
+  const r = await execSafe(def.cmd, def.timeoutMs ?? 15_000);
+  return NextResponse.json({
+    success: r.success,
+    action: id,
+    description: def.description,
+    severity: def.severity,
+    durationMs: Date.now() - started,
+    output: r.output,
+    error: r.error,
+  });
 }

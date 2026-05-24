@@ -4,167 +4,15 @@
  * Available actions: git-status, restart-gateway, clear-temp, usage-stats, heartbeat
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { exec, spawn, type ChildProcess } from 'child_process';
+import { exec } from 'child_process';
 import { promisify } from 'util';
-import { readFile, readlink } from 'fs/promises';
 import { logActivity } from '@/lib/activities-db';
 import { OPENCLAW_WORKSPACE } from '@/lib/paths';
+import { restartGateway as restartGatewayShared } from '@/lib/gateway-control';
 
 const execAsync = promisify(exec);
 
 const WORKSPACE = OPENCLAW_WORKSPACE;
-
-/**
- * Restart the OpenClaw gateway across the two setups we support:
- *
- *   1. systemd unit `openclaw-gateway.service` — covers the original
- *      AtlasDeck install playbook.
- *   2. Plain node process started by hand (e.g. `node
- *      /usr/lib/node_modules/openclaw/dist/index.js gateway --port 18789`)
- *      — covers the npm-global install where there is no service unit.
- *      For that case we discover the PID via `pgrep`, read the exact
- *      argv/cwd/env from /proc, send SIGTERM (then SIGKILL after 5s),
- *      and respawn the process detached so it survives this request.
- */
-async function restartGateway(): Promise<string> {
-  const logs: string[] = [];
-
-  // Strategy 1: systemd
-  try {
-    const { stdout, stderr } = await execAsync('systemctl restart openclaw-gateway 2>&1');
-    const { stdout: active } = await execAsync(
-      'systemctl is-active openclaw-gateway 2>&1 || echo "unknown"',
-    );
-    if (active.trim() === 'active') {
-      logs.push('✓ Reiniciado via systemd (openclaw-gateway.service)');
-      logs.push(`Status: active`);
-      return logs.join('\n');
-    }
-    logs.push(`systemd: indisponível (${(stdout || stderr).trim() || 'Unit not found'})`);
-  } catch (err) {
-    logs.push(`systemd: ${(err as Error).message.slice(0, 200)}`);
-  }
-
-  // Strategy 2: find the bare `openclaw ... gateway` process and respawn it
-  let pid: number | null = null;
-  try {
-    const { stdout } = await execAsync(
-      `pgrep -f 'openclaw.*gateway|openclaw/dist/index\\.js gateway'`,
-    );
-    const pids = stdout
-      .trim()
-      .split('\n')
-      .map((s) => Number(s.trim()))
-      .filter((n) => Number.isFinite(n) && n > 0);
-    if (pids.length > 0) {
-      // Skip our own PID just in case the regex matched the Next.js process
-      pid = pids.find((p) => p !== process.pid) ?? null;
-    }
-  } catch {
-    // pgrep exits 1 when nothing matches; treat as "not found"
-  }
-
-  if (!pid) {
-    logs.push('✗ Nenhum processo openclaw gateway encontrado via pgrep');
-    return logs.join('\n');
-  }
-  logs.push(`PID atual: ${pid}`);
-
-  // Capture exact argv, cwd, env from /proc so the respawn is identical
-  let argv: string[];
-  let cwd: string;
-  let env: Record<string, string> = {};
-  try {
-    const cmdlineRaw = await readFile(`/proc/${pid}/cmdline`);
-    argv = cmdlineRaw.toString('utf8').split('\0').filter((s) => s.length > 0);
-    if (argv.length === 0) throw new Error('cmdline vazio');
-    cwd = await readlink(`/proc/${pid}/cwd`);
-    try {
-      const envRaw = await readFile(`/proc/${pid}/environ`);
-      for (const pair of envRaw.toString('utf8').split('\0')) {
-        const idx = pair.indexOf('=');
-        if (idx > 0) env[pair.slice(0, idx)] = pair.slice(idx + 1);
-      }
-    } catch {
-      env = { ...process.env } as Record<string, string>;
-    }
-    logs.push(`argv: ${argv.slice(0, 6).join(' ')}${argv.length > 6 ? ' …' : ''}`);
-    logs.push(`cwd: ${cwd}`);
-  } catch (err) {
-    logs.push(`✗ Não consegui ler /proc/${pid}: ${(err as Error).message}`);
-    return logs.join('\n');
-  }
-
-  // SIGTERM, then SIGKILL after grace period
-  try {
-    process.kill(pid, 'SIGTERM');
-    logs.push(`✓ SIGTERM → ${pid}`);
-  } catch (err) {
-    logs.push(`✗ SIGTERM falhou: ${(err as Error).message}`);
-    return logs.join('\n');
-  }
-
-  const graceMs = 5000;
-  const start = Date.now();
-  while (Date.now() - start < graceMs) {
-    await new Promise((r) => setTimeout(r, 250));
-    try {
-      process.kill(pid, 0); // probe
-    } catch {
-      logs.push(`✓ Processo encerrou em ${Date.now() - start}ms`);
-      break;
-    }
-  }
-  try {
-    process.kill(pid, 0);
-    // still alive — force kill
-    try {
-      process.kill(pid, 'SIGKILL');
-      logs.push('⚠ SIGKILL forçado após grace de 5s');
-    } catch {}
-    await new Promise((r) => setTimeout(r, 500));
-  } catch {
-    // already dead
-  }
-
-  // Respawn detached with the original argv/cwd/env
-  try {
-    const [cmd, ...args] = argv;
-    const child: ChildProcess = spawn(cmd, args, {
-      cwd,
-      env: env as NodeJS.ProcessEnv,
-      detached: true,
-      stdio: 'ignore',
-    });
-    child.unref();
-    logs.push(`✓ Respawn detached PID ${child.pid}`);
-  } catch (err) {
-    logs.push(`✗ Respawn falhou: ${(err as Error).message}`);
-    return logs.join('\n');
-  }
-
-  // Confirm it's alive
-  await new Promise((r) => setTimeout(r, 1500));
-  try {
-    const { stdout } = await execAsync(
-      `pgrep -f 'openclaw.*gateway|openclaw/dist/index\\.js gateway'`,
-    );
-    const alive = stdout
-      .trim()
-      .split('\n')
-      .filter(Boolean)
-      .filter((p) => Number(p) !== process.pid);
-    if (alive.length === 0) {
-      logs.push('⚠ Verificação: nenhum gateway no pgrep após respawn');
-    } else {
-      logs.push(`✓ Verificação: gateway online (PID ${alive.join(', ')})`);
-    }
-  } catch {
-    logs.push('⚠ pgrep não retornou na verificação');
-  }
-
-  return logs.join('\n');
-}
 
 interface ActionResult {
   action: string;
@@ -202,7 +50,9 @@ async function runAction(action: string): Promise<ActionResult> {
       }
 
       case 'restart-gateway': {
-        output = await restartGateway();
+        const r = await restartGatewayShared();
+        output = `[runtime: ${r.runtime}]\n${r.output}`;
+        if (!r.success) throw new Error('Falha ao reiniciar o gateway');
         break;
       }
 
