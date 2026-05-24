@@ -14,8 +14,8 @@ import {
   RESTORE_PHASE_LABELS,
   RestoreLiveStatus,
   RestorePhase,
-} from "@/lib/restore";
-import type { RestoreAudit } from "@/lib/restore-audit";
+  RestoreAudit,
+} from "@/lib/restore-types";
 import type { BackupOrigin, RestorePreview } from "@/lib/backup";
 
 type UiState =

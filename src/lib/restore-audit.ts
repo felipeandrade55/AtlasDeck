@@ -1,87 +1,17 @@
 import fs from "fs";
 
+import { restoreLogPath } from "./restore";
 import {
+  ErrorCategory,
+  PhaseAudit,
   RESTORE_PHASE_LABELS,
+  RestoreAudit,
   RestoreLiveStatus,
   RestorePhase,
-  restoreLogPath,
-} from "./restore";
+} from "./restore-types";
 
-/**
- * Categorias de erro reconhecidas. O classificador faz pattern-matching sobre
- * a mensagem de erro do bash + a fase em que falhou para escolher uma das
- * categorias abaixo — cada uma tem texto explicativo em português e ações
- * sugeridas para o usuário.
- */
-export type ErrorCategory =
-  | "disk-full"
-  | "permission-denied"
-  | "tar-corrupt"
-  | "archive-missing-marker"
-  | "platform-mismatch"
-  | "pm2-missing"
-  | "pm2-start-timeout"
-  | "health-check-failed"
-  | "db-corrupt"
-  | "preview-failed"
-  | "cancelled"
-  | "unknown";
-
-export interface PhaseAudit {
-  name: string;
-  label: string;
-  status: RestorePhase["status"];
-  durationSec?: number;
-  error?: string;
-  /** Bytes restaurados nessa fase (apenas apply-*), parseado do log. */
-  bytesRestored?: number;
-  /** Arquivos restaurados (apenas apply-*). */
-  filesRestored?: number;
-}
-
-export interface RestoreAudit {
-  sessionId: string;
-  /** Resultado consolidado em uma única palavra. */
-  overallStatus: "success" | "rolled-back" | "failed-no-rollback" | "manual-recovery";
-  startedAt: string;
-  completedAt?: string;
-  durationMs?: number;
-  origin: {
-    user?: string;
-    hostname?: string;
-    platform?: string;
-    homeDir?: string;
-  } | null;
-  safetyBackupPath?: string;
-  rolledBack: boolean;
-  pm2Managed: boolean;
-
-  phases: PhaseAudit[];
-
-  /** Inventário pós-falha: o que foi efetivamente aplicado vs ignorado. */
-  inventory: {
-    safetyBackupCreated: boolean;
-    appStopped: boolean;
-    archiveExtracted: boolean;
-    dataApplied: boolean;
-    envApplied: boolean;
-    homeApplied: boolean;
-    openclawRestarted: boolean;
-    appStarted: boolean;
-    healthVerified: boolean;
-  };
-
-  /** Análise do erro — preenchida apenas em falha. */
-  failedPhase?: string;
-  errorCategory?: ErrorCategory;
-  errorTitle?: string;
-  errorExplanation?: string;
-  errorImpact?: string;
-  suggestedActions?: string[];
-
-  /** Resumo legível para humanos (uma linha) — útil para activity log e notif. */
-  headline: string;
-}
+// Re-export browser-safe types so existing imports (api routes) keep working.
+export type { ErrorCategory, PhaseAudit, RestoreAudit } from "./restore-types";
 
 interface ErrorDiagnosis {
   category: ErrorCategory;

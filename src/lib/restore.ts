@@ -1,85 +1,20 @@
+/**
+ * Server-side I/O helpers for the restore flow.
+ *
+ * Browser-safe types and constants live in `./restore-types`. This module
+ * re-exports them so existing server-side imports keep working untouched.
+ */
+
 import fs from "fs";
 import path from "path";
-import type { BackupOrigin, RestorePreview } from "./backup";
 
-export type RestorePhaseName =
-  | "validate"
-  | "safety-backup"
-  | "preview"
-  | "stop-app"
-  | "extract"
-  | "apply-data"
-  | "apply-env"
-  | "apply-home"
-  | "restart-openclaw"
-  | "start-app"
-  | "verify"
-  | "rollback";
+import {
+  RESTORE_PHASE_ORDER,
+  RestoreLiveStatus,
+  RestorePhase,
+} from "./restore-types";
 
-export interface RestorePhase {
-  name: string;
-  status: "pending" | "running" | "ok" | "fail" | "skip";
-  startedAt?: string;
-  completedAt?: string;
-  durationSec?: number;
-  error?: string;
-}
-
-export interface RestoreLiveStatus {
-  sessionId: string;
-  pid: number;
-  status: "running" | "complete" | "error" | "rolled-back" | "manual-recovery";
-  startedAt: string;
-  completedAt?: string;
-  lastHeartbeat: string;
-  currentPhase: string;
-  phases: RestorePhase[];
-  uploadId: string;
-  archivePath: string;
-  /** Path of the pre-restore safety snapshot, when created. */
-  safetyBackupPath?: string;
-  /** Whether PM2 manages the atlasdeck process — false in dev (npm run dev). */
-  pm2Managed: boolean;
-  /** Backup origin parsed from the upload (host, platform, user). */
-  origin?: BackupOrigin | null;
-  /** Preview computed in fase `preview`. */
-  preview?: RestorePreview | null;
-  logFile: string;
-  statusFile: string;
-  /** Generic error message captured when status flips to "error". */
-  error?: string;
-  /** True once the rollback re-applied the safety backup. */
-  rolledBack?: boolean;
-}
-
-export const RESTORE_PHASE_ORDER: RestorePhaseName[] = [
-  "validate",
-  "safety-backup",
-  "preview",
-  "stop-app",
-  "extract",
-  "apply-data",
-  "apply-env",
-  "apply-home",
-  "restart-openclaw",
-  "start-app",
-  "verify",
-];
-
-export const RESTORE_PHASE_LABELS: Record<string, string> = {
-  validate: "Validar arquivo",
-  "safety-backup": "Snapshot pré-restore",
-  preview: "Plano de restauração",
-  "stop-app": "Parar aplicação",
-  extract: "Extrair backup",
-  "apply-data": "Aplicar dados",
-  "apply-env": "Aplicar .env",
-  "apply-home": "Aplicar ~/.openclaw + ~/.claude",
-  "restart-openclaw": "Reiniciar OpenClaw Gateway",
-  "start-app": "Iniciar aplicação",
-  verify: "Verificar saúde",
-  rollback: "Reverter (rollback)",
-};
+export * from "./restore-types";
 
 export function restoreLiveStatusPath(): string {
   return path.join(process.cwd(), "data", "restore-live-status.json");
