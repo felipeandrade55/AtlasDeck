@@ -107,6 +107,12 @@ const ACTIONS: Record<string, ActionDef> = {
     severity: 'safe',
     timeoutMs: 60_000,
   },
+  'openclaw-doctor-fix': {
+    cmd: 'timeout 115s openclaw doctor --fix 2>&1',
+    description: 'Diagnóstico + correção automática (openclaw doctor --fix)',
+    severity: 'caution',
+    timeoutMs: 120_000,
+  },
   'openclaw-version': {
     cmd: 'timeout 5s openclaw --version 2>&1',
     description: 'Versão instalada do OpenClaw',

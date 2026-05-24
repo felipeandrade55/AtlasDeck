@@ -2,29 +2,26 @@
 
 import { useEffect, useState, useCallback } from "react";
 import {
-  Bot,
   Circle,
   MessageSquare,
-  HardDrive,
   Shield,
   Users,
   Activity,
-  ExternalLink,
   GitBranch,
   LayoutGrid,
   Plus,
   Edit2,
   Trash2,
   X,
-  Coins,
-  Timer,
-  CheckCircle2,
   HelpCircle,
   ArrowRight,
-  TrendingUp,
-  Cpu
+  Cpu,
+  Sparkles,
 } from "lucide-react";
 import { AgentOrganigrama } from "@/components/AgentOrganigrama";
+import { ModelPicker } from "@/components/ModelPicker";
+import { OpenClawDefaultsCard } from "@/components/OpenClawDefaultsCard";
+import { validateModelId } from "@/lib/openclaw-models";
 
 interface Agent {
   id: string;
@@ -32,6 +29,7 @@ interface Agent {
   emoji: string;
   color: string;
   model: string;
+  fallback?: string;
   workspace: string;
   dmPolicy?: string;
   allowAgents: string[];
@@ -60,7 +58,8 @@ export default function AgentsPage() {
   const [formName, setFormName] = useState("");
   const [formEmoji, setFormEmoji] = useState("🤖");
   const [formColor, setFormColor] = useState("#3b82f6");
-  const [formModel, setFormModel] = useState("openai/gpt-5.4-codex");
+  const [formModel, setFormModel] = useState("openai/gpt-5.5-codex");
+  const [formFallback, setFormFallback] = useState("");
   const [formWorkspace, setFormWorkspace] = useState("");
   const [formDmPolicy, setFormDmPolicy] = useState("pairing");
   const [formBotToken, setFormBotToken] = useState("");
@@ -91,7 +90,8 @@ export default function AgentsPage() {
     setFormName("");
     setFormEmoji("🤖");
     setFormColor("#3b82f6");
-    setFormModel("openai/gpt-5.4-codex");
+    setFormModel("openai/gpt-5.5-codex");
+    setFormFallback("");
     setFormWorkspace("");
     setFormDmPolicy("pairing");
     setFormBotToken("");
@@ -107,6 +107,7 @@ export default function AgentsPage() {
     setFormEmoji(agent.emoji);
     setFormColor(agent.color);
     setFormModel(agent.model);
+    setFormFallback(agent.fallback || "");
     setFormWorkspace(agent.workspace);
     setFormDmPolicy(agent.dmPolicy || "pairing");
     setFormBotToken(agent.botToken === "configured" ? "configured" : "");
@@ -122,6 +123,19 @@ export default function AgentsPage() {
       return;
     }
 
+    const primaryWarning = validateModelId(formModel);
+    if (primaryWarning?.level === "error") {
+      setErrorMsg(`Modelo primário inválido: ${primaryWarning.message}`);
+      return;
+    }
+    if (formFallback.trim()) {
+      const fbWarning = validateModelId(formFallback);
+      if (fbWarning?.level === "error") {
+        setErrorMsg(`Modelo de fallback inválido: ${fbWarning.message}`);
+        return;
+      }
+    }
+
     const isEdit = !!editingAgent;
     const url = "/api/agents";
     const method = isEdit ? "PUT" : "POST";
@@ -132,6 +146,7 @@ export default function AgentsPage() {
       emoji: formEmoji,
       color: formColor,
       model: formModel,
+      fallback: formFallback.trim(),
       workspace: formWorkspace.trim() || `./workspace/${formId.trim()}`,
       dmPolicy: formDmPolicy,
       botToken: formBotToken,
@@ -263,6 +278,9 @@ export default function AgentsPage() {
         })}
       </div>
 
+      {/* OpenClaw Defaults (global) */}
+      <OpenClawDefaultsCard onSaved={fetchAgents} />
+
       {/* Delegation Warning Tip */}
       <div className="flex items-start gap-3 p-4 rounded-xl text-sm" style={{ backgroundColor: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.15)" }}>
         <HelpCircle className="w-5 h-5 flex-shrink-0 mt-0.5" style={{ color: "#3b82f6" }} />
@@ -372,7 +390,31 @@ export default function AgentsPage() {
               <div className="p-4 space-y-3 text-xs">
                 <div className="flex justify-between">
                   <span style={{ color: "var(--text-muted)" }}>Modelo Principal</span>
-                  <span className="font-mono text-white text-[11px] truncate max-w-[160px]">{agent.model.split("/").pop()}</span>
+                  <span className="font-mono text-white text-[11px] truncate max-w-[160px]" title={agent.model}>
+                    {agent.model.split("/").pop()}
+                  </span>
+                </div>
+                {(() => {
+                  const w = validateModelId(agent.model);
+                  if (!w) return null;
+                  return (
+                    <div
+                      className="text-[10px] px-2 py-1 rounded -mt-1.5"
+                      style={{
+                        backgroundColor: w.level === "error" ? "rgba(239,68,68,0.1)" : "rgba(234,179,8,0.1)",
+                        color: w.level === "error" ? "#fca5a5" : "#fde68a",
+                        border: `1px solid ${w.level === "error" ? "rgba(239,68,68,0.3)" : "rgba(234,179,8,0.3)"}`,
+                      }}
+                    >
+                      ⚠ {w.message}
+                    </div>
+                  );
+                })()}
+                <div className="flex justify-between">
+                  <span style={{ color: "var(--text-muted)" }}>Modelo Fallback</span>
+                  <span className="font-mono text-[11px] truncate max-w-[160px]" title={agent.fallback || "(herda default)"} style={{ color: agent.fallback ? "white" : "var(--text-muted)" }}>
+                    {agent.fallback ? agent.fallback.split("/").pop() : "(default global)"}
+                  </span>
                 </div>
                 <div className="flex justify-between">
                   <span style={{ color: "var(--text-muted)" }}>Sub-agentes Ativos</span>
@@ -430,8 +472,14 @@ export default function AgentsPage() {
                   <span className="font-mono text-white font-bold">{selectedAgent.id}</span>
                 </div>
                 <div className="flex justify-between text-xs">
-                  <span className="text-zinc-400">Modelo LLM:</span>
+                  <span className="text-zinc-400">Modelo Primário:</span>
                   <span className="font-mono text-white">{selectedAgent.model}</span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-zinc-400">Modelo Fallback:</span>
+                  <span className="font-mono" style={{ color: selectedAgent.fallback ? "white" : "var(--text-muted)" }}>
+                    {selectedAgent.fallback || "(herda default global)"}
+                  </span>
                 </div>
                 <div className="flex justify-between text-xs">
                   <span className="text-zinc-400">Diretório Workspace:</span>
@@ -594,19 +642,27 @@ export default function AgentsPage() {
               </div>
 
               <label className="block space-y-1">
-                <span className="text-xs font-bold text-zinc-400 uppercase tracking-wide">Modelo de IA Primário</span>
-                <select
-                  value={formModel}
-                  onChange={(e) => setFormModel(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg text-xs outline-none bg-zinc-900 border text-white"
-                  style={{ borderColor: "var(--border)" }}
-                >
-                  <option value="openai/gpt-5.4">openai/gpt-5.4 (Recomendado)</option>
-                  <option value="openai/gpt-5.4-mini">openai/gpt-5.4-mini (Rápido e Barato)</option>
-                  <option value="openai/gpt-5.4-codex">openai/gpt-5.4-codex (Especialista em Código)</option>
-                  <option value="anthropic/claude-3.5-sonnet">anthropic/claude-3.5-sonnet</option>
-                  <option value="google/gemini-1.5-pro">google/gemini-1.5-pro</option>
-                </select>
+                <span className="flex items-center gap-1.5 text-xs font-bold text-zinc-400 uppercase tracking-wide">
+                  <Sparkles className="w-3 h-3" />
+                  Modelo de IA Primário
+                </span>
+                <ModelPicker value={formModel} onChange={setFormModel} />
+              </label>
+
+              <label className="block space-y-1">
+                <span className="flex items-center gap-1.5 text-xs font-bold text-zinc-400 uppercase tracking-wide">
+                  <Shield className="w-3 h-3" />
+                  Modelo de Fallback (opcional)
+                </span>
+                <ModelPicker
+                  value={formFallback}
+                  onChange={setFormFallback}
+                  allowEmpty
+                  emptyLabel="(usar o default global)"
+                />
+                <span className="text-[10px] text-zinc-500 block">
+                  Usado se o primário ficar inalcançável. Se vazio, herda o fallback definido nos defaults globais acima.
+                </span>
               </label>
 
               <label className="block space-y-1">

@@ -12,6 +12,7 @@ interface Agent {
   emoji: string;
   color: string;
   model: string;
+  fallback?: string;
   workspace: string;
   dmPolicy?: string;
   allowAgents?: string[];
@@ -25,6 +26,23 @@ interface Agent {
   status: "online" | "offline";
   lastActivity?: string;
   activeSessions: number;
+}
+
+/**
+ * OpenClaw's `model` field has historically used different shapes:
+ *  - { primary: "openai/...", fallback: "ollama/..." }
+ *  - { primary: "openai/...", fallbacks: ["ollama/..."] }
+ * We read either shape and surface a single "fallback" string upward.
+ */
+function readFallback(modelObj: unknown): string | undefined {
+  if (!modelObj || typeof modelObj !== "object") return undefined;
+  const obj = modelObj as { fallback?: unknown; fallbacks?: unknown };
+  if (typeof obj.fallback === "string" && obj.fallback.trim()) return obj.fallback.trim();
+  if (Array.isArray(obj.fallbacks)) {
+    const first = obj.fallbacks.find((x): x is string => typeof x === "string" && x.trim().length > 0);
+    if (first) return first.trim();
+  }
+  return undefined;
 }
 
 const DEFAULT_AGENT_CONFIG: Record<string, { emoji: string; color: string; name?: string }> = {
@@ -101,6 +119,7 @@ export async function GET() {
         emoji: agentInfo.emoji,
         color: agentInfo.color,
         model: agent.model?.primary || config.agents.defaults?.model?.primary || "openai/gpt-5.4-codex",
+        fallback: readFallback(agent.model) ?? readFallback(config.agents.defaults?.model),
         workspace: agent.workspace,
         dmPolicy: telegramAccount?.dmPolicy || config.channels?.telegram?.dmPolicy || "pairing",
         allowAgents,
@@ -134,6 +153,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Agent ID already exists" }, { status: 400 });
     }
 
+    const newAgentModel: { primary: string; fallback?: string } = {
+      primary: body.model || config.agents.defaults?.model?.primary || "openai/gpt-5.4-codex",
+    };
+    if (typeof body.fallback === "string" && body.fallback.trim()) {
+      newAgentModel.fallback = body.fallback.trim();
+    }
+
     const newAgent = {
       id: body.id,
       name: body.name,
@@ -141,9 +167,7 @@ export async function POST(request: Request) {
         emoji: body.emoji || "🤖",
         color: body.color || "#666666"
       },
-      model: {
-        primary: body.model || config.agents.defaults?.model?.primary || "openai/gpt-5.4-codex"
-      },
+      model: newAgentModel,
       workspace: body.workspace || `./workspace/${body.id}`,
       subagents: {
         allowAgents: body.allowAgents || []
@@ -200,6 +224,17 @@ export async function PUT(request: Request) {
     if (body.color) agent.ui.color = body.color;
     if (!agent.model) agent.model = {};
     if (body.model) agent.model.primary = body.model;
+    // fallback handling: preserve original shape (`fallback` string or `fallbacks` array)
+    if (body.fallback !== undefined) {
+      const fb = typeof body.fallback === "string" ? body.fallback.trim() : "";
+      if (Array.isArray(agent.model.fallbacks)) {
+        agent.model.fallbacks = fb ? [fb] : [];
+      } else if (fb) {
+        agent.model.fallback = fb;
+      } else {
+        delete agent.model.fallback;
+      }
+    }
     if (body.workspace) agent.workspace = body.workspace;
     if (!agent.subagents) agent.subagents = { allowAgents: [] };
     if (body.allowAgents) agent.subagents.allowAgents = body.allowAgents;
