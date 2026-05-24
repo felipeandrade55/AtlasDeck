@@ -79,16 +79,68 @@ async function findPm2Name(): Promise<string | null> {
   return null;
 }
 
+async function readCmdline(pid: number): Promise<string | null> {
+  try {
+    const buf = await readFile(`/proc/${pid}/cmdline`);
+    return buf.toString("utf8").replace(/\0/g, " ").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Returns the PIDs that look like a real, *running* OpenClaw gateway daemon.
+ *
+ * The previous regex (`openclaw.*gateway`) matched too many false positives:
+ *  - ephemeral shells like `bash -c "openclaw status gateway"`
+ *  - the AI assistant's own `codex exec` reading config that mentions both words
+ *  - pgrep racing against itself
+ * Then `/proc/<pid>/cmdline` would ENOENT because those processes died between
+ * detection and respawn, showing a misleading "you're on macOS" hint.
+ *
+ * Strategy now:
+ *   1. Use a tighter pgrep pattern.
+ *   2. For each candidate, re-read /proc/<pid>/cmdline NOW and validate:
+ *      - process still exists
+ *      - cmdline is not just a shell one-liner
+ *      - cmdline actually contains "openclaw" AND "gateway"
+ *      - PID is not our own process tree
+ */
 async function findGatewayPids(): Promise<number[]> {
   const r = await safeExec(
-    `pgrep -f 'openclaw.*gateway|openclaw/dist/index\\.js gateway' 2>/dev/null || true`,
+    `pgrep -f 'openclaw[^/[:space:]]*gateway|openclaw-gateway|openclaw[^[:space:]]* gateway' 2>/dev/null || true`,
     3000,
   );
-  return r.stdout
+  const candidates = r.stdout
     .trim()
     .split("\n")
     .map((s) => Number(s.trim()))
-    .filter((n) => Number.isFinite(n) && n > 0 && n !== process.pid);
+    .filter((n) => Number.isFinite(n) && n > 0 && n !== process.pid && n !== process.ppid);
+
+  const valid: number[] = [];
+  for (const pid of candidates) {
+    const cmdline = await readCmdline(pid);
+    if (!cmdline) continue; // process already gone — skip silently
+    // Skip ephemeral shells (e.g. `bash -c "openclaw gateway status"`)
+    if (/^(?:[\w/.-]*\/)?(sh|bash|zsh|fish|dash|ksh)\s+-[ic]\s/.test(cmdline)) continue;
+    // Skip pgrep itself
+    if (/(?:^|\/)pgrep(\s|$)/.test(cmdline)) continue;
+    // Skip our own AI assistant processes (codex/claude) reading configs
+    if (/(?:^|\/)(codex|claude)(\s|$)/.test(cmdline)) continue;
+    const lc = cmdline.toLowerCase();
+    if (!lc.includes("openclaw") || !lc.includes("gateway")) continue;
+    valid.push(pid);
+  }
+  return valid;
+}
+
+async function isLinuxProc(): Promise<boolean> {
+  try {
+    await stat("/proc/1/cmdline");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function detectGatewayRuntime(): Promise<GatewayRuntime> {
@@ -147,105 +199,127 @@ export async function restartGateway(): Promise<RestartResult> {
 
   // ─── Strategy 3: pgrep + /proc respawn ────────────────────────
   log.push("→ pgrep + respawn detached via /proc");
+
+  const onLinux = await isLinuxProc();
+  if (!onLinux) {
+    log.push("✗ /proc não disponível (não estamos em Linux)");
+    log.push("Sugestões:");
+    log.push("  - macOS/Windows: rode o gateway via PM2 ou systemd");
+    log.push("  - Linux real: este servidor pode estar dentro de um container sem /proc");
+    return { success: false, runtime: "unknown", output: log.join("\n") };
+  }
+
   const pids = await findGatewayPids();
   if (pids.length === 0) {
     log.push("✗ Nenhum processo gateway em execução");
     log.push("Sugestões:");
-    log.push("  - Inicie manualmente: openclaw daemon start");
-    log.push("  - Ou configure o serviço: scripts/deploy.sh");
+    log.push("  - Inicie manualmente: `openclaw daemon start`");
+    log.push("  - Ou rode o instalador: `bash scripts/install-openclaw-gateway.sh`");
+    log.push("  - Confirme o que o pgrep enxerga: `pgrep -af openclaw`");
     return { success: false, runtime: "unknown", output: log.join("\n") };
   }
 
-  const pid = pids[0];
-  log.push(`PID alvo: ${pid}`);
+  log.push(`Candidatos detectados: ${pids.join(", ")}`);
 
-  // Capture exact argv/cwd/env from /proc so respawn is identical
-  let argv: string[];
-  let cwd: string;
-  let env: Record<string, string> = {};
-  try {
-    const cmdlineRaw = await readFile(`/proc/${pid}/cmdline`);
-    argv = cmdlineRaw
-      .toString("utf8")
-      .split("\0")
-      .filter((s) => s.length > 0);
-    if (argv.length === 0) throw new Error("cmdline vazio");
-    cwd = await readlink(`/proc/${pid}/cwd`);
+  // Try each PID in order — first one that survives capture wins
+  let lastErr = "";
+  for (const pid of pids) {
+    log.push(`▸ Tentando PID ${pid}…`);
+
+    let argv: string[];
+    let cwd: string;
+    let env: Record<string, string> = {};
     try {
-      const envRaw = await readFile(`/proc/${pid}/environ`);
-      for (const pair of envRaw.toString("utf8").split("\0")) {
-        const i = pair.indexOf("=");
-        if (i > 0) env[pair.slice(0, i)] = pair.slice(i + 1);
+      const cmdlineRaw = await readFile(`/proc/${pid}/cmdline`);
+      argv = cmdlineRaw
+        .toString("utf8")
+        .split("\0")
+        .filter((s) => s.length > 0);
+      if (argv.length === 0) throw new Error("cmdline vazio");
+      cwd = await readlink(`/proc/${pid}/cwd`);
+      try {
+        const envRaw = await readFile(`/proc/${pid}/environ`);
+        for (const pair of envRaw.toString("utf8").split("\0")) {
+          const i = pair.indexOf("=");
+          if (i > 0) env[pair.slice(0, i)] = pair.slice(i + 1);
+        }
+      } catch {
+        env = { ...(process.env as Record<string, string>) };
       }
-    } catch {
-      env = { ...(process.env as Record<string, string>) };
+      log.push(`  argv: ${argv.slice(0, 6).join(" ")}${argv.length > 6 ? " …" : ""}`);
+      log.push(`  cwd: ${cwd}`);
+    } catch (err) {
+      lastErr = `PID ${pid} desapareceu antes do snapshot: ${(err as Error).message}`;
+      log.push(`  ✗ ${lastErr}`);
+      continue;
     }
-    log.push(`argv: ${argv.slice(0, 6).join(" ")}${argv.length > 6 ? " …" : ""}`);
-    log.push(`cwd: ${cwd}`);
-  } catch (err) {
-    log.push(`✗ Falha lendo /proc/${pid}: ${(err as Error).message}`);
-    log.push("(O /proc só existe em Linux — em macOS use PM2 ou systemd)");
-    return { success: false, runtime: "process", output: log.join("\n") };
-  }
 
-  // SIGTERM, then SIGKILL after grace
-  try {
-    process.kill(pid, "SIGTERM");
-    log.push(`✓ SIGTERM → ${pid}`);
-  } catch (err) {
-    log.push(`✗ SIGTERM falhou: ${(err as Error).message}`);
-    return { success: false, runtime: "process", output: log.join("\n") };
-  }
+    // SIGTERM, then SIGKILL after grace
+    try {
+      process.kill(pid, "SIGTERM");
+      log.push(`  ✓ SIGTERM → ${pid}`);
+    } catch (err) {
+      lastErr = `SIGTERM falhou: ${(err as Error).message}`;
+      log.push(`  ✗ ${lastErr}`);
+      continue;
+    }
 
-  const grace = 5000;
-  const t0 = Date.now();
-  while (Date.now() - t0 < grace) {
-    await new Promise((r) => setTimeout(r, 250));
+    const grace = 5000;
+    const t0 = Date.now();
+    while (Date.now() - t0 < grace) {
+      await new Promise((r) => setTimeout(r, 250));
+      try {
+        process.kill(pid, 0);
+      } catch {
+        log.push(`  ✓ Processo encerrou em ${Date.now() - t0}ms`);
+        break;
+      }
+    }
     try {
       process.kill(pid, 0);
+      try {
+        process.kill(pid, "SIGKILL");
+        log.push("  ⚠ SIGKILL forçado após grace de 5s");
+      } catch {
+        // already dead between probe and kill
+      }
+      await new Promise((r) => setTimeout(r, 500));
     } catch {
-      log.push(`✓ Processo encerrou em ${Date.now() - t0}ms`);
-      break;
+      // already gone
     }
-  }
-  try {
-    process.kill(pid, 0);
+
+    // Respawn detached so the child outlives this HTTP request
     try {
-      process.kill(pid, "SIGKILL");
-      log.push("⚠ SIGKILL forçado após grace de 5s");
-    } catch {
-      // already dead between probe and kill
+      const [cmd, ...args] = argv;
+      const child = spawn(cmd, args, {
+        cwd,
+        env: env as NodeJS.ProcessEnv,
+        detached: true,
+        stdio: "ignore",
+      });
+      child.unref();
+      log.push(`  ✓ Respawn detached, novo PID ${child.pid ?? "?"}`);
+    } catch (err) {
+      lastErr = `Respawn falhou: ${(err as Error).message}`;
+      log.push(`  ✗ ${lastErr}`);
+      continue;
     }
-    await new Promise((r) => setTimeout(r, 500));
-  } catch {
-    // already gone
+
+    // Verify it came back up
+    await new Promise((r) => setTimeout(r, 2000));
+    const alive = await findGatewayPids();
+    if (alive.length === 0) {
+      lastErr = "respawn ok mas nada vivo após 2s";
+      log.push(`  ⚠ ${lastErr}`);
+      continue;
+    }
+    log.push(`✓ Gateway online (PIDs ${alive.join(", ")})`);
+    return { success: true, runtime: "process", output: log.join("\n") };
   }
 
-  // Respawn detached so the child outlives this HTTP request
-  try {
-    const [cmd, ...args] = argv;
-    const child = spawn(cmd, args, {
-      cwd,
-      env: env as NodeJS.ProcessEnv,
-      detached: true,
-      stdio: "ignore",
-    });
-    child.unref();
-    log.push(`✓ Respawn detached, novo PID ${child.pid ?? "?"}`);
-  } catch (err) {
-    log.push(`✗ Respawn falhou: ${(err as Error).message}`);
-    return { success: false, runtime: "process", output: log.join("\n") };
-  }
-
-  // Verify it came back up
-  await new Promise((r) => setTimeout(r, 2000));
-  const alive = await findGatewayPids();
-  if (alive.length === 0) {
-    log.push("⚠ Verificação: nenhum gateway em execução após respawn");
-    return { success: false, runtime: "process", output: log.join("\n") };
-  }
-  log.push(`✓ Gateway online (PIDs ${alive.join(", ")})`);
-  return { success: true, runtime: "process", output: log.join("\n") };
+  log.push(`✗ Todos os ${pids.length} PID(s) falharam. Último erro: ${lastErr}`);
+  log.push("Tente: `openclaw daemon start` ou veja `pgrep -af openclaw`.");
+  return { success: false, runtime: "process", output: log.join("\n") };
 }
 
 export interface LogsResult {

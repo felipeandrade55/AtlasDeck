@@ -13,8 +13,16 @@ import {
   Shield,
   Database,
   RefreshCw,
+  Power,
+  Zap,
 } from "lucide-react";
 import { ModelPicker } from "./ModelPicker";
+import {
+  restartGatewayClient,
+  getAutoRestartPref,
+  setAutoRestartPref,
+  type ClientRestartResult,
+} from "@/lib/restart-gateway-client";
 
 interface DefaultsView {
   primary: string;
@@ -43,6 +51,30 @@ export function OpenClawDefaultsCard({ onSaved }: Props) {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
+
+  // Auto-restart of the gateway right after a successful save (so the new
+  // model.primary / fallback actually takes effect — OpenClaw caches its
+  // openclaw.json on boot, an in-flight daemon won't pick it up otherwise).
+  const [autoRestart, setAutoRestart] = useState(true);
+  const [restarting, setRestarting] = useState(false);
+  const [restartResult, setRestartResult] = useState<ClientRestartResult | null>(null);
+
+  useEffect(() => {
+    setAutoRestart(getAutoRestartPref());
+  }, []);
+
+  const updateAutoRestart = (v: boolean) => {
+    setAutoRestart(v);
+    setAutoRestartPref(v);
+  };
+
+  const triggerRestart = useCallback(async () => {
+    setRestarting(true);
+    setRestartResult(null);
+    const result = await restartGatewayClient();
+    setRestartResult(result);
+    setRestarting(false);
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -109,6 +141,9 @@ export function OpenClawDefaultsCard({ onSaved }: Props) {
       setSavedAt(new Date());
       await load();
       onSaved?.();
+      if (autoRestart) {
+        await triggerRestart();
+      }
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -272,26 +307,104 @@ export function OpenClawDefaultsCard({ onSaved }: Props) {
         </div>
       </div>
 
+      {/* Restart status row (shown when restarting or after restart finishes) */}
+      {(restarting || restartResult) && (
+        <div
+          className="px-5 py-2.5 border-t flex items-start gap-2 text-xs"
+          style={{
+            borderColor: "var(--border)",
+            backgroundColor: restarting
+              ? "rgba(139, 92, 246, 0.08)"
+              : restartResult?.success
+                ? "rgba(16, 185, 129, 0.08)"
+                : "rgba(239, 68, 68, 0.08)",
+          }}
+        >
+          {restarting ? (
+            <>
+              <Loader2 className="w-3.5 h-3.5 mt-0.5 shrink-0 animate-spin" style={{ color: "#a78bfa" }} />
+              <span style={{ color: "var(--text-primary)" }}>
+                Reiniciando o gateway pra aplicar as mudanças…
+              </span>
+            </>
+          ) : restartResult?.success ? (
+            <>
+              <Zap className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: "#34d399" }} />
+              <span style={{ color: "#34d399" }}>
+                Gateway reiniciado em {(restartResult.durationMs / 1000).toFixed(1)}s · novo modelo já está ativo
+              </span>
+            </>
+          ) : (
+            <>
+              <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: "#fca5a5" }} />
+              <div className="min-w-0 flex-1">
+                <div style={{ color: "#fca5a5" }}>
+                  Falha ao reiniciar o gateway — defaults foram salvos no JSON, mas o gateway antigo ainda usa o modelo anterior.
+                </div>
+                {restartResult?.error && (
+                  <div className="mt-0.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                    {restartResult.error.slice(0, 200)}
+                  </div>
+                )}
+                <button
+                  onClick={triggerRestart}
+                  className="mt-1.5 text-[11px] underline"
+                  style={{ color: "#fca5a5" }}
+                >
+                  Tentar novamente
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
       {/* Footer */}
       <div
         className="flex items-center justify-between flex-wrap gap-3 px-5 py-3 border-t"
         style={{ borderColor: "var(--border)", backgroundColor: "rgba(0,0,0,0.2)" }}
       >
-        <div className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-          {saveError ? (
-            <span style={{ color: "#fca5a5" }}>⚠ {saveError}</span>
-          ) : savedAt && !dirty ? (
-            <span style={{ color: "#34d399" }}>
-              <CheckCircle2 className="w-3 h-3 inline mr-1" />
-              Salvo às {savedAt.toLocaleTimeString()}
-            </span>
-          ) : dirty ? (
-            <span style={{ color: "#fde68a" }}>Alterações não salvas</span>
-          ) : data?.configPath ? (
-            <span className="font-mono truncate" title={data.configPath}>{data.configPath}</span>
-          ) : null}
+        <div className="flex items-center gap-3 flex-wrap text-[11px]" style={{ color: "var(--text-muted)" }}>
+          <label className="flex items-center gap-1.5 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={autoRestart}
+              onChange={(e) => updateAutoRestart(e.target.checked)}
+              className="cursor-pointer"
+            />
+            <span style={{ color: "var(--text-secondary)" }}>Reiniciar gateway ao salvar</span>
+          </label>
+          <span className="hidden sm:inline">·</span>
+          <div className="min-w-0">
+            {saveError ? (
+              <span style={{ color: "#fca5a5" }}>⚠ {saveError}</span>
+            ) : savedAt && !dirty && !restarting && !restartResult ? (
+              <span style={{ color: "#34d399" }}>
+                <CheckCircle2 className="w-3 h-3 inline mr-1" />
+                Salvo às {savedAt.toLocaleTimeString()}
+              </span>
+            ) : dirty ? (
+              <span style={{ color: "#fde68a" }}>Alterações não salvas</span>
+            ) : data?.configPath ? (
+              <span className="font-mono truncate" title={data.configPath}>{data.configPath}</span>
+            ) : null}
+          </div>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={triggerRestart}
+            disabled={restarting || saving}
+            title="Reinicia o gateway sem mexer na config"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs disabled:opacity-30"
+            style={{
+              backgroundColor: "rgba(255,255,255,0.04)",
+              color: "var(--text-secondary)",
+              border: "1px solid var(--border)",
+            }}
+          >
+            <Power className="w-3.5 h-3.5" />
+            Reiniciar gateway
+          </button>
           <button
             onClick={revert}
             disabled={!dirty || saving}
@@ -307,7 +420,7 @@ export function OpenClawDefaultsCard({ onSaved }: Props) {
           </button>
           <button
             onClick={save}
-            disabled={!dirty || saving}
+            disabled={!dirty || saving || restarting}
             className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium disabled:opacity-40"
             style={{
               backgroundColor: "rgba(139, 92, 246, 0.2)",
@@ -316,7 +429,7 @@ export function OpenClawDefaultsCard({ onSaved }: Props) {
             }}
           >
             {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-            {saving ? "Salvando…" : "Salvar defaults"}
+            {saving ? "Salvando…" : autoRestart ? "Salvar e aplicar" : "Salvar defaults"}
           </button>
         </div>
       </div>
