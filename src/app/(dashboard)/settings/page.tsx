@@ -7,6 +7,7 @@ import { IntegrationStatus } from "@/components/IntegrationStatus";
 import { QuickActions } from "@/components/QuickActions";
 import { RecoveryPanel } from "@/components/RecoveryPanel";
 import { UpdatePanel } from "@/components/UpdatePanel";
+import { RestorePanel } from "@/components/RestorePanel";
 
 interface SystemData {
   agent: {
@@ -111,6 +112,11 @@ export default function SettingsPage() {
         {/* Update System */}
         <div className="lg:col-span-2">
           <UpdatePanel />
+        </div>
+
+        {/* Restore Backup */}
+        <div className="lg:col-span-2">
+          <RestorePanel />
         </div>
 
         {/* System Info - Full width on first row */}

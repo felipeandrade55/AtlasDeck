@@ -273,13 +273,23 @@ function validateSafePath(target: string, base: string): boolean {
   return resolved.startsWith(resolvedBase) && !resolved.includes("..") && resolved !== "/";
 }
 
-export async function runBackup(): Promise<BackupResult> {
+export interface RunBackupOptions {
+  /**
+   * Custom filename prefix for the archive. Defaults to "openclaw-backup".
+   * Used by the restore flow to produce `pre-restore-<ts>.tar.gz` snapshots
+   * that are easy to distinguish from regular backups.
+   */
+  archiveNamePrefix?: string;
+}
+
+export async function runBackup(opts: RunBackupOptions = {}): Promise<BackupResult> {
   const config = readBackupConfig();
   const dest = path.resolve(config.destination);
   const startedAt = new Date();
   const ts = timestampForFile(startedAt);
-  const archiveName = `openclaw-backup_${ts}.tar.gz`;
-  const logName = `backup-${ts}.log`;
+  const prefix = opts.archiveNamePrefix || "openclaw-backup";
+  const archiveName = `${prefix}_${ts}.tar.gz`;
+  const logName = `${prefix === "openclaw-backup" ? "backup" : prefix}-${ts}.log`;
   const archivePath = path.join(dest, archiveName);
   const logPath = path.join(dest, logName);
 
@@ -712,7 +722,13 @@ export async function restoreBackup(
   };
 }
 
-async function walkAndPlan(
+/**
+ * Recursively walk a staged home-prefix directory and copy each file to the
+ * corresponding location under `targetHome`. Exported for the restore worker
+ * script (`scripts/restore-apply.ts`) which runs the apply-home phase while
+ * the Next.js process is stopped.
+ */
+export async function walkAndPlan(
   stagingHomeRoot: string,
   targetHome: string,
   restored: Array<{ source: string; target: string; bytes: number }>,
@@ -915,4 +931,48 @@ export function getSystemCronStatus(): { scheduled: boolean; line?: string } {
   } catch {
     return { scheduled: false };
   }
+}
+
+/**
+ * Lock file that gates concurrent backup/restore. `scripts/backup.ts` and
+ * `runBackup()` should consult this before touching disk; `scripts/restore.sh`
+ * grabs it before extracting so a 04:00 cron backup cannot collide with an
+ * in-flight restore.
+ */
+function restoreLockPath(): string {
+  return path.join(process.cwd(), "data", ".restore.lock");
+}
+
+export function isRestoreLockHeld(): { locked: boolean; pid?: number; reason?: string } {
+  try {
+    const raw = fs.readFileSync(restoreLockPath(), "utf-8");
+    const parsed = JSON.parse(raw) as { pid?: number; reason?: string };
+    if (parsed.pid && parsed.pid > 0) {
+      try {
+        process.kill(parsed.pid, 0);
+        return { locked: true, pid: parsed.pid, reason: parsed.reason };
+      } catch {
+        // Holder process is dead — lock is stale, treat as unlocked.
+        return { locked: false };
+      }
+    }
+    return { locked: true, reason: parsed.reason };
+  } catch {
+    return { locked: false };
+  }
+}
+
+export function acquireRestoreLock(reason: string, pid: number = process.pid): boolean {
+  const state = isRestoreLockHeld();
+  if (state.locked) return false;
+  const lockPath = restoreLockPath();
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  fs.writeFileSync(lockPath, JSON.stringify({ pid, reason, acquiredAt: new Date().toISOString() }, null, 2));
+  return true;
+}
+
+export function releaseRestoreLock(): void {
+  try {
+    fs.unlinkSync(restoreLockPath());
+  } catch {}
 }

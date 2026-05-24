@@ -9,12 +9,21 @@
  *   npx tsx scripts/backup.ts
  */
 
-import { runBackup } from "../src/lib/backup";
+import { isRestoreLockHeld, runBackup } from "../src/lib/backup";
 
 async function main() {
   console.log("============================================");
   console.log(" Mission Control — Backup Runner");
   console.log("============================================\n");
+
+  const lock = isRestoreLockHeld();
+  if (lock.locked) {
+    console.error(
+      `[backup] Skipping: restore in progress (pid=${lock.pid ?? "?"}, reason=${lock.reason ?? "unknown"}).`
+    );
+    console.error("[backup] Refusing to read disk while a restore is mutating data/. Try again later.");
+    process.exit(2);
+  }
 
   const result = await runBackup();
 

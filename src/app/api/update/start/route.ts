@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { triggerUpdate } from "@/lib/update-trigger";
 import { buildInitialPhases, readUpdateConfig } from "@/lib/update";
+import { isRestoreRunning } from "@/lib/restore";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 10;
@@ -11,6 +12,13 @@ export const maxDuration = 10;
  * scheduler.
  */
 export async function POST() {
+  if (isRestoreRunning()) {
+    return NextResponse.json(
+      { error: "Existe uma restauração de backup em andamento. Aguarde a conclusão antes de atualizar." },
+      { status: 409 }
+    );
+  }
+
   const result = await triggerUpdate("manual");
 
   if (!result.ok) {
