@@ -22,7 +22,8 @@ export interface KnownModel {
 
 export const KNOWN_MODELS: KnownModel[] = [
   // OpenAI — current
-  { id: "openai/gpt-5.5-codex", label: "GPT-5.5 Codex", provider: "openai", tier: "primary", notes: "Recomendado para agentes que mexem em código" },
+  { id: "openai/gpt-5.5", label: "GPT-5.5 (via Codex OAuth)", provider: "openai", tier: "primary", notes: "Modelo padrão de quem fez `openclaw models auth login --provider openai-codex`" },
+  { id: "openai/gpt-5.5-codex", label: "GPT-5.5 Codex (API)", provider: "openai", tier: "primary", notes: "Requer API key OpenAI direta (não funciona via Codex OAuth)" },
   { id: "openai/gpt-5.5-mini", label: "GPT-5.5 Mini", provider: "openai", tier: "fast", notes: "Mais barato, bom pra fallback" },
   { id: "openai/gpt-5.5-nano", label: "GPT-5.5 Nano", provider: "openai", tier: "fast" },
 
@@ -69,13 +70,10 @@ export function validateModelId(raw: string): ModelWarning | null {
 
   const [provider, model] = id.split("/", 2);
 
-  // Known bad: openai/gpt-5.5 literal (não existe — sufixo obrigatório)
-  if (provider === "openai" && /^gpt-5\.5$/i.test(model)) {
-    return {
-      level: "error",
-      message: 'O modelo "openai/gpt-5.5" não existe. Use "openai/gpt-5.5-codex", "openai/gpt-5.5-mini" ou "openai/gpt-5.5-nano".',
-    };
-  }
+  // `openai/gpt-5.5` puro é o nome do modelo via Codex OAuth (descoberto
+  // empiricamente — não confundir com o legacy `openai/gpt-5.4` puro).
+  // Versão anterior dessa função bloqueava esse id como "não existe", o que
+  // estava errado e impedia o usuário de usar a auth correta via Codex.
   if (provider === "openai" && /^gpt-5\.4$/i.test(model)) {
     return {
       level: "warning",
