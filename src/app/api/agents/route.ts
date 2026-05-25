@@ -27,6 +27,59 @@ function ensureAgentWorkspace(workspace: string): { absolutePath: string; create
   return { absolutePath: abs, created: !existed };
 }
 
+/**
+ * OpenClaw's channel routing requires explicit bindings: a message arriving
+ * via channel X with accountId Y must have a `bindings[]` entry pointing it
+ * to an agent. Without this, the daemon silently fails with the generic
+ * "Something went wrong" reply because the message has nowhere to land.
+ *
+ * `openclaw doctor` flags this as:
+ *   "channels.telegram: accounts.default is missing and no valid
+ *    account-scoped binding exists for configured accounts (main).
+ *    Add bindings[].match.accountId for one of these accounts (or *)."
+ *
+ * We auto-add a binding for each configured Telegram account whose id
+ * matches an existing agent id — the common case where one bot serves
+ * one agent. Returns true if changes were made.
+ */
+function ensureTelegramBindings(config: any): boolean {
+  if (!config.agents) return false;
+  if (!Array.isArray(config.agents.list) || config.agents.list.length === 0) return false;
+
+  const agentIds = new Set(
+    (config.agents.list as Array<{ id?: string }>)
+      .map((a) => a.id)
+      .filter((id): id is string => typeof id === "string" && id.length > 0),
+  );
+  if (agentIds.size === 0) return false;
+
+  const tgAccounts = config.channels?.telegram?.accounts;
+  if (!tgAccounts || typeof tgAccounts !== "object") return false;
+
+  const bindings = (config.agents.bindings = Array.isArray(config.agents.bindings)
+    ? config.agents.bindings
+    : []);
+
+  let changed = false;
+  for (const accountId of Object.keys(tgAccounts)) {
+    if (!agentIds.has(accountId)) continue; // only auto-bind when id matches an agent
+    const exists = bindings.some(
+      (b: any) =>
+        b?.match?.channel === "telegram" &&
+        b?.match?.accountId === accountId &&
+        b?.agent === accountId,
+    );
+    if (!exists) {
+      bindings.push({
+        match: { channel: "telegram", accountId },
+        agent: accountId,
+      });
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 export const dynamic = "force-dynamic";
 
 interface Agent {
@@ -103,17 +156,23 @@ export async function GET() {
     // to AtlasDeck-local storage and remove from openclaw.json. Older code
     // wrote `ui` into the agent object, but OpenClaw 2026.5.12+ rejects it
     // ("Unrecognized key: ui"), which prevents the daemon from starting.
-    if (migrateAgentUiFromConfig(config)) {
+    const uiMigrated = migrateAgentUiFromConfig(config);
+    // Same idea: ensure each Telegram account whose id matches an agent has
+    // a routing binding. Without this, messages arrive but can't be routed
+    // to any agent and the bot falls back to "Something went wrong".
+    const bindingsAdded = ensureTelegramBindings(config);
+    if (uiMigrated || bindingsAdded) {
       try {
         writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
-        logActivity(
-          "config",
-          "Migração: campo `ui` movido de openclaw.json para storage local",
-          "success",
-          { metadata: { configPath } },
-        );
+        const what = [
+          uiMigrated && "ui→local",
+          bindingsAdded && "telegram bindings",
+        ]
+          .filter(Boolean)
+          .join(" + ");
+        logActivity("config", `Migração openclaw.json: ${what}`, "success", { metadata: { configPath } });
       } catch (e) {
-        console.error("Failed to persist agents ui migration:", e);
+        console.error("Failed to persist openclaw.json migrations:", e);
       }
     }
 
@@ -231,6 +290,11 @@ export async function POST(request: Request) {
       console.error("Failed to create agent workspace:", e);
     }
 
+    // Auto-add routing binding if there's already a Telegram account with
+    // the same id as the new agent. Without a binding, messages can't be
+    // routed to the agent and the bot replies with the generic fallback.
+    ensureTelegramBindings(config);
+
     // emoji/color go to AtlasDeck-local storage, NEVER into openclaw.json
     // (OpenClaw rejects unknown keys in agents.list entries)
     setAgentUi(body.id, {
@@ -327,6 +391,10 @@ export async function PUT(request: Request) {
         console.error("Failed to create agent workspace:", e);
       }
     }
+
+    // Same as POST: ensure routing binding exists for any Telegram account
+    // sharing an id with this agent.
+    ensureTelegramBindings(config);
 
     // Telegram config: merge, never replace. See POST handler for context —
     // the old code wiped chatId and overwrote botToken with "" whenever the
