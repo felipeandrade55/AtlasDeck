@@ -89,6 +89,7 @@ const QUICK_GROUPS: Array<{
       { id: "gateway-start", label: "Iniciar Gateway", icon: Play, severity: "caution", hint: "Inicia o openclaw daemon quando está totalmente parado" },
       { id: "gateway-restart", label: "Reiniciar Gateway", icon: RefreshCw, severity: "caution", hint: "Reinicia o serviço openclaw-gateway (use se está rodando mas travado)" },
       { id: "gateway-diagnose", label: "Diagnosticar Tudo", icon: Stethoscope, severity: "safe", hint: "Lista processos + status + help + portas em uma chamada" },
+      { id: "openclaw-validate", label: "Validar Config", icon: Stethoscope, severity: "safe", hint: "Roda 'openclaw config validate' — mostra erros exatos de schema" },
       { id: "openclaw-doctor", label: "Rodar Doctor", icon: Stethoscope, severity: "safe", hint: "openclaw doctor — diagnóstico completo" },
       { id: "openclaw-doctor-fix", label: "Doctor + Fix", icon: Wrench, severity: "caution", hint: "openclaw doctor --fix — corrige automaticamente o que conseguir" },
       { id: "openclaw-status", label: "Status do OpenClaw", icon: HeartPulse, severity: "safe" },

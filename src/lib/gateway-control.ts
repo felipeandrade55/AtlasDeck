@@ -14,10 +14,30 @@
  */
 import { exec, spawn } from "child_process";
 import { promisify } from "util";
-import { readFile, readlink, readdir, stat } from "fs/promises";
+import { readFile, readlink, readdir, stat, mkdir } from "fs/promises";
+import { openSync } from "fs";
 import path from "path";
 
 import { OPENCLAW_DIR } from "./paths";
+
+/**
+ * Where we redirect stdout/stderr of any daemon we spawn detached. Without
+ * this, `stdio: "ignore"` would route crashes to /dev/null and we'd never
+ * see WHY the agent fails to process a message. gatewayLogs() already
+ * checks this path in its strategy 3 fallback.
+ */
+const GATEWAY_LOG = path.join(OPENCLAW_DIR, "logs", "gateway.log");
+
+async function ensureGatewayLog(): Promise<{ out: number; err: number } | null> {
+  try {
+    await mkdir(path.dirname(GATEWAY_LOG), { recursive: true });
+    const out = openSync(GATEWAY_LOG, "a");
+    const err = openSync(GATEWAY_LOG, "a");
+    return { out, err };
+  } catch {
+    return null;
+  }
+}
 
 const execAsync = promisify(exec);
 
@@ -218,13 +238,18 @@ async function tryStartDaemon(log: string[]): Promise<{ success: boolean }> {
     { args: ["start"], label: "openclaw start" },
   ];
 
+  const logFds = await ensureGatewayLog();
+  if (logFds) {
+    log.push(`  (stdout/stderr serão capturados em ${GATEWAY_LOG})`);
+  }
+
   for (const v of variants) {
     log.push(`  ▸ Tentando: ${v.label}`);
     try {
       const child = spawn(bin, v.args, {
         cwd: OPENCLAW_DIR,
         detached: true,
-        stdio: "ignore",
+        stdio: logFds ? ["ignore", logFds.out, logFds.err] : "ignore",
         env: process.env,
       });
       child.unref();
@@ -386,17 +411,19 @@ export async function restartGateway(): Promise<RestartResult> {
       // already gone
     }
 
-    // Respawn detached so the child outlives this HTTP request
+    // Respawn detached so the child outlives this HTTP request. Capture
+    // stdout/stderr to gateway.log so we can see crashes.
     try {
       const [cmd, ...args] = argv;
+      const logFds = await ensureGatewayLog();
       const child = spawn(cmd, args, {
         cwd,
         env: env as NodeJS.ProcessEnv,
         detached: true,
-        stdio: "ignore",
+        stdio: logFds ? ["ignore", logFds.out, logFds.err] : "ignore",
       });
       child.unref();
-      log.push(`  ✓ Respawn detached, novo PID ${child.pid ?? "?"}`);
+      log.push(`  ✓ Respawn detached, novo PID ${child.pid ?? "?"}${logFds ? ` (logs → ${GATEWAY_LOG})` : ""}`);
     } catch (err) {
       lastErr = `Respawn falhou: ${(err as Error).message}`;
       log.push(`  ✗ ${lastErr}`);

@@ -154,6 +154,12 @@ const ACTIONS: Record<string, ActionDef> = {
     severity: 'safe',
     timeoutMs: 60_000,
   },
+  'openclaw-validate': {
+    cmd: 'timeout 8s openclaw config validate 2>&1 || true',
+    description: 'Valida o schema do openclaw.json e mostra erros exatos (não precisa do daemon)',
+    severity: 'safe',
+    timeoutMs: 10_000,
+  },
   'openclaw-doctor-fix': {
     cmd: 'timeout 115s openclaw doctor --fix 2>&1',
     description: 'Diagnóstico + correção automática (openclaw doctor --fix)',
