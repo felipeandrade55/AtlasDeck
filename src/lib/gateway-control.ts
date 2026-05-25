@@ -499,7 +499,7 @@ export async function gatewayLogs(
       const text = (r.stdout || "").trim();
       if (!text) continue;
       const out = errOnly
-        ? text.split("\n").filter((l) => /\b(error|fatal|warn)\b/i.test(l)).join("\n")
+        ? text.split("\n").filter((l) => /\b(error|fatal|warn|failed|exception|traceback|crashed|unhandled|rejected|enotfound|econnrefused|eacces|enoent|missing|invalid|throw)\b/i.test(l)).join("\n")
         : text;
       return { source: file, output: out || "(sem linhas de erro recentes)", found: true };
     } catch {

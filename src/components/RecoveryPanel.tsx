@@ -24,6 +24,7 @@ import {
   Eye,
   AlertCircle,
   ShieldAlert,
+  Bot,
 } from "lucide-react";
 import { AiRescueDialog } from "./AiRescueDialog";
 
@@ -90,6 +91,8 @@ const QUICK_GROUPS: Array<{
       { id: "gateway-restart", label: "Reiniciar Gateway", icon: RefreshCw, severity: "caution", hint: "Reinicia o serviço openclaw-gateway (use se está rodando mas travado)" },
       { id: "gateway-diagnose", label: "Diagnosticar Tudo", icon: Stethoscope, severity: "safe", hint: "Lista processos + status + help + portas em uma chamada" },
       { id: "openclaw-validate", label: "Validar Config", icon: Stethoscope, severity: "safe", hint: "Roda 'openclaw config validate' — mostra erros exatos de schema" },
+      { id: "openclaw-channels-list", label: "Listar Canais", icon: Eye, severity: "safe", hint: "Lista canais ativos (telegram, etc.) no daemon" },
+      { id: "openclaw-agent-test", label: "Testar Agente", icon: Bot, severity: "safe", hint: "Envia 'ping' direto pro agente main (bypass Telegram)" },
       { id: "openclaw-doctor", label: "Rodar Doctor", icon: Stethoscope, severity: "safe", hint: "openclaw doctor — diagnóstico completo" },
       { id: "openclaw-doctor-fix", label: "Doctor + Fix", icon: Wrench, severity: "caution", hint: "openclaw doctor --fix — corrige automaticamente o que conseguir" },
       { id: "openclaw-status", label: "Status do OpenClaw", icon: HeartPulse, severity: "safe" },

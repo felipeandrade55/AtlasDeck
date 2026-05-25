@@ -160,6 +160,18 @@ const ACTIONS: Record<string, ActionDef> = {
     severity: 'safe',
     timeoutMs: 10_000,
   },
+  'openclaw-channels-list': {
+    cmd: 'timeout 8s openclaw channels list 2>&1 || echo "(channels list não respondeu)"',
+    description: 'Lista canais que o daemon registrou (telegram, slack, etc.)',
+    severity: 'safe',
+    timeoutMs: 10_000,
+  },
+  'openclaw-agent-test': {
+    cmd: 'timeout 45s openclaw agent main -m "ping" 2>&1 | head -150',
+    description: 'Testa o agente "main" direto (bypass Telegram) — útil pra isolar crash',
+    severity: 'safe',
+    timeoutMs: 60_000,
+  },
   'openclaw-doctor-fix': {
     cmd: 'timeout 115s openclaw doctor --fix 2>&1',
     description: 'Diagnóstico + correção automática (openclaw doctor --fix)',
