@@ -1,14 +1,31 @@
 import { NextResponse } from "next/server";
-import { readFileSync, writeFileSync, statSync } from "fs";
-import { join } from "path";
+import { readFileSync, writeFileSync, statSync, mkdirSync, existsSync } from "fs";
+import { join, isAbsolute, resolve } from "path";
 import { resolveOpenClawAgentsConfigPath } from "@/lib/openclaw-config";
 import { logActivity } from "@/lib/activities-db";
+import { OPENCLAW_DIR } from "@/lib/paths";
 import {
   getAgentUi,
   setAgentUi,
   deleteAgentUi,
   migrateAgentUiFromConfig,
 } from "@/lib/agents-ui-local";
+
+/**
+ * The agent.workspace field is stored relative to OpenClaw's home dir
+ * (typically `~/.openclaw`). We mkdir it on save so the daemon doesn't
+ * fail with "workspace not found" the first time the agent receives a
+ * message — that was the silent root cause of the "Something went wrong"
+ * Telegram bot reply: the workspace folder never existed.
+ */
+function ensureAgentWorkspace(workspace: string): { absolutePath: string; created: boolean } {
+  const abs = isAbsolute(workspace) ? workspace : resolve(OPENCLAW_DIR, workspace);
+  const existed = existsSync(abs);
+  if (!existed) {
+    mkdirSync(abs, { recursive: true });
+  }
+  return { absolutePath: abs, created: !existed };
+}
 
 export const dynamic = "force-dynamic";
 
@@ -205,6 +222,15 @@ export async function POST(request: Request) {
       }
     };
 
+    // Make sure the workspace directory exists — OpenClaw fails silently
+    // ("Something went wrong, use /new") when an agent tries to use a
+    // workspace path that's missing from disk.
+    try {
+      ensureAgentWorkspace(newAgent.workspace);
+    } catch (e) {
+      console.error("Failed to create agent workspace:", e);
+    }
+
     // emoji/color go to AtlasDeck-local storage, NEVER into openclaw.json
     // (OpenClaw rejects unknown keys in agents.list entries)
     setAgentUi(body.id, {
@@ -291,6 +317,16 @@ export async function PUT(request: Request) {
     if (body.workspace) agent.workspace = body.workspace;
     if (!agent.subagents) agent.subagents = { allowAgents: [] };
     if (body.allowAgents) agent.subagents.allowAgents = body.allowAgents;
+
+    // Ensure workspace exists on disk (covers both initial create + later edits
+    // that change the path or that pre-date this safeguard)
+    if (agent.workspace) {
+      try {
+        ensureAgentWorkspace(agent.workspace);
+      } catch (e) {
+        console.error("Failed to create agent workspace:", e);
+      }
+    }
 
     // Telegram config: merge, never replace. See POST handler for context —
     // the old code wiped chatId and overwrote botToken with "" whenever the
