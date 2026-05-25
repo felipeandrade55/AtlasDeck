@@ -408,7 +408,49 @@ export default function AgentsPage() {
         </div>
       )}
 
-      {activeTab === "cards" && (
+      {activeTab === "cards" && agents.length === 0 && (
+        <div
+          className="rounded-xl p-6 md:p-8 flex flex-col sm:flex-row items-start gap-4"
+          style={{
+            backgroundColor: "rgba(139, 92, 246, 0.05)",
+            border: "1px dashed rgba(139, 92, 246, 0.4)",
+          }}
+        >
+          <div
+            className="w-12 h-12 rounded-xl flex items-center justify-center shrink-0"
+            style={{ backgroundColor: "rgba(139, 92, 246, 0.15)" }}
+          >
+            <Users className="w-6 h-6" style={{ color: "#a78bfa" }} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="font-bold text-base" style={{ color: "var(--text-primary)" }}>
+              Nenhum agente configurado ainda
+            </h3>
+            <p className="text-sm mt-1" style={{ color: "var(--text-secondary)" }}>
+              O OpenClaw só responde no Telegram/chat quando há pelo menos um agente cadastrado.
+              Sem isso, mensagens ficam num loop de &ldquo;Something went wrong, use /new&rdquo;.
+            </p>
+            <p className="text-xs mt-2" style={{ color: "var(--text-muted)" }}>
+              Crie o agente <code>main</code> aqui — pode colar o token do Telegram no mesmo modal.
+              Após salvar, o gateway reinicia sozinho e o bot volta a responder.
+            </p>
+            <button
+              onClick={handleOpenCreate}
+              className="flex items-center gap-2 mt-4 px-3.5 py-2 rounded-lg text-sm font-medium transition-colors"
+              style={{
+                backgroundColor: "rgba(139, 92, 246, 0.2)",
+                color: "#c4b5fd",
+                border: "1px solid rgba(139, 92, 246, 0.4)",
+              }}
+            >
+              <Plus className="w-4 h-4" />
+              Criar o agente &lsquo;main&rsquo; agora
+            </button>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "cards" && agents.length > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {agents.map((agent) => (
             <div

@@ -382,7 +382,7 @@ export async function gatewayLogs(
     }
   }
 
-  // 4. logs directory scan as last resort
+  // 4. logs directory scan
   const logsDir = path.join(OPENCLAW_DIR, "logs");
   try {
     const files = (await readdir(logsDir)).filter((f) => f.endsWith(".log"));
@@ -409,13 +409,80 @@ export async function gatewayLogs(
     // dir doesn't exist
   }
 
+  // 5. /proc/<pid>/fd inspection — when openclaw runs as a bare process its
+  // stdout/stderr might point to a file the user redirected to (or a tty/pipe
+  // with no logging at all). This is the case the previous fallback chain
+  // missed entirely, leading to "Nenhuma fonte de logs encontrada".
+  const procPids = await findGatewayPids();
+  if (procPids.length > 0) {
+    const probeReport: string[] = [];
+    for (const pid of procPids) {
+      probeReport.push(`─── PID ${pid} ───`);
+      try {
+        const cmdline = await readCmdline(pid);
+        if (cmdline) probeReport.push(`cmdline: ${cmdline.slice(0, 200)}`);
+        const cwd = await readlink(`/proc/${pid}/cwd`).catch(() => null);
+        if (cwd) probeReport.push(`cwd: ${cwd}`);
+      } catch {}
+
+      for (const fd of ["1", "2"] as const) {
+        const label = fd === "1" ? "stdout" : "stderr";
+        try {
+          const target = await readlink(`/proc/${pid}/fd/${fd}`);
+          probeReport.push(`${label} → ${target}`);
+          // If it points to a real file (not /dev/null, not a pipe/socket), tail it
+          if (target.startsWith("/") && !target.startsWith("/dev/") && !target.includes("pipe:") && !target.includes("socket:")) {
+            const r = await safeExec(`tail -n ${lines} "${target}" 2>/dev/null`, 5000);
+            const text = (r.stdout || "").trim();
+            if (text) {
+              const out = errOnly
+                ? text.split("\n").filter((l) => /\b(error|fatal|warn|exception|traceback)\b/i.test(l)).join("\n")
+                : text;
+              if (out.trim()) {
+                return {
+                  source: `/proc/${pid}/fd/${fd} → ${target}`,
+                  output: `[capturado de ${label} do PID ${pid}]\n\n${out}`,
+                  found: true,
+                };
+              }
+            }
+          }
+        } catch {
+          probeReport.push(`${label}: (sem acesso)`);
+        }
+      }
+    }
+    // Add the probe report so the user can manually inspect
+    const runtime = await detectGatewayRuntime();
+    return {
+      source: "diagnóstico /proc",
+      output:
+        "Não encontrei arquivo de log explícito.\n" +
+        `Runtime detectado: ${runtime}\n\n` +
+        "Inspeção dos processos OpenClaw:\n" +
+        probeReport.join("\n") +
+        "\n\n" +
+        "Próximos passos:\n" +
+        "  - Se stdout/stderr aponta para /dev/null, o openclaw foi iniciado sem logging — reinicie com `openclaw daemon start > /var/log/openclaw.log 2>&1 &` ou configure systemd/PM2\n" +
+        "  - Se aponta para pipe:/socket: o pai do processo está consumindo (e provavelmente descartando)\n" +
+        "  - Se aponta para um arquivo: rode `tail -F <arquivo>` direto",
+      found: false,
+    };
+  }
+
+  // 6. Truly nothing — last-ditch generic message with actionable commands
   const runtime = await detectGatewayRuntime();
   return {
     source: "n/d",
     output:
       "Nenhuma fonte de logs encontrada.\n" +
-      `Runtime detectado: ${runtime}\n` +
-      "Verifique se o openclaw está rodando: pgrep -af openclaw",
+      `Runtime detectado: ${runtime}\n\n` +
+      "Comandos pra investigar manualmente no servidor:\n" +
+      "  pgrep -af openclaw           # confirma se o processo existe\n" +
+      "  systemctl status openclaw-gateway  # se houver unit\n" +
+      "  pm2 list                     # se rodando via PM2\n" +
+      `  ls -la ${OPENCLAW_DIR}/logs   # diretório de logs do openclaw\n` +
+      "  journalctl -n 500 | grep -i openclaw   # varredura larga",
     found: false,
   };
 }

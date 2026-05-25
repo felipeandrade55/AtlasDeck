@@ -21,7 +21,15 @@ import {
   Plus,
   FileText,
   Power,
+  Zap,
+  AlertCircle,
 } from "lucide-react";
+import {
+  restartGatewayClient,
+  getAutoRestartPref,
+  setAutoRestartPref,
+  type ClientRestartResult,
+} from "@/lib/restart-gateway-client";
 
 interface TelegramAccount {
   id: string;
@@ -133,6 +141,20 @@ export function TelegramSetupModal({ open, onClose }: Props) {
 
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
+  // Auto-restart of gateway after saving Telegram config (so the daemon picks
+  // up the new token without a manual restart step)
+  const [autoRestart, setAutoRestart] = useState(true);
+  const [restarting, setRestarting] = useState(false);
+  const [restartResult, setRestartResult] = useState<ClientRestartResult | null>(null);
+
+  useEffect(() => {
+    setAutoRestart(getAutoRestartPref());
+  }, []);
+  const updateAutoRestart = (v: boolean) => {
+    setAutoRestart(v);
+    setAutoRestartPref(v);
+  };
+
   const refresh = useCallback(async (opts: { reveal?: boolean } = {}) => {
     setLoading(true);
     setLoadError(null);
@@ -241,6 +263,15 @@ export function TelegramSetupModal({ open, onClose }: Props) {
       if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
       setSaveMsg({ kind: "ok", text: "Configuração salva" });
       await refresh();
+      // Auto-restart the gateway so OpenClaw picks up the new token/policy.
+      // Without this, the daemon keeps using the previous credentials in memory.
+      if (autoRestart) {
+        setRestarting(true);
+        setRestartResult(null);
+        const result = await restartGatewayClient();
+        setRestartResult(result);
+        setRestarting(false);
+      }
     } catch (e) {
       setSaveMsg({ kind: "err", text: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -254,10 +285,17 @@ export function TelegramSetupModal({ open, onClose }: Props) {
     setActionMsg((m) => ({ ...m, [accountId]: { kind: "ok", text: "enviando…" } }));
     try {
       const draft = drafts.find((d) => d.id === accountId);
+      // Pass the draft token (unsaved) so the user can test before clicking Save.
+      // Backend prefers body.token over the persisted JSON value.
+      const draftToken = draft?.tokenTouched ? draft.token.trim() : "";
       const res = await fetch(`/api/integrations/telegram?action=test`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId, chatId: draft?.chatId || undefined }),
+        body: JSON.stringify({
+          accountId,
+          chatId: draft?.chatId || undefined,
+          token: draftToken || undefined,
+        }),
       });
       const json = await res.json();
       if (!res.ok || !json.success) {
@@ -753,9 +791,61 @@ export function TelegramSetupModal({ open, onClose }: Props) {
           )}
         </div>
 
+        {/* Restart status row */}
+        {(restarting || restartResult) && (
+          <div
+            className="px-5 py-2 border-t flex items-start gap-2 text-xs"
+            style={{
+              borderColor: "var(--border)",
+              backgroundColor: restarting
+                ? "rgba(139, 92, 246, 0.08)"
+                : restartResult?.success
+                  ? "rgba(16, 185, 129, 0.08)"
+                  : "rgba(239, 68, 68, 0.08)",
+            }}
+          >
+            {restarting ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 mt-0.5 shrink-0 animate-spin" style={{ color: "#a78bfa" }} />
+                <span style={{ color: "var(--text-primary)" }}>Aplicando — reiniciando o gateway…</span>
+              </>
+            ) : restartResult?.success ? (
+              <>
+                <Zap className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: "#34d399" }} />
+                <span style={{ color: "#34d399" }}>
+                  Gateway reiniciado em {(restartResult.durationMs / 1000).toFixed(1)}s · token já está ativo no OpenClaw
+                </span>
+              </>
+            ) : (
+              <>
+                <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: "#fca5a5" }} />
+                <div className="flex-1 min-w-0">
+                  <div style={{ color: "#fca5a5" }}>
+                    Config salva, mas restart do gateway falhou — daemon ainda usa o token antigo em memória.
+                  </div>
+                  {restartResult?.error && (
+                    <div className="mt-0.5" style={{ color: "var(--text-muted)" }}>
+                      {restartResult.error.slice(0, 200)}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
         {/* Footer */}
-        <div className="flex items-center justify-between px-5 py-3 border-t gap-3" style={{ borderColor: "var(--border)" }}>
-          <div className="text-xs">
+        <div className="flex items-center justify-between px-5 py-3 border-t gap-3 flex-wrap" style={{ borderColor: "var(--border)" }}>
+          <div className="flex items-center gap-3 flex-wrap text-xs">
+            <label className="flex items-center gap-1.5 cursor-pointer select-none" style={{ color: "var(--text-secondary)" }}>
+              <input
+                type="checkbox"
+                checked={autoRestart}
+                onChange={(e) => updateAutoRestart(e.target.checked)}
+                className="cursor-pointer"
+              />
+              Reiniciar gateway ao salvar
+            </label>
             {saveMsg && (
               <span style={{ color: saveMsg.kind === "ok" ? "#34d399" : "#fca5a5" }}>{saveMsg.text}</span>
             )}
@@ -770,12 +860,12 @@ export function TelegramSetupModal({ open, onClose }: Props) {
             </button>
             <button
               onClick={onSave}
-              disabled={saving || !data}
+              disabled={saving || restarting || !data}
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg font-medium disabled:opacity-50"
               style={{ backgroundColor: "rgba(139,92,246,0.2)", color: "#c4b5fd", border: "1px solid rgba(139,92,246,0.4)" }}
             >
               {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-              Salvar alterações
+              {saving ? "Salvando…" : autoRestart ? "Salvar e aplicar" : "Salvar alterações"}
             </button>
           </div>
         </div>

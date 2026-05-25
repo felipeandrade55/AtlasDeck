@@ -328,7 +328,7 @@ export async function POST(req: NextRequest) {
   const url = new URL(req.url);
   const action = url.searchParams.get("action") || "";
 
-  let body: { accountId?: string; chatId?: string; message?: string } = {};
+  let body: { accountId?: string; chatId?: string; message?: string; token?: string } = {};
   try {
     body = await req.json();
   } catch {
@@ -340,10 +340,21 @@ export async function POST(req: NextRequest) {
   try {
     const { raw } = readConfig();
     const acct = (raw.channels?.telegram as TelegramChannelConfig | undefined)?.accounts?.[accountId];
-    const token = typeof acct?.botToken === "string" ? acct.botToken.trim() : "";
+    // Prefer the explicit token from the request body so the user can test a
+    // freshly-pasted token BEFORE saving — previously the modal forced a save
+    // first, which was confusing because the input already showed the token.
+    const bodyToken = typeof body.token === "string" ? body.token.trim() : "";
+    const savedToken = typeof acct?.botToken === "string" ? acct.botToken.trim() : "";
+    const token = bodyToken || savedToken;
     if (!token || token === "configured_mock_token") {
       return NextResponse.json(
-        { error: `Conta "${accountId}" sem botToken configurado` },
+        { error: `Conta "${accountId}" sem botToken (nem salvo no JSON, nem enviado no teste)` },
+        { status: 400 },
+      );
+    }
+    if (bodyToken && !looksLikeToken(bodyToken)) {
+      return NextResponse.json(
+        { error: `Token enviado não parece um token Telegram válido (formato esperado: 123456:ABC-DEF...)` },
         { status: 400 },
       );
     }
