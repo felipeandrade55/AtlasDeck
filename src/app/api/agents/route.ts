@@ -182,16 +182,24 @@ export async function POST(request: Request) {
 
     config.agents.list.push(newAgent);
 
-    // Write Telegram config if provided
-    if (body.botToken || body.dmPolicy) {
+    // Telegram config: merge, NEVER replace. Older code rewrote the entire
+    // accounts[id] object even when the user didn't touch the Telegram fields,
+    // wiping a previously-saved botToken/chatId. We now only touch a field if
+    // the caller explicitly provided a non-empty value for it. Editing tokens
+    // is the TelegramSetupModal's job.
+    const hasIncomingToken =
+      typeof body.botToken === "string" && body.botToken.trim() && body.botToken !== "configured";
+    const hasIncomingDmPolicy = typeof body.dmPolicy === "string" && body.dmPolicy.trim();
+    if (hasIncomingToken || hasIncomingDmPolicy) {
       if (!config.channels) config.channels = {};
       if (!config.channels.telegram) config.channels.telegram = { dmPolicy: "pairing" };
       if (!config.channels.telegram.accounts) config.channels.telegram.accounts = {};
-      
-      config.channels.telegram.accounts[body.id] = {
-        botToken: body.botToken || "",
-        dmPolicy: body.dmPolicy || "pairing"
-      };
+
+      const existingAccount = config.channels.telegram.accounts[body.id] || {};
+      const nextAccount = { ...existingAccount };
+      if (hasIncomingToken) nextAccount.botToken = body.botToken.trim();
+      if (hasIncomingDmPolicy) nextAccount.dmPolicy = body.dmPolicy;
+      config.channels.telegram.accounts[body.id] = nextAccount;
     }
 
     writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
@@ -248,16 +256,22 @@ export async function PUT(request: Request) {
     if (!agent.subagents) agent.subagents = { allowAgents: [] };
     if (body.allowAgents) agent.subagents.allowAgents = body.allowAgents;
 
-    // Update Telegram info
-    if (body.botToken !== undefined || body.dmPolicy) {
+    // Telegram config: merge, never replace. See POST handler for context —
+    // the old code wiped chatId and overwrote botToken with "" whenever the
+    // agent modal saved without filling those fields.
+    const putHasIncomingToken =
+      typeof body.botToken === "string" && body.botToken.trim() && body.botToken !== "configured";
+    const putHasIncomingDmPolicy = typeof body.dmPolicy === "string" && body.dmPolicy.trim();
+    if (putHasIncomingToken || putHasIncomingDmPolicy) {
       if (!config.channels) config.channels = {};
       if (!config.channels.telegram) config.channels.telegram = { dmPolicy: "pairing" };
       if (!config.channels.telegram.accounts) config.channels.telegram.accounts = {};
-      
-      config.channels.telegram.accounts[body.id] = {
-        botToken: body.botToken === "configured" ? (config.channels.telegram.accounts[body.id]?.botToken || "") : (body.botToken || ""),
-        dmPolicy: body.dmPolicy || "pairing"
-      };
+
+      const existingAccount = config.channels.telegram.accounts[body.id] || {};
+      const nextAccount = { ...existingAccount };
+      if (putHasIncomingToken) nextAccount.botToken = body.botToken.trim();
+      if (putHasIncomingDmPolicy) nextAccount.dmPolicy = body.dmPolicy;
+      config.channels.telegram.accounts[body.id] = nextAccount;
     }
 
     writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
