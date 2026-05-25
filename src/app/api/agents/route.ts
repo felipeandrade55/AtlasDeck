@@ -148,6 +148,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Missing id or name" }, { status: 400 });
     }
 
+    // Ensure agents.list exists — older / hand-edited openclaw.json may have
+    // `agents.defaults` set but `list` missing, which would crash .some()/.push()
+    // with "Cannot read properties of undefined (reading 'some')".
+    if (!config.agents) config.agents = {};
+    if (!Array.isArray(config.agents.list)) config.agents.list = [];
+
     // Check duplicate
     if (config.agents.list.some((a: any) => a.id === body.id)) {
       return NextResponse.json({ error: "Agent ID already exists" }, { status: 400 });
@@ -210,6 +216,9 @@ export async function PUT(request: Request) {
     if (!body.id) {
       return NextResponse.json({ error: "Missing id" }, { status: 400 });
     }
+
+    if (!config.agents) config.agents = {};
+    if (!Array.isArray(config.agents.list)) config.agents.list = [];
 
     const index = config.agents.list.findIndex((a: any) => a.id === body.id);
     if (index === -1) {
@@ -275,6 +284,9 @@ export async function DELETE(request: Request) {
     if (!id) {
       return NextResponse.json({ error: "Missing id parameter" }, { status: 400 });
     }
+
+    if (!config.agents) config.agents = {};
+    if (!Array.isArray(config.agents.list)) config.agents.list = [];
 
     const existingAgent = config.agents.list.find((a: any) => a.id === id);
     config.agents.list = config.agents.list.filter((a: any) => a.id !== id);
