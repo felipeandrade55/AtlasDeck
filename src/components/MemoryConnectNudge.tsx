@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Brain, Link2, Loader2, X, ChevronRight } from "lucide-react";
-import { restartGatewayClient, getAutoRestartPref } from "@/lib/restart-gateway-client";
+import { Brain, Link2, Loader2, X, ChevronRight, CheckCircle2, AlertCircle, Zap } from "lucide-react";
+import { restartGatewayClient, getAutoRestartPref, type ClientRestartResult } from "@/lib/restart-gateway-client";
 
 interface AgentLite {
   id: string;
@@ -52,6 +52,17 @@ export function MemoryConnectNudge({ agents, onOpenAgent, onChanged }: Props) {
   const [connectingAll, setConnectingAll] = useState(false);
   const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
   const [hidden, setHidden] = useState(false);
+  /**
+   * Sticks a success/failure summary on the screen after connectAll() so the
+   * banner doesn't just vanish silently when pending → []. Auto-dismisses
+   * after 12s, but user can also close manually.
+   */
+  const [successResult, setSuccessResult] = useState<{
+    connected: Array<{ agentId: string; name: string }>;
+    failed: Array<{ agentId: string; name: string; error: string }>;
+    restart: ClientRestartResult | null;
+    skippedRestart: boolean;
+  } | null>(null);
 
   /**
    * For each agent in the input list, call /api/agents/memory-connect (GET)
@@ -103,23 +114,44 @@ export function MemoryConnectNudge({ agents, onOpenAgent, onChanged }: Props) {
   }, [detect]);
 
   const connectAll = async () => {
+    const targets = [...state.pending];
     setConnectingAll(true);
-    setProgress({ current: 0, total: state.pending.length });
+    setProgress({ current: 0, total: targets.length });
+    const connected: Array<{ agentId: string; name: string }> = [];
+    const failed: Array<{ agentId: string; name: string; error: string }> = [];
     try {
-      for (let i = 0; i < state.pending.length; i++) {
-        const p = state.pending[i];
-        setProgress({ current: i + 1, total: state.pending.length });
+      for (let i = 0; i < targets.length; i++) {
+        const p = targets[i];
+        setProgress({ current: i + 1, total: targets.length });
         try {
-          await fetch("/api/agents/memory-connect", {
+          const res = await fetch("/api/agents/memory-connect", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ agentId: p.agentId }),
           });
-        } catch {}
+          const json = await res.json().catch(() => ({}));
+          if (res.ok) {
+            connected.push({ agentId: p.agentId, name: p.name });
+          } else {
+            failed.push({ agentId: p.agentId, name: p.name, error: json?.error || `HTTP ${res.status}` });
+          }
+        } catch (e) {
+          failed.push({ agentId: p.agentId, name: p.name, error: e instanceof Error ? e.message : String(e) });
+        }
       }
-      if (getAutoRestartPref()) {
-        await restartGatewayClient();
+      const wantsRestart = getAutoRestartPref();
+      let restart: ClientRestartResult | null = null;
+      if (wantsRestart && connected.length > 0) {
+        restart = await restartGatewayClient();
       }
+      setSuccessResult({
+        connected,
+        failed,
+        restart,
+        skippedRestart: !wantsRestart,
+      });
+      // Auto-dismiss success card after 12s (user can also close manually)
+      setTimeout(() => setSuccessResult((s) => (s && s.failed.length === 0 ? null : s)), 12000);
       await detect();
       onChanged?.();
     } finally {
@@ -132,6 +164,87 @@ export function MemoryConnectNudge({ agents, onOpenAgent, onChanged }: Props) {
     persistDismiss(agentId);
     setState((s) => ({ pending: s.pending.filter((p) => p.agentId !== agentId) }));
   };
+
+  // Success/failure summary takes precedence — sticks around even when pending=[]
+  if (successResult) {
+    const hasFailures = successResult.failed.length > 0;
+    const accent = hasFailures ? "#fca5a5" : "#34d399";
+    const bgTint = hasFailures ? "rgba(239, 68, 68, 0.08)" : "rgba(16, 185, 129, 0.08)";
+    const borderTint = hasFailures ? "rgba(239, 68, 68, 0.35)" : "rgba(16, 185, 129, 0.35)";
+    return (
+      <div
+        className="rounded-xl p-4 flex flex-col gap-2"
+        style={{ backgroundColor: bgTint, border: `1px solid ${borderTint}` }}
+      >
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div className="flex items-start gap-3 min-w-0 flex-1">
+            <div
+              className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
+              style={{ backgroundColor: hasFailures ? "rgba(239, 68, 68, 0.15)" : "rgba(16, 185, 129, 0.15)" }}
+            >
+              {hasFailures ? (
+                <AlertCircle className="w-5 h-5" style={{ color: accent }} />
+              ) : (
+                <CheckCircle2 className="w-5 h-5" style={{ color: accent }} />
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              <h3 className="font-bold text-sm" style={{ color: accent }}>
+                {hasFailures
+                  ? `Conexão parcial: ${successResult.connected.length} ok, ${successResult.failed.length} falharam`
+                  : successResult.connected.length === 1
+                    ? "Memória custom conectada ✓"
+                    : `${successResult.connected.length} agentes conectados à memória custom ✓`}
+              </h3>
+              {successResult.connected.length > 0 && (
+                <p className="text-xs mt-0.5" style={{ color: "var(--text-secondary)" }}>
+                  Apêndice de memória escrito em <code className="text-[10px] bg-black/30 px-1 rounded">instructions.md</code> de:{" "}
+                  {successResult.connected.map((c, i) => (
+                    <span key={c.agentId}>
+                      <b style={{ color: "var(--text-primary)" }}>{c.name}</b>
+                      {i < successResult.connected.length - 1 ? ", " : ""}
+                    </span>
+                  ))}
+                </p>
+              )}
+              {successResult.failed.length > 0 && (
+                <div className="text-xs mt-1.5 space-y-0.5" style={{ color: "#fca5a5" }}>
+                  {successResult.failed.map((f) => (
+                    <div key={f.agentId}>
+                      • <b>{f.name}</b>: {f.error}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {successResult.restart && (
+                <p className="text-[11px] mt-1 flex items-center gap-1" style={{ color: successResult.restart.success ? "#34d399" : "#fca5a5" }}>
+                  <Zap className="w-3 h-3" />
+                  {successResult.restart.success
+                    ? `Gateway reiniciado em ${(successResult.restart.durationMs / 1000).toFixed(1)}s — Jarvis já está consultando memória nas próximas mensagens`
+                    : `Falha no restart automático: ${successResult.restart.error?.slice(0, 120) || "erro desconhecido"}`}
+                </p>
+              )}
+              {successResult.skippedRestart && successResult.connected.length > 0 && (
+                <p className="text-[11px] mt-1" style={{ color: "var(--text-muted)" }}>
+                  ⚠ Auto-restart está desligado nas configurações — reinicie o gateway manualmente pra Jarvis ler o novo instructions.md
+                </p>
+              )}
+              <p className="text-[11px] mt-2" style={{ color: "var(--text-muted)" }}>
+                Teste no Telegram: <i>&quot;lembra do OpenResty?&quot;</i> — agora ele deve consultar a memória antes de responder.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setSuccessResult(null)}
+            className="p-1 rounded hover:bg-white/5"
+            aria-label="Fechar"
+          >
+            <X className="w-4 h-4" style={{ color: "var(--text-muted)" }} />
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (hidden || loading || state.pending.length === 0) return null;
 
