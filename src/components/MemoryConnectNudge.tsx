@@ -232,6 +232,32 @@ export function MemoryConnectNudge({ agents, onOpenAgent, onChanged }: Props) {
               <p className="text-[11px] mt-2" style={{ color: "var(--text-muted)" }}>
                 Teste no Telegram: <i>&quot;lembra do OpenResty?&quot;</i> — agora ele deve consultar a memória antes de responder.
               </p>
+              {successResult.connected.length > 0 && onOpenAgent && (
+                <div
+                  className="mt-2 p-2 rounded text-[11px] flex items-start gap-2"
+                  style={{
+                    backgroundColor: "rgba(96, 165, 250, 0.08)",
+                    border: "1px solid rgba(96, 165, 250, 0.25)",
+                  }}
+                >
+                  <Brain className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: "#60a5fa" }} />
+                  <div className="flex-1">
+                    <b style={{ color: "#93c5fd" }}>Próximo passo recomendado:</b> indexar suas sessions antigas
+                    como memórias searchable no <code className="bg-black/30 px-1 rounded">agent_memory.db</code>.
+                    Sem isso, o Jarvis só recall via grep — com indexação, ele faz <code className="bg-black/30 px-1 rounded">SELECT</code> rápido.
+                    <button
+                      onClick={() => {
+                        onOpenAgent(successResult.connected[0].agentId);
+                        setSuccessResult(null);
+                      }}
+                      className="ml-2 underline font-bold"
+                      style={{ color: "#93c5fd" }}
+                    >
+                      Abrir indexador →
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
           <button

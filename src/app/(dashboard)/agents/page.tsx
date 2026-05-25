@@ -24,6 +24,7 @@ import { OpenClawDefaultsCard } from "@/components/OpenClawDefaultsCard";
 import { RestartStatusBanner } from "@/components/RestartStatusBanner";
 import { WorkspaceImporter } from "@/components/WorkspaceImporter";
 import { AgentMemoryConnector } from "@/components/AgentMemoryConnector";
+import { MemoryIngestPanel } from "@/components/MemoryIngestPanel";
 import { MemoryConnectNudge } from "@/components/MemoryConnectNudge";
 import { validateModelId } from "@/lib/openclaw-models";
 import {
@@ -903,6 +904,11 @@ export default function AgentsPage() {
               {/* Conector de memória custom (memory engine + KB + skills + sessions) */}
               {editingAgent && (
                 <AgentMemoryConnector agentId={editingAgent.id} onChanged={fetchAgents} />
+              )}
+
+              {/* Ingest de sessions antigas como memórias searchable */}
+              {editingAgent && (
+                <MemoryIngestPanel agentId={editingAgent.id} onIngested={fetchAgents} />
               )}
 
               <div className="flex gap-3 pt-4 border-t" style={{ borderColor: "var(--border)" }}>
