@@ -236,6 +236,36 @@ function discoverPaths(): { label: string; path: string }[] {
       if (fs.existsSync(pluginsDir)) {
         paths.push({ label: "openclaw-plugins", path: pluginsDir });
       }
+
+      // Custom orchestration scripts that live at the root of ~/.openclaw/
+      // (heartbeat.sh, daily_standup.sh, backup_system.sh, monitor_system.sh,
+      // agent_deepseek.py, etc.) — these run the Python multi-agent system
+      // via cron, and a restore without them leaves the agent without its
+      // brain. Globs not used; we discover files explicitly to keep node_modules
+      // and gigabyte dirs out.
+      try {
+        const rootEntries = fs.readdirSync(openclawDir, { withFileTypes: true });
+        for (const entry of rootEntries) {
+          if (!entry.isFile()) continue;
+          const lower = entry.name.toLowerCase();
+          // Capture custom orchestration: shell scripts, python orchestrators,
+          // and the .env (which holds API keys for the Python side).
+          if (
+            lower.endsWith(".sh") ||
+            lower.endsWith(".py") ||
+            lower === ".env" ||
+            lower === ".env.example" ||
+            lower.endsWith(".json") // openrouter.json, knowledge files
+          ) {
+            // Skip openclaw.json (already captured above) and obvious junk
+            if (lower === "openclaw.json") continue;
+            const full = path.join(openclawDir, entry.name);
+            paths.push({ label: `openclaw-root-${entry.name}`, path: full });
+          }
+        }
+      } catch (err) {
+        console.warn("[backup] Could not enumerate ~/.openclaw root files:", err);
+      }
     }
   } catch (err) {
     console.warn("[backup] Could not discover OpenClaw paths:", err);
