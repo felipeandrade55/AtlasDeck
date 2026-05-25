@@ -28,56 +28,30 @@ function ensureAgentWorkspace(workspace: string): { absolutePath: string; create
 }
 
 /**
- * OpenClaw's channel routing requires explicit bindings: a message arriving
- * via channel X with accountId Y must have a `bindings[]` entry pointing it
- * to an agent. Without this, the daemon silently fails with the generic
- * "Something went wrong" reply because the message has nowhere to land.
+ * BUG RECOVERY: previously this function ADDED `agents.bindings[]` entries
+ * thinking that was the correct schema for telegram→agent routing. It is
+ * NOT — OpenClaw 2026.5.12 strict-schema rejects `agents.bindings`:
  *
- * `openclaw doctor` flags this as:
- *   "channels.telegram: accounts.default is missing and no valid
- *    account-scoped binding exists for configured accounts (main).
- *    Add bindings[].match.accountId for one of these accounts (or *)."
+ *   Invalid config: agents: Unrecognized key: "bindings"
  *
- * We auto-add a binding for each configured Telegram account whose id
- * matches an existing agent id — the common case where one bot serves
- * one agent. Returns true if changes were made.
+ * Worse, this ran on every GET /api/agents (polled every 8s by the dashboard),
+ * so AtlasDeck was constantly re-corrupting the config seconds after the user
+ * ran `openclaw doctor --fix`. Daemon then refused to boot.
+ *
+ * Now: REMOVE any stale `agents.bindings` we find (defensive cleanup of our
+ * own past mess). Don't try to "set up" routing — let `openclaw doctor --fix`
+ * or `openclaw configure` handle that (they know the canonical schema).
+ *
+ * If your bot isn't routing messages and you have one Telegram account named
+ * "main" + one agent named "main", rename the account to "default" via the
+ * Telegram setup modal OR run `openclaw doctor --fix` on the server.
  */
 function ensureTelegramBindings(config: any): boolean {
-  if (!config.agents) return false;
-  if (!Array.isArray(config.agents.list) || config.agents.list.length === 0) return false;
-
-  const agentIds = new Set(
-    (config.agents.list as Array<{ id?: string }>)
-      .map((a) => a.id)
-      .filter((id): id is string => typeof id === "string" && id.length > 0),
-  );
-  if (agentIds.size === 0) return false;
-
-  const tgAccounts = config.channels?.telegram?.accounts;
-  if (!tgAccounts || typeof tgAccounts !== "object") return false;
-
-  const bindings = (config.agents.bindings = Array.isArray(config.agents.bindings)
-    ? config.agents.bindings
-    : []);
-
-  let changed = false;
-  for (const accountId of Object.keys(tgAccounts)) {
-    if (!agentIds.has(accountId)) continue; // only auto-bind when id matches an agent
-    const exists = bindings.some(
-      (b: any) =>
-        b?.match?.channel === "telegram" &&
-        b?.match?.accountId === accountId &&
-        b?.agent === accountId,
-    );
-    if (!exists) {
-      bindings.push({
-        match: { channel: "telegram", accountId },
-        agent: accountId,
-      });
-      changed = true;
-    }
+  if (config?.agents?.bindings !== undefined) {
+    delete config.agents.bindings;
+    return true;
   }
-  return changed;
+  return false;
 }
 
 export const dynamic = "force-dynamic";
@@ -157,16 +131,16 @@ export async function GET() {
     // wrote `ui` into the agent object, but OpenClaw 2026.5.12+ rejects it
     // ("Unrecognized key: ui"), which prevents the daemon from starting.
     const uiMigrated = migrateAgentUiFromConfig(config);
-    // Same idea: ensure each Telegram account whose id matches an agent has
-    // a routing binding. Without this, messages arrive but can't be routed
-    // to any agent and the bot falls back to "Something went wrong".
-    const bindingsAdded = ensureTelegramBindings(config);
-    if (uiMigrated || bindingsAdded) {
+    // Defensive cleanup: remove any stale agents.bindings AtlasDeck wrote
+    // in a previous (bad) migration. OpenClaw 2026.5.12 rejects that key
+    // and refuses to boot.
+    const bindingsStripped = ensureTelegramBindings(config);
+    if (uiMigrated || bindingsStripped) {
       try {
         writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
         const what = [
           uiMigrated && "ui→local",
-          bindingsAdded && "telegram bindings",
+          bindingsStripped && "stripped invalid agents.bindings",
         ]
           .filter(Boolean)
           .join(" + ");
@@ -290,9 +264,7 @@ export async function POST(request: Request) {
       console.error("Failed to create agent workspace:", e);
     }
 
-    // Auto-add routing binding if there's already a Telegram account with
-    // the same id as the new agent. Without a binding, messages can't be
-    // routed to the agent and the bot replies with the generic fallback.
+    // Defensive: strip any invalid agents.bindings (legacy from past bad migration)
     ensureTelegramBindings(config);
 
     // emoji/color go to AtlasDeck-local storage, NEVER into openclaw.json
@@ -392,8 +364,7 @@ export async function PUT(request: Request) {
       }
     }
 
-    // Same as POST: ensure routing binding exists for any Telegram account
-    // sharing an id with this agent.
+    // Defensive: strip any invalid agents.bindings (legacy from past bad migration)
     ensureTelegramBindings(config);
 
     // Telegram config: merge, never replace. See POST handler for context —
