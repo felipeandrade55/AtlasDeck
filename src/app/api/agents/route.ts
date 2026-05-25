@@ -55,6 +55,33 @@ function ensureTelegramBindings(config: any): boolean {
   return false;
 }
 
+/**
+ * Self-heal: drop entries from `channels.telegram.accounts` that have no
+ * real botToken. They are leftovers from the historical bug where saving
+ * a new agent created `{ dmPolicy: "pairing" }` entries without ever
+ * setting a token — OpenClaw routed messages to those accounts (because
+ * account id matches agent id) and silently failed to authenticate,
+ * which manifested as "bot: inválido" in the integrations panel and the
+ * bot ghosting messages from chats bound to that agent.
+ *
+ * "configured_mock_token" is the placeholder some older flows wrote and
+ * we also treat as effectively-empty.
+ */
+function stripTokenlessTelegramAccounts(config: any): string[] {
+  const accounts = config?.channels?.telegram?.accounts;
+  if (!accounts || typeof accounts !== "object") return [];
+  const removed: string[] = [];
+  for (const id of Object.keys(accounts)) {
+    const entry = accounts[id];
+    const token = typeof entry?.botToken === "string" ? entry.botToken.trim() : "";
+    if (!token || token === "configured_mock_token") {
+      delete accounts[id];
+      removed.push(id);
+    }
+  }
+  return removed;
+}
+
 export const dynamic = "force-dynamic";
 
 interface Agent {
@@ -136,16 +163,25 @@ export async function GET() {
     // in a previous (bad) migration. OpenClaw 2026.5.12 rejects that key
     // and refuses to boot.
     const bindingsStripped = ensureTelegramBindings(config);
-    if (uiMigrated || bindingsStripped) {
+    // Self-heal: drop tokenless channels.telegram.accounts entries created
+    // by the historical agent-form bug (see stripTokenlessTelegramAccounts
+    // docstring). This is what stops the bot from responding after the
+    // user adds a second agent.
+    const removedAccounts = stripTokenlessTelegramAccounts(config);
+    if (uiMigrated || bindingsStripped || removedAccounts.length > 0) {
       try {
         writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
         const what = [
           uiMigrated && "ui→local",
           bindingsStripped && "stripped invalid agents.bindings",
+          removedAccounts.length > 0 &&
+            `removed tokenless telegram accounts (${removedAccounts.join(", ")})`,
         ]
           .filter(Boolean)
           .join(" + ");
-        logActivity("config", `Migração openclaw.json: ${what}`, "success", { metadata: { configPath } });
+        logActivity("config", `Migração openclaw.json: ${what}`, "success", {
+          metadata: { configPath, removedAccounts },
+        });
       } catch (e) {
         console.error("Failed to persist openclaw.json migrations:", e);
       }
@@ -282,20 +318,31 @@ export async function POST(request: Request) {
 
     // Telegram config: merge, NEVER replace. Older code rewrote the entire
     // accounts[id] object even when the user didn't touch the Telegram fields,
-    // wiping a previously-saved botToken/chatId. We now only touch a field if
-    // the caller explicitly provided a non-empty value for it. Editing tokens
-    // is the TelegramSetupModal's job.
+    // wiping a previously-saved botToken/chatId.
+    //
+    // BUG FIX: We used to CREATE a new accounts[id] entry just because the
+    // form sent the default dmPolicy="pairing" — even when no bot token was
+    // ever provided. That produced tokenless entries like
+    //   "channels.telegram.accounts.main": { "dmPolicy": "pairing" }
+    // which OpenClaw routed to (account-id == agent-id) and then failed to
+    // authenticate because there was no botToken. The visible symptom was
+    // every newly-created agent showing "bot: inválido" and the bot
+    // silently stopping to respond on Telegram.
+    //
+    // New rule: ONLY touch channels.telegram.accounts[id] when the caller
+    // provided a real bot token. dmPolicy without a token is meaningless
+    // anyway — the channel-level default (channels.telegram.dmPolicy) is
+    // applied at read-time when no account-level override exists.
     const hasIncomingToken =
       typeof body.botToken === "string" && body.botToken.trim() && body.botToken !== "configured";
-    const hasIncomingDmPolicy = typeof body.dmPolicy === "string" && body.dmPolicy.trim();
-    if (hasIncomingToken || hasIncomingDmPolicy) {
+    if (hasIncomingToken) {
       if (!config.channels) config.channels = {};
       if (!config.channels.telegram) config.channels.telegram = { dmPolicy: "pairing" };
       if (!config.channels.telegram.accounts) config.channels.telegram.accounts = {};
 
       const existingAccount = config.channels.telegram.accounts[body.id] || {};
-      const nextAccount = { ...existingAccount };
-      if (hasIncomingToken) nextAccount.botToken = body.botToken.trim();
+      const nextAccount = { ...existingAccount, botToken: body.botToken.trim() };
+      const hasIncomingDmPolicy = typeof body.dmPolicy === "string" && body.dmPolicy.trim();
       if (hasIncomingDmPolicy) nextAccount.dmPolicy = body.dmPolicy;
       config.channels.telegram.accounts[body.id] = nextAccount;
     }
@@ -377,21 +424,27 @@ export async function PUT(request: Request) {
     ensureTelegramBindings(config);
 
     // Telegram config: merge, never replace. See POST handler for context —
-    // the old code wiped chatId and overwrote botToken with "" whenever the
-    // agent modal saved without filling those fields.
+    // including the tokenless-entry bug: dmPolicy alone never creates an
+    // account entry. To save dmPolicy for an agent, use the TelegramSetupModal
+    // (which saves it next to a real botToken).
     const putHasIncomingToken =
       typeof body.botToken === "string" && body.botToken.trim() && body.botToken !== "configured";
     const putHasIncomingDmPolicy = typeof body.dmPolicy === "string" && body.dmPolicy.trim();
-    if (putHasIncomingToken || putHasIncomingDmPolicy) {
+    const existingAccount = config.channels?.telegram?.accounts?.[body.id];
+    if (putHasIncomingToken) {
       if (!config.channels) config.channels = {};
       if (!config.channels.telegram) config.channels.telegram = { dmPolicy: "pairing" };
       if (!config.channels.telegram.accounts) config.channels.telegram.accounts = {};
 
-      const existingAccount = config.channels.telegram.accounts[body.id] || {};
-      const nextAccount = { ...existingAccount };
-      if (putHasIncomingToken) nextAccount.botToken = body.botToken.trim();
+      const cur = config.channels.telegram.accounts[body.id] || {};
+      const nextAccount = { ...cur, botToken: body.botToken.trim() };
       if (putHasIncomingDmPolicy) nextAccount.dmPolicy = body.dmPolicy;
       config.channels.telegram.accounts[body.id] = nextAccount;
+    } else if (putHasIncomingDmPolicy && existingAccount && typeof existingAccount.botToken === "string" && existingAccount.botToken.trim()) {
+      // Only let dmPolicy edits land when an account ALREADY exists with a
+      // real token. Without this guard, an edit-modal save would create the
+      // same tokenless entry as the POST bug above.
+      existingAccount.dmPolicy = body.dmPolicy;
     }
 
     writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
