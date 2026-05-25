@@ -28,11 +28,14 @@ import { useFollowUpCapture } from "@/components/chat/useFollowUpCapture";
 import { useTtsEngine } from "@/components/chat/useTtsEngine";
 import { useWakeWord } from "@/components/chat/useWakeWord";
 
-// "Atlas" comes first because it's a real Portuguese word — Web Speech's
-// pt-BR engine transcribes it reliably. "Jarvis" is kept as a secondary
-// option even though pt-BR ASR mistranscribes it often (jesus, jovis,
-// jarves, etc.); the alias map in useWakeWord covers most variants.
+// "Atlas" is a real Portuguese word — pt-BR ASR transcribes it
+// reliably. "Jarvis" is kept as a secondary option (often mistranscribed
+// as jesus/jovis/jarves — covered by aliases in useWakeWord). Users
+// invoke it with prefixes like "ei jarvis", "hey jarvis", "olá jarvis":
+// findWakeMatch only requires the alias itself to appear with a word
+// boundary, so the prefix is handled automatically.
 const WAKE_PHRASES = ["Atlas", "Jarvis"];
+const WAKE_PHRASE_LABELS = ["ei Jarvis", "Atlas"];
 import type {
   AgentSummary,
   ChatMessage,
@@ -54,7 +57,12 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<string>("main");
-  const [ttsEnabled, setTtsEnabled] = useState(false);
+  // Default: TTS auto-speak ON. The user explicitly asked for the page
+  // to be ready to talk + listen as soon as it opens, no clicks needed.
+  // The cloud TTS (Fish Audio / ElevenLabs) is loaded lazily by
+  // useTtsEngine, so flipping this on at mount only triggers playback
+  // *after* the assistant produces a reply.
+  const [ttsEnabled, setTtsEnabled] = useState(true);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
   const [showImportModal, setShowImportModal] = useState(false);
@@ -62,6 +70,12 @@ export default function ChatPage() {
   const [showWakeModal, setShowWakeModal] = useState(false);
   const [wakeEnabled, setWakeEnabled] = useState(true);
   const [wakeTeaser, setWakeTeaser] = useState<string | null>(null);
+  // Tracks which transport answered the last turn. Drives the top-bar
+  // transport badge so the user can see at a glance whether real-time
+  // WS is actually being used vs. the legacy CLI/Ollama fallback.
+  const [lastTransport, setLastTransport] = useState<
+    "ws" | "cli" | "ollama" | "unknown" | null
+  >(null);
   /**
    * Persistent diagnostics inferred from the last few assistant turns:
    *  - `buffered`: the OpenClaw gateway buffered the whole reply
@@ -316,6 +330,11 @@ export default function ChatPage() {
                 : m,
             ),
           );
+          if (provider === "ws" || provider === "cli" || provider === "ollama") {
+            setLastTransport(provider);
+          } else {
+            setLastTransport("unknown");
+          }
           if (buffered) {
             setAgentDiagnostics((d) => ({ ...d, buffered: true }));
           }
@@ -526,12 +545,19 @@ export default function ChatPage() {
     onWake: handleWakeFired,
   });
 
-  // Web Speech wake is only used when no acoustic engine is active —
-  // its pt-BR accuracy is poor, so we keep it as a last-resort fallback
-  // when openWakeWord and Porcupine are both off.
+  // Web Speech is the always-on fallback. It activates whenever no
+  // acoustic engine is currently holding the mic — including the case
+  // where openWakeWord crashed during WASM init (state="error",
+  // holding=false). The user explicitly asked the page to listen the
+  // moment it loads, so we never want to leave it silent: when the
+  // acoustic path fails, Web Speech takes over transparently with the
+  // pt-BR aliases for "jarvis" / "atlas".
   const acousticActive =
     (wakeEngine === "openwakeword" && openWake.holding) ||
     (wakeEngine === "porcupine" && porcupine.holding);
+  const acousticFailed =
+    (wakeEngine === "openwakeword" && openWake.state === "error") ||
+    (wakeEngine === "porcupine" && porcupine.state === "error");
   const webSpeechWakeActive = wakeEnabled && !acousticActive;
 
   const wake = useWakeWord({
@@ -575,6 +601,7 @@ export default function ChatPage() {
             </h1>
             <span style={pageSubStyle}>
               Powered by OpenClaw · {messages.length} mensagens
+              <TransportBadge transport={lastTransport} streaming={stream.isStreaming} />
             </span>
           </div>
           <div style={controlsStyle}>
@@ -632,15 +659,20 @@ export default function ChatPage() {
             </button>
             <WakeIndicator
               state={
-                wakeEngine === "openwakeword"
+                // When the acoustic engine (openWakeWord / Porcupine)
+                // crashed, the page transparently uses Web Speech as
+                // the wake source — the indicator must reflect THAT
+                // state, otherwise the user stares at a red error
+                // even though we're actually listening via Web Speech.
+                acousticFailed
+                  ? wake.state
+                  : wakeEngine === "openwakeword"
                   ? openWake.state === "listening"
                     ? "listening"
                     : openWake.state === "activated"
                     ? "activated"
                     : openWake.state === "loading"
                     ? "listening"
-                    : openWake.state === "error"
-                    ? "error"
                     : wake.state
                   : porcupine.available
                   ? porcupine.state === "listening"
@@ -649,21 +681,23 @@ export default function ChatPage() {
                     ? "activated"
                     : porcupine.state === "loading"
                     ? "listening"
-                    : porcupine.state === "error"
-                    ? "error"
                     : wake.state
                   : wake.state
               }
               enabled={wakeEnabled}
               phrases={
-                wakeEngine === "openwakeword"
+                acousticFailed
+                  ? WAKE_PHRASE_LABELS
+                  : wakeEngine === "openwakeword"
                   ? ["Hey Jarvis (openWakeWord)"]
                   : porcupine.available
                   ? ["Jarvis (Porcupine)"]
-                  : WAKE_PHRASES
+                  : WAKE_PHRASE_LABELS
               }
               lastHeard={
-                wakeEngine === "openwakeword"
+                acousticFailed
+                  ? wake.lastHeard || "ouvindo via Web Speech"
+                  : wakeEngine === "openwakeword"
                   ? openWake.errorMessage
                     ? openWake.errorMessage
                     : `score ${openWake.lastScore.toFixed(2)}`
@@ -862,30 +896,74 @@ export default function ChatPage() {
   );
 }
 
+function TransportBadge({
+  transport,
+  streaming,
+}: {
+  transport: "ws" | "cli" | "ollama" | "unknown" | null;
+  streaming: boolean;
+}) {
+  if (!transport && !streaming) return null;
+  const variants: Record<string, { label: string; color: string; bg: string }> = {
+    ws: { label: "WS real-time", color: "#10b981", bg: "rgba(16, 185, 129, 0.12)" },
+    cli: { label: "CLI (fallback)", color: "#f59e0b", bg: "rgba(245, 158, 11, 0.12)" },
+    ollama: { label: "Ollama (fallback)", color: "#f59e0b", bg: "rgba(245, 158, 11, 0.12)" },
+    unknown: { label: "transport ?", color: "#94a3b8", bg: "rgba(148, 163, 184, 0.12)" },
+    pending: { label: "conectando…", color: "#60a5fa", bg: "rgba(96, 165, 250, 0.12)" },
+  };
+  const key = streaming && !transport ? "pending" : (transport ?? "unknown");
+  const v = variants[key];
+  return (
+    <span
+      style={{
+        marginLeft: 8,
+        padding: "1px 7px",
+        borderRadius: 999,
+        background: v.bg,
+        color: v.color,
+        fontSize: 10,
+        fontWeight: 600,
+        letterSpacing: 0.3,
+      }}
+      title={
+        key === "ws"
+          ? "Conexão WebSocket direta com o OpenClaw Gateway — streaming token a token."
+          : key === "cli"
+          ? "Fallback CLI ativo (ATLAS_CHAT_ALLOW_FALLBACK). Latência alta, sem token streaming real."
+          : key === "ollama"
+          ? "Fallback Ollama local ativo (ATLAS_CHAT_ALLOW_FALLBACK)."
+          : "Aguardando primeiro turno para detectar o transporte."
+      }
+    >
+      {v.label}
+    </span>
+  );
+}
+
 function EmptyState() {
   return (
     <div style={emptyStateStyle}>
       <Bot size={42} style={{ color: "var(--accent)" }} />
       <h2 style={{ margin: 0, fontSize: 20 }}>Pronto para conversar</h2>
       <p style={{ margin: 0, color: "var(--text-secondary)", maxWidth: 520 }}>
-        Quatro formas de falar com o Jarvis:
+        Microfone e voz já estão ativos. Diga{" "}
+        <strong>&ldquo;ei Jarvis&rdquo;</strong> e fale seu comando em
+        seguida — a resposta volta em tempo real (WebSocket) e o Jarvis fala
+        de volta usando o TTS configurado (Fish Audio / ElevenLabs).
       </p>
       <ul style={emptyStateListStyle}>
         <li>
-          <strong>Diga &ldquo;Jarvis&rdquo;</strong> com Porcupine ativo —
-          detecção acústica precisa, ignora o ASR do Chrome. Configure em{" "}
-          <kbd style={kbdStyle}>⚙ Wake</kbd> no topo.
+          <strong>&ldquo;ei Jarvis&rdquo;</strong> / <strong>&ldquo;Atlas&rdquo;</strong>{" "}
+          — wake word automático em pt-BR (aliases cobrem variantes como
+          &ldquo;jarves&rdquo;, &ldquo;hey jarvis&rdquo;, &ldquo;olá jarvis&rdquo;)
         </li>
         <li>
           <kbd style={kbdStyle}>ESPAÇO</kbd> — segure para falar, solte para
-          enviar (fallback sem setup)
+          enviar (push-to-talk)
         </li>
+        <li>🎙 clique no microfone do composer para gravar manualmente</li>
         <li>
-          🎙 clique no microfone do composer para gravar manualmente
-        </li>
-        <li>
-          fallback sem Porcupine: dizer &ldquo;Atlas …&rdquo; em voz alta —
-          <em> Web Speech pt-BR pode não pegar a palavra, prefira Porcupine.</em>
+          configure outras opções de wake em <kbd style={kbdStyle}>⚙ Wake</kbd>
         </li>
       </ul>
     </div>

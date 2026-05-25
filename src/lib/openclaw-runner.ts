@@ -446,17 +446,36 @@ async function* runOllamaFallback(
   }
 }
 
+/**
+ * Real-time chat REQUIRES the Gateway WebSocket — the CLI/Ollama paths
+ * are minute-latency fallbacks that defeat the "ei Jarvis"+TTS UX. The
+ * default is therefore strict: if WS fails, surface the error to the
+ * UI instead of silently dropping to CLI. Opt back into the legacy
+ * fallback chain with ATLAS_CHAT_ALLOW_FALLBACK=on (or =cli / =ollama
+ * to be explicit about which fallback you want).
+ */
+function fallbackMode(): "off" | "cli" | "ollama" | "any" {
+  const raw = (process.env.ATLAS_CHAT_ALLOW_FALLBACK || "").trim().toLowerCase();
+  if (raw === "on" || raw === "true" || raw === "1" || raw === "any") return "any";
+  if (raw === "cli") return "cli";
+  if (raw === "ollama") return "ollama";
+  return "off";
+}
+
 export async function* runOpenClawChat(input: RunnerInput): AsyncGenerator<RunnerEvent> {
-  // Allow forcing Ollama via env (useful while the OpenClaw CLI surface is
-  // still being mapped — defaults to trying OpenClaw first).
+  const fb = fallbackMode();
+
+  // Allow forcing Ollama via env (kept for backward compat — used during
+  // gateway outages or while debugging the runner).
   if (process.env.ATLAS_CHAT_PROVIDER === "ollama") {
     yield* runOllamaFallback(input, "ATLAS_CHAT_PROVIDER=ollama");
     return;
   }
 
   // Strategy 0: Gateway WebSocket — real-time tokens with abort support.
-  // Skipped when ATLAS_CHAT_WS=off and silently falls through to the CLI
-  // path when the gateway is unreachable or rejects the connection.
+  // When ATLAS_CHAT_ALLOW_FALLBACK is unset we run STRICT: any WS
+  // failure becomes a user-visible error instead of an invisible CLI
+  // detour that takes 30s+ per turn.
   let wsFailureForCli: string | null = null;
   if (isWsEnabled()) {
     const sessionKey =
@@ -510,11 +529,44 @@ export async function* runOpenClawChat(input: RunnerInput): AsyncGenerator<Runne
     if (wsFatal) {
       wsFailureForCli = wsFatal;
       if (process.env.MEMORY_DEBUG === "1") {
-        console.log(`[openclaw-runner] WS unavailable (${wsFatal}); falling back to CLI`);
+        console.log(
+          `[openclaw-runner] WS unavailable (${wsFatal}); fallback=${fb}`,
+        );
+      }
+      // Strict mode: do NOT fall back to CLI/Ollama. Surface the WS
+      // failure directly so the chat UI can show what went wrong
+      // (token expired, gateway down, wrong path, etc.).
+      if (fb === "off") {
+        yield {
+          type: "error",
+          code: "WS_REQUIRED",
+          message:
+            `OpenClaw WebSocket falhou: ${wsFatal}. Real-time chat exige WS — ` +
+            `confira token e endereço do gateway em Settings, ou ative o fallback ` +
+            `legacy com ATLAS_CHAT_ALLOW_FALLBACK=on (CLI/Ollama, latência alta).`,
+        };
+        return;
       }
     }
   } else {
     wsFailureForCli = "WS disabled via ATLAS_CHAT_WS=off";
+    if (fb === "off") {
+      yield {
+        type: "error",
+        code: "WS_DISABLED",
+        message:
+          "WebSocket está desativado (ATLAS_CHAT_WS=off). Para usar real-time chat " +
+          "remova essa variável, ou habilite fallback com ATLAS_CHAT_ALLOW_FALLBACK=on.",
+      };
+      return;
+    }
+  }
+
+  // Below: legacy CLI / Ollama path — only reachable when the operator
+  // explicitly opted in via ATLAS_CHAT_ALLOW_FALLBACK.
+  if (fb === "ollama") {
+    yield* runOllamaFallback(input, wsFailureForCli || "ws-skipped");
+    return;
   }
 
   const config = readOpenClawConfig();
@@ -695,14 +747,25 @@ export async function* runOpenClawChat(input: RunnerInput): AsyncGenerator<Runne
     return;
   }
 
-  // All OpenClaw CLI strategies failed — fall back to Ollama. Surface
-  // a single status token so the user can see we switched providers.
+  // All OpenClaw CLI strategies failed. Only chain into Ollama when the
+  // operator opted into the full legacy fallback ("any"). With fb="cli"
+  // the user only wants the CLI tier, so surface the CLI error directly.
   const reason =
     (lastError instanceof Error ? lastError.message : String(lastError ?? "unknown failure")) ||
     lastStderr ||
     "unknown failure";
   if (process.env.MEMORY_DEBUG === "1") {
-    console.log(`[openclaw-runner] all CLI strategies failed; falling back to Ollama. ${reason}`);
+    console.log(
+      `[openclaw-runner] all CLI strategies failed (fallback=${fb}). ${reason}`,
+    );
   }
-  yield* runOllamaFallback(input, reason.slice(0, 160));
+  if (fb === "any") {
+    yield* runOllamaFallback(input, reason.slice(0, 160));
+    return;
+  }
+  yield {
+    type: "error",
+    code: "CLI_FAILED",
+    message: `OpenClaw CLI falhou em todas as estratégias: ${reason.slice(0, 200)}`,
+  };
 }
