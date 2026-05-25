@@ -8,6 +8,7 @@ import { QuickActions } from "@/components/QuickActions";
 import { RecoveryPanel } from "@/components/RecoveryPanel";
 import { UpdatePanel } from "@/components/UpdatePanel";
 import { RestorePanel } from "@/components/RestorePanel";
+import { ResetOpenClawPanel } from "@/components/setup/ResetOpenClawPanel";
 
 interface SystemData {
   agent: {
@@ -137,6 +138,11 @@ export default function SettingsPage() {
         {/* Quick Actions */}
         <div>
           <QuickActions onActionComplete={handleRefresh} />
+        </div>
+
+        {/* Danger zone — destructive reset of the OpenClaw install */}
+        <div className="lg:col-span-2">
+          <ResetOpenClawPanel />
         </div>
       </div>
 
