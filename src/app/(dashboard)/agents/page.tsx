@@ -22,6 +22,7 @@ import { AgentOrganigrama } from "@/components/AgentOrganigrama";
 import { ModelPicker } from "@/components/ModelPicker";
 import { OpenClawDefaultsCard } from "@/components/OpenClawDefaultsCard";
 import { RestartStatusBanner } from "@/components/RestartStatusBanner";
+import { WorkspaceImporter } from "@/components/WorkspaceImporter";
 import { validateModelId } from "@/lib/openclaw-models";
 import {
   restartGatewayClient,
@@ -877,6 +878,15 @@ export default function AgentsPage() {
                   </label>
                 </div>
               </div>
+
+              {/* Workspace migration — só faz sentido editando (agente já existe) */}
+              {editingAgent && (
+                <WorkspaceImporter
+                  agentId={editingAgent.id}
+                  currentWorkspace={formWorkspace.trim() || editingAgent.workspace}
+                  onImported={fetchAgents}
+                />
+              )}
 
               <div className="flex gap-3 pt-4 border-t" style={{ borderColor: "var(--border)" }}>
                 <button
