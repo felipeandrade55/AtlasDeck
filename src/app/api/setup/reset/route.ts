@@ -3,9 +3,10 @@
  *
  * Optional pre-reset backup (?backup=1) runs server-side so the entire
  * tear-down is a single SSE stream. After deletion we DO NOT auto-install
- * — the dashboard layout redirects the user to /welcome which kicks the
- * normal install wizard. That keeps reset side-effects narrow and lets
- * the user re-do the rest of the setup deliberately.
+ * — the caller (ResetOpenClawPanel) navigates to /welcome on success so
+ * the user can re-run the install wizard deliberately. The dashboard's
+ * SetupGuard only *suggests* /welcome via a dismissible banner; it does
+ * not force the navigation.
  *
  * What gets removed:
  *   - OpenClaw npm package (global + local-prefix fallback)
