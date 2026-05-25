@@ -21,9 +21,8 @@ import {
   Plus,
   FileText,
   Power,
-  Zap,
-  AlertCircle,
 } from "lucide-react";
+import { RestartStatusBanner } from "./RestartStatusBanner";
 import {
   restartGatewayClient,
   getAutoRestartPref,
@@ -791,48 +790,11 @@ export function TelegramSetupModal({ open, onClose }: Props) {
           )}
         </div>
 
-        {/* Restart status row */}
-        {(restarting || restartResult) && (
-          <div
-            className="px-5 py-2 border-t flex items-start gap-2 text-xs"
-            style={{
-              borderColor: "var(--border)",
-              backgroundColor: restarting
-                ? "rgba(139, 92, 246, 0.08)"
-                : restartResult?.success
-                  ? "rgba(16, 185, 129, 0.08)"
-                  : "rgba(239, 68, 68, 0.08)",
-            }}
-          >
-            {restarting ? (
-              <>
-                <Loader2 className="w-3.5 h-3.5 mt-0.5 shrink-0 animate-spin" style={{ color: "#a78bfa" }} />
-                <span style={{ color: "var(--text-primary)" }}>Aplicando — reiniciando o gateway…</span>
-              </>
-            ) : restartResult?.success ? (
-              <>
-                <Zap className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: "#34d399" }} />
-                <span style={{ color: "#34d399" }}>
-                  Gateway reiniciado em {(restartResult.durationMs / 1000).toFixed(1)}s · token já está ativo no OpenClaw
-                </span>
-              </>
-            ) : (
-              <>
-                <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: "#fca5a5" }} />
-                <div className="flex-1 min-w-0">
-                  <div style={{ color: "#fca5a5" }}>
-                    Config salva, mas restart do gateway falhou — daemon ainda usa o token antigo em memória.
-                  </div>
-                  {restartResult?.error && (
-                    <div className="mt-0.5" style={{ color: "var(--text-muted)" }}>
-                      {restartResult.error.slice(0, 200)}
-                    </div>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-        )}
+        <RestartStatusBanner
+          restarting={restarting}
+          result={restartResult}
+          successHint="token já está ativo no OpenClaw"
+        />
 
         {/* Footer */}
         <div className="flex items-center justify-between px-5 py-3 border-t gap-3 flex-wrap" style={{ borderColor: "var(--border)" }}>

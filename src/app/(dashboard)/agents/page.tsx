@@ -17,13 +17,11 @@ import {
   ArrowRight,
   Cpu,
   Sparkles,
-  Loader2,
-  Zap,
-  AlertCircle,
 } from "lucide-react";
 import { AgentOrganigrama } from "@/components/AgentOrganigrama";
 import { ModelPicker } from "@/components/ModelPicker";
 import { OpenClawDefaultsCard } from "@/components/OpenClawDefaultsCard";
+import { RestartStatusBanner } from "@/components/RestartStatusBanner";
 import { validateModelId } from "@/lib/openclaw-models";
 import {
   restartGatewayClient,
@@ -329,64 +327,12 @@ export default function AgentsPage() {
       {/* OpenClaw Defaults (global) */}
       <OpenClawDefaultsCard onSaved={fetchAgents} />
 
-      {/* Gateway restart banner (after editing an individual agent) */}
-      {(restarting || restartResult) && (
-        <div
-          className="flex items-start gap-3 p-3 rounded-xl text-sm"
-          style={{
-            backgroundColor: restarting
-              ? "rgba(139, 92, 246, 0.08)"
-              : restartResult?.success
-                ? "rgba(16, 185, 129, 0.08)"
-                : "rgba(239, 68, 68, 0.08)",
-            border: `1px solid ${restarting ? "rgba(139, 92, 246, 0.3)" : restartResult?.success ? "rgba(16, 185, 129, 0.3)" : "rgba(239, 68, 68, 0.3)"}`,
-          }}
-        >
-          {restarting ? (
-            <>
-              <Loader2 className="w-4 h-4 mt-0.5 shrink-0 animate-spin" style={{ color: "#a78bfa" }} />
-              <span className="flex-1" style={{ color: "var(--text-primary)" }}>
-                Aplicando mudanças — reiniciando o gateway do OpenClaw…
-              </span>
-            </>
-          ) : restartResult?.success ? (
-            <>
-              <Zap className="w-4 h-4 mt-0.5 shrink-0" style={{ color: "#34d399" }} />
-              <span className="flex-1" style={{ color: "#34d399" }}>
-                Mudanças aplicadas — gateway reiniciado em {(restartResult.durationMs / 1000).toFixed(1)}s
-              </span>
-              <button
-                onClick={() => setRestartResult(null)}
-                className="p-0.5 rounded hover:bg-white/5"
-                aria-label="Fechar"
-              >
-                <X className="w-3.5 h-3.5" style={{ color: "var(--text-muted)" }} />
-              </button>
-            </>
-          ) : (
-            <>
-              <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" style={{ color: "#fca5a5" }} />
-              <div className="flex-1 min-w-0">
-                <div style={{ color: "#fca5a5" }}>
-                  Agente salvo, mas o restart do gateway falhou — o modelo antigo ainda está em uso na memória.
-                </div>
-                {restartResult?.error && (
-                  <div className="mt-0.5 text-xs" style={{ color: "var(--text-muted)" }}>
-                    {restartResult.error.slice(0, 200)}
-                  </div>
-                )}
-              </div>
-              <button
-                onClick={() => setRestartResult(null)}
-                className="p-0.5 rounded hover:bg-white/5"
-                aria-label="Fechar"
-              >
-                <X className="w-3.5 h-3.5" style={{ color: "var(--text-muted)" }} />
-              </button>
-            </>
-          )}
-        </div>
-      )}
+      <RestartStatusBanner
+        restarting={restarting}
+        result={restartResult}
+        successHint="mudanças aplicadas"
+        className="flex flex-col gap-2 p-3 rounded-xl text-sm border"
+      />
 
       {/* Delegation Warning Tip */}
       <div className="flex items-start gap-3 p-4 rounded-xl text-sm" style={{ backgroundColor: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.15)" }}>

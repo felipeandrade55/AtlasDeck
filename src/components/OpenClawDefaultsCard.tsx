@@ -14,9 +14,9 @@ import {
   Database,
   RefreshCw,
   Power,
-  Zap,
 } from "lucide-react";
 import { ModelPicker } from "./ModelPicker";
+import { RestartStatusBanner } from "./RestartStatusBanner";
 import {
   restartGatewayClient,
   getAutoRestartPref,
@@ -307,57 +307,12 @@ export function OpenClawDefaultsCard({ onSaved }: Props) {
         </div>
       </div>
 
-      {/* Restart status row (shown when restarting or after restart finishes) */}
-      {(restarting || restartResult) && (
-        <div
-          className="px-5 py-2.5 border-t flex items-start gap-2 text-xs"
-          style={{
-            borderColor: "var(--border)",
-            backgroundColor: restarting
-              ? "rgba(139, 92, 246, 0.08)"
-              : restartResult?.success
-                ? "rgba(16, 185, 129, 0.08)"
-                : "rgba(239, 68, 68, 0.08)",
-          }}
-        >
-          {restarting ? (
-            <>
-              <Loader2 className="w-3.5 h-3.5 mt-0.5 shrink-0 animate-spin" style={{ color: "#a78bfa" }} />
-              <span style={{ color: "var(--text-primary)" }}>
-                Reiniciando o gateway pra aplicar as mudanças…
-              </span>
-            </>
-          ) : restartResult?.success ? (
-            <>
-              <Zap className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: "#34d399" }} />
-              <span style={{ color: "#34d399" }}>
-                Gateway reiniciado em {(restartResult.durationMs / 1000).toFixed(1)}s · novo modelo já está ativo
-              </span>
-            </>
-          ) : (
-            <>
-              <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: "#fca5a5" }} />
-              <div className="min-w-0 flex-1">
-                <div style={{ color: "#fca5a5" }}>
-                  Falha ao reiniciar o gateway — defaults foram salvos no JSON, mas o gateway antigo ainda usa o modelo anterior.
-                </div>
-                {restartResult?.error && (
-                  <div className="mt-0.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
-                    {restartResult.error.slice(0, 200)}
-                  </div>
-                )}
-                <button
-                  onClick={triggerRestart}
-                  className="mt-1.5 text-[11px] underline"
-                  style={{ color: "#fca5a5" }}
-                >
-                  Tentar novamente
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-      )}
+      <RestartStatusBanner
+        restarting={restarting}
+        result={restartResult}
+        successHint="novo modelo já está ativo"
+        onRetry={triggerRestart}
+      />
 
       {/* Footer */}
       <div
