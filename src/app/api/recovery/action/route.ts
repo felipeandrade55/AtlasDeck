@@ -82,6 +82,41 @@ const ACTIONS: Record<string, ActionDef> = {
       return { success: true, output: lines.join('\n') };
     },
   },
+  'gateway-diagnose': {
+    description: 'Diagnóstico completo: TODOS processos OpenClaw + status + help + doctor',
+    severity: 'safe',
+    run: async () => {
+      const sections: string[] = [];
+
+      sections.push('═══ 1. Processos OpenClaw (pgrep) ═══');
+      const r1 = await execSafe(`pgrep -af openclaw 2>/dev/null || echo '(nenhum match)'`, 5000);
+      sections.push(r1.output);
+
+      sections.push('\n═══ 2. ps -ef (filtrado) ═══');
+      const r2 = await execSafe(
+        `ps -eo pid,ppid,etime,cmd | grep -iE 'openclaw|node.*claw|/claw' | grep -v grep | head -20 || echo '(nenhum)'`,
+        5000,
+      );
+      sections.push(r2.output);
+
+      sections.push('\n═══ 3. openclaw --help (subcomandos disponíveis) ═══');
+      const r3 = await execSafe(`timeout 5s openclaw --help 2>&1 | head -40 || echo '(falhou)'`, 8000);
+      sections.push(r3.output);
+
+      sections.push('\n═══ 4. openclaw status ═══');
+      const r4 = await execSafe(`timeout 8s openclaw status 2>&1 || echo '(falhou ou não está rodando)'`, 10000);
+      sections.push(r4.output);
+
+      sections.push('\n═══ 5. Listening ports (gateway HTTP) ═══');
+      const r5 = await execSafe(
+        `ss -tlnp 2>/dev/null | grep -E ':(187[0-9][0-9]|808[0-9]|300[0-9])' | head -10 || netstat -tlnp 2>/dev/null | grep -E ':(187[0-9][0-9]|808[0-9]|300[0-9])' | head -10 || echo '(sem ss/netstat)'`,
+        5000,
+      );
+      sections.push(r5.output);
+
+      return { success: true, output: sections.join('\n') };
+    },
+  },
   'gateway-logs': {
     description: 'Últimas linhas de log do gateway (journalctl, PM2 ou arquivo)',
     severity: 'safe',
