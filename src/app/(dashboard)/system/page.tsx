@@ -288,6 +288,32 @@ export default function SystemMonitorPage() {
   };
 
   const handleFirewallAction = async (action: 'enable' | 'disable' | 'add' | 'delete' | 'lockdown', id?: string) => {
+    if (action === 'enable') {
+      // Detecta a porta SSH real para mostrar no diálogo (evita ativar e perder acesso)
+      let sshPorts: number[] = [22];
+      try {
+        const probe = await fetch('/api/system/firewall');
+        if (probe.ok) {
+          const data = await probe.json();
+          if (Array.isArray(data.sshPorts) && data.sshPorts.length > 0) sshPorts = data.sshPorts;
+        }
+      } catch {
+        // se a detecção falhar, segue com 22 e o usuário decide
+      }
+      const sshLines = sshPorts.map(p => `  • ${p}/tcp     → SSH (detectado)`).join('\n');
+      const ok = window.confirm(
+        'Ativar firewall (UFW)?\n\n' +
+        'Antes do enable, serão liberadas as portas essenciais para você NÃO perder acesso:\n' +
+        sshLines + '\n' +
+        '  • 80/tcp     → HTTP\n' +
+        '  • 443/tcp    → HTTPS\n' +
+        '  • 41641/udp  → Tailscale (conexão direta)\n' +
+        '  • tailscale0 → interface VPN\n\n' +
+        'Saída de tráfego permanece livre (APIs OpenAI/Claude/etc. continuam funcionando).\n\n' +
+        'Qualquer outra porta ficará BLOQUEADA. Confirmar?'
+      );
+      if (!ok) return;
+    }
     setActionLoading(prev => ({ ...prev, firewall: true }));
     try {
       let res;
