@@ -156,6 +156,99 @@ export interface RestartResult {
   output: string;
 }
 
+/**
+ * Standalone start action — used by the `gateway-start` recovery action so the
+ * user can explicitly bootstrap without first triggering a restart cycle.
+ * Skips the start attempt if a gateway is already alive (use restart for that).
+ */
+export async function startGateway(): Promise<RestartResult> {
+  const log: string[] = [];
+
+  // First check: anything alive? Don't double-start
+  const existing = await findGatewayPids();
+  if (existing.length > 0) {
+    log.push(`✓ Gateway já está rodando (PIDs ${existing.join(", ")})`);
+    log.push("Para forçar reinício, use o botão 'Reiniciar Gateway'.");
+    return { success: true, runtime: "process", output: log.join("\n") };
+  }
+
+  // systemd takes precedence if available
+  if (await hasSystemdUnit()) {
+    log.push("→ systemd unit detectada — usando `systemctl start openclaw-gateway`");
+    const r = await safeExec("systemctl start openclaw-gateway 2>&1", 15000);
+    if (r.ok) {
+      const check = await safeExec("systemctl is-active openclaw-gateway 2>&1 || echo unknown", 3000);
+      const state = check.stdout.trim();
+      log.push(`systemctl start: ok · is-active=${state}`);
+      return { success: state === "active", runtime: "systemd", output: log.join("\n") };
+    }
+    log.push(`systemctl start falhou: ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
+    log.push("Tentando bootstrap via CLI…");
+  }
+
+  log.push("→ Bootstrap via `openclaw daemon start` detached");
+  const boot = await tryStartDaemon(log);
+  return {
+    success: boot.success,
+    runtime: boot.success ? "process" : "unknown",
+    output: log.join("\n"),
+  };
+}
+
+/**
+ * Last-resort bootstrap: spawn `openclaw daemon start` detached when nothing
+ * is running. Tries multiple command variants since OpenClaw's start command
+ * differs between releases. Pushes progress into the shared log array so the
+ * caller's output stays coherent.
+ */
+async function tryStartDaemon(log: string[]): Promise<{ success: boolean }> {
+  // Confirm openclaw binary exists
+  const whichRes = await safeExec("command -v openclaw 2>/dev/null || true", 2000);
+  const bin = whichRes.stdout.trim();
+  if (!bin) {
+    log.push("  ✗ Binário `openclaw` não está no PATH");
+    return { success: false };
+  }
+  log.push(`  Binário: ${bin}`);
+
+  // Variants to try, in order of likelihood
+  const variants: Array<{ args: string[]; label: string }> = [
+    { args: ["daemon", "start"], label: "openclaw daemon start" },
+    { args: ["gateway", "start"], label: "openclaw gateway start" },
+    { args: ["start"], label: "openclaw start" },
+  ];
+
+  for (const v of variants) {
+    log.push(`  ▸ Tentando: ${v.label}`);
+    try {
+      const child = spawn(bin, v.args, {
+        cwd: OPENCLAW_DIR,
+        detached: true,
+        stdio: "ignore",
+        env: process.env,
+      });
+      child.unref();
+      log.push(`    ✓ Spawn ok (PID ${child.pid ?? "?"})`);
+    } catch (e) {
+      log.push(`    ✗ Spawn falhou: ${(e as Error).message}`);
+      continue;
+    }
+
+    // Wait up to 5s for the gateway to appear
+    for (let i = 0; i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      const alive = await findGatewayPids();
+      if (alive.length > 0) {
+        log.push(`    ✓ Gateway online (PIDs ${alive.join(", ")}) em ${(i + 1) * 500}ms`);
+        return { success: true };
+      }
+    }
+    log.push(`    ⚠ Spawn ok mas gateway não apareceu em 5s — tentando próxima variante`);
+  }
+
+  return { success: false };
+}
+
 export async function restartGateway(): Promise<RestartResult> {
   const log: string[] = [];
 
@@ -212,10 +305,15 @@ export async function restartGateway(): Promise<RestartResult> {
   const pids = await findGatewayPids();
   if (pids.length === 0) {
     log.push("✗ Nenhum processo gateway em execução");
-    log.push("Sugestões:");
-    log.push("  - Inicie manualmente: `openclaw daemon start`");
-    log.push("  - Ou rode o instalador: `bash scripts/install-openclaw-gateway.sh`");
-    log.push("  - Confirme o que o pgrep enxerga: `pgrep -af openclaw`");
+    log.push("→ Tentando bootstrap com `openclaw daemon start`…");
+    const boot = await tryStartDaemon(log);
+    if (boot.success) {
+      return { success: true, runtime: "process", output: log.join("\n") };
+    }
+    log.push("Sugestões manuais:");
+    log.push("  - SSH no servidor e rode: `openclaw daemon start`");
+    log.push("  - Confirme que `openclaw` está no PATH: `command -v openclaw`");
+    log.push("  - Veja o output do start: `openclaw daemon start 2>&1 | head -40`");
     return { success: false, runtime: "unknown", output: log.join("\n") };
   }
 

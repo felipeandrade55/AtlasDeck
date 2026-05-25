@@ -15,7 +15,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 
-import { gatewayLogs, restartGateway, detectGatewayRuntime } from '@/lib/gateway-control';
+import { gatewayLogs, restartGateway, startGateway, detectGatewayRuntime } from '@/lib/gateway-control';
 
 const execAsync = promisify(exec);
 
@@ -43,6 +43,18 @@ const ACTIONS: Record<string, ActionDef> = {
         success: r.success,
         output: `[runtime: ${r.runtime}]\n${r.output}`,
         error: r.success ? undefined : 'Falha ao reiniciar o gateway — veja o log acima',
+      };
+    },
+  },
+  'gateway-start': {
+    description: 'Inicia o gateway do OpenClaw quando ele está totalmente parado',
+    severity: 'caution',
+    run: async () => {
+      const r = await startGateway();
+      return {
+        success: r.success,
+        output: `[runtime: ${r.runtime}]\n${r.output}`,
+        error: r.success ? undefined : 'Não consegui iniciar o gateway — veja o log acima',
       };
     },
   },

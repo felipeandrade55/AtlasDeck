@@ -78,6 +78,27 @@ export default function AgentsPage() {
   const [restarting, setRestarting] = useState(false);
   const [restartResult, setRestartResult] = useState<ClientRestartResult | null>(null);
 
+  // Existing Telegram account IDs — surfaced as suggestions so the user picks
+  // an agent ID that matches a configured bot account (otherwise Telegram
+  // messages silently fail to route).
+  const [telegramAccountIds, setTelegramAccountIds] = useState<string[]>([]);
+
+  const fetchTelegramAccountIds = useCallback(async () => {
+    try {
+      const res = await fetch("/api/integrations/telegram?live=0", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      const ids = Array.isArray(data?.accounts)
+        ? (data.accounts as Array<{ id: string; hasToken: boolean }>)
+            .filter((a) => a.hasToken)
+            .map((a) => a.id)
+        : [];
+      setTelegramAccountIds(ids);
+    } catch {
+      // best effort — no warning needed
+    }
+  }, []);
+
   const fetchAgents = useCallback(async () => {
     try {
       const res = await fetch("/api/agents");
@@ -110,6 +131,7 @@ export default function AgentsPage() {
     setFormAllowAgents([]);
     setErrorMsg("");
     setShowModal(true);
+    void fetchTelegramAccountIds();
   };
 
   const handleOpenEdit = (agent: Agent) => {
@@ -721,6 +743,41 @@ export default function AgentsPage() {
                     className="w-full px-3 py-2 rounded-lg text-xs outline-none bg-zinc-900 border text-white"
                     style={{ borderColor: "var(--border)" }}
                   />
+                  {!editingAgent && telegramAccountIds.length > 0 && (() => {
+                    const orphans = telegramAccountIds.filter(
+                      (id) => !agents.some((a) => a.id === id),
+                    );
+                    if (orphans.length === 0) return null;
+                    const mismatch = formId.trim() && !orphans.includes(formId.trim());
+                    return (
+                      <div
+                        className="mt-1.5 text-[10px] px-2 py-1.5 rounded leading-relaxed"
+                        style={{
+                          backgroundColor: mismatch ? "rgba(234,179,8,0.1)" : "rgba(59,130,246,0.1)",
+                          color: mismatch ? "#fde68a" : "#93c5fd",
+                          border: `1px solid ${mismatch ? "rgba(234,179,8,0.3)" : "rgba(59,130,246,0.3)"}`,
+                        }}
+                      >
+                        {mismatch ? "⚠ " : "💡 "}
+                        Conta{orphans.length > 1 ? "s" : ""} Telegram sem agente{orphans.length > 1 ? "s" : ""}: {" "}
+                        {orphans.map((id, i) => (
+                          <span key={id}>
+                            <button
+                              type="button"
+                              onClick={() => setFormId(id)}
+                              className="font-mono font-bold underline cursor-pointer hover:opacity-80"
+                            >
+                              {id}
+                            </button>
+                            {i < orphans.length - 1 ? ", " : ""}
+                          </span>
+                        ))}
+                        {mismatch
+                          ? ` — clique pra usar (assim o bot @${orphans[0]} vai rotear pra este agente).`
+                          : " — use uma dessas IDs pra que o bot do Telegram saiba pra onde mandar mensagens."}
+                      </div>
+                    );
+                  })()}
                 </label>
 
                 <label className="block space-y-1">
