@@ -12,7 +12,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { resolveOpenClawAgentsConfigPath } from "@/lib/openclaw-config";
-import { getActivities } from "@/lib/activities-db";
+import { getActivities, logActivity } from "@/lib/activities-db";
+import {
+  getTelegramAccountLocal,
+  setTelegramAccountLocal,
+  deleteTelegramAccountLocal,
+  migrateTelegramAccountsFromConfig,
+} from "@/lib/telegram-accounts-local";
 
 export const dynamic = "force-dynamic";
 
@@ -123,6 +129,25 @@ export async function GET(req: NextRequest) {
     const revealToken = url.searchParams.get("revealToken") === "1";
 
     const { path: configPath, isFallback, raw } = readConfig();
+
+    // One-shot migration: if any account has fields OpenClaw rejects (currently
+    // `chatId`), move them to AtlasDeck-local storage and rewrite openclaw.json.
+    // Same pattern as the agents `ui` migration — OpenClaw 2026.5.12+ does
+    // strict schema validation and refuses to boot otherwise.
+    if (migrateTelegramAccountsFromConfig(raw)) {
+      try {
+        writeConfig(raw, configPath);
+        logActivity(
+          "config",
+          "Migração: chatId movido de channels.telegram.accounts para storage local",
+          "success",
+          { metadata: { configPath } },
+        );
+      } catch (e) {
+        console.error("Failed to persist telegram accounts migration:", e);
+      }
+    }
+
     const tg: TelegramChannelConfig = (raw.channels?.telegram as TelegramChannelConfig | undefined) || {};
     const accountsRaw = tg.accounts || {};
 
@@ -177,12 +202,16 @@ export async function GET(req: NextRequest) {
         diagnostics = { bot, webhook, updates };
       }
 
+      // chatId lives in AtlasDeck-local storage now (not in openclaw.json
+      // because OpenClaw's strict schema rejects unknown fields)
+      const localChatId = getTelegramAccountLocal(id).chatId;
+      const legacyChatId = typeof acct.chatId === "string" && acct.chatId.trim() ? acct.chatId.trim() : null;
       accounts.push({
         id,
         hasToken,
         tokenMasked: hasToken ? maskToken(token) : "",
         token: hasToken && revealToken ? token : null,
-        chatId: typeof acct.chatId === "string" && acct.chatId.trim() ? acct.chatId.trim() : null,
+        chatId: localChatId || legacyChatId,
         dmPolicy: (acct.dmPolicy as DmPolicy) ?? null,
         diagnostics,
       });
@@ -294,9 +323,13 @@ export async function PUT(req: NextRequest) {
           }
           cur.botToken = t;
         }
+        // chatId goes to AtlasDeck-local storage (OpenClaw rejects unknown
+        // fields in account schema). Also strip any stale chatId from the
+        // current openclaw.json account to keep the file valid.
         if (typeof patch.chatId === "string") {
-          cur.chatId = patch.chatId.trim();
+          setTelegramAccountLocal(cleanId, { chatId: patch.chatId });
         }
+        if ("chatId" in cur) delete cur.chatId;
         if (typeof patch.dmPolicy === "string" && patch.dmPolicy) {
           cur.dmPolicy = patch.dmPolicy;
         }
@@ -307,6 +340,7 @@ export async function PUT(req: NextRequest) {
     if (body.deleteAccountIds && Array.isArray(body.deleteAccountIds)) {
       for (const id of body.deleteAccountIds) {
         if (typeof id === "string" && tg.accounts[id]) delete tg.accounts[id];
+        if (typeof id === "string") deleteTelegramAccountLocal(id);
       }
     }
 
@@ -360,7 +394,11 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === "test") {
-      const chatId = (body.chatId || acct?.chatId || "").trim();
+      // chatId precedence: explicit body > AtlasDeck-local store > legacy
+      // openclaw.json (for backward compat with non-migrated configs)
+      const localChatId = getTelegramAccountLocal(accountId).chatId;
+      const legacyChatId = typeof acct?.chatId === "string" ? acct.chatId : "";
+      const chatId = (body.chatId || localChatId || legacyChatId || "").trim();
       if (!chatId) {
         return NextResponse.json(
           { error: `chatId não fornecido nem persistido para "${accountId}"` },
