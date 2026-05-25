@@ -238,9 +238,10 @@ export default function DashboardPage() {
                   <div
                     className="text-xs mt-1 flex items-center gap-1"
                     style={{ color: '#0088cc' }}
+                    title="Token Telegram configurado — não significa que o daemon está rodando"
                   >
                     <MessageSquare className="w-3 h-3" />
-                    Conectado
+                    Telegram conectado
                   </div>
                 )}
               </div>

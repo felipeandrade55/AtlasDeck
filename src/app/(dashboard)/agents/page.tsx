@@ -454,8 +454,14 @@ export default function AgentsPage() {
                     </h3>
                     <div className="flex items-center gap-1.5 mt-0.5">
                       <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: agent.status === "online" ? "#4ade80" : "#6b7280" }} />
-                      <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: agent.status === "online" ? "#4ade80" : "var(--text-muted)" }}>
-                        {agent.status}
+                      <span
+                        className="text-[10px] font-semibold uppercase tracking-wider"
+                        style={{ color: agent.status === "online" ? "#4ade80" : "var(--text-muted)" }}
+                        title={agent.status === "online"
+                          ? "Escreveu na memória há menos de 5min"
+                          : "Sem escrita na memória nos últimos 5min — não confirma estado do daemon. Para checar o processo, use Resgate → 'Diagnosticar Tudo'."}
+                      >
+                        {agent.status === "online" ? "ativo" : "inativo"}
                       </span>
                     </div>
                   </div>
@@ -549,7 +555,14 @@ export default function AgentsPage() {
                 <h2 className="font-bold text-lg text-white">{selectedAgent.name}</h2>
                 <div className="flex items-center gap-1">
                   <Circle className="w-2 h-2" style={{ fill: selectedAgent.status === "online" ? "#4ade80" : "#6b7280", color: selectedAgent.status === "online" ? "#4ade80" : "#6b7280" }} />
-                  <span className="text-xs text-zinc-400 capitalize">{selectedAgent.status}</span>
+                  <span
+                    className="text-xs text-zinc-400 capitalize"
+                    title={selectedAgent.status === "online"
+                      ? "Escreveu na memória há menos de 5min"
+                      : "Sem escrita na memória recente — não confirma estado do daemon"}
+                  >
+                    {selectedAgent.status === "online" ? "ativo (memória recente)" : "inativo (sem memória recente)"}
+                  </span>
                 </div>
               </div>
             </div>

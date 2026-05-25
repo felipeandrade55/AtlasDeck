@@ -4,8 +4,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle,
+  ChevronDown,
+  ChevronUp,
+  Copy,
+  Check,
   Download,
   RefreshCw,
+  Terminal,
   XCircle,
 } from "lucide-react";
 import type {
@@ -1014,6 +1019,7 @@ export function UpdatePanel() {
                 >
                   Fechar
                 </button>
+                <LogTools logs={logs} />
               </div>
             </div>
           </div>
@@ -1045,37 +1051,7 @@ export function UpdatePanel() {
                   Tentar Novamente
                 </button>
 
-                {logs.length > 0 && (
-                  <div
-                    className="rounded-lg p-4 h-64 overflow-y-auto w-full"
-                    style={{ backgroundColor: "#0d1117", border: "1px solid #30363d" }}
-                  >
-                    <div
-                      style={{
-                        fontFamily: "var(--font-mono)",
-                        fontSize: "12px",
-                        color: "#e6edf3",
-                        lineHeight: 1.5,
-                      }}
-                    >
-                      {logs.map((log, i) => (
-                        <div key={i} className="whitespace-pre-wrap break-words flex gap-3">
-                          <span
-                            style={{
-                              color: "#484f58",
-                              userSelect: "none",
-                              minWidth: "60px",
-                            }}
-                          >
-                            {log.timestamp.split("T")[1]?.slice(0, 8) || ""}
-                          </span>
-                          <span style={{ wordBreak: "break-all" }}>{log.line}</span>
-                        </div>
-                      ))}
-                      <div ref={logsEndRef} />
-                    </div>
-                  </div>
-                )}
+                <LogTools logs={logs} />
               </div>
             </div>
           </div>
@@ -1150,6 +1126,119 @@ export function UpdatePanel() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Log toolbar for the post-update screens (complete + error). The full log
+ * was previously hidden on success, leaving no way to grab the output if
+ * something looked off. Now there's always a "Copiar log" button plus a
+ * collapsible "Ver log completo" panel.
+ */
+function LogTools({
+  logs,
+}: {
+  logs: { line: string; timestamp: string }[];
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const fullText = logs
+    .map((l) => {
+      const t = l.timestamp.split("T")[1]?.slice(0, 8) || "";
+      return `[${t}] ${l.line}`;
+    })
+    .join("\n");
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(fullText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Fallback for non-secure contexts
+      const ta = document.createElement("textarea");
+      ta.value = fullText;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand("copy");
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      } catch {}
+      document.body.removeChild(ta);
+    }
+  };
+
+  if (logs.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="mt-3">
+      <div className="flex items-center gap-2 flex-wrap">
+        <button
+          type="button"
+          onClick={copy}
+          className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg transition-colors"
+          style={{
+            backgroundColor: copied ? "rgba(16, 185, 129, 0.15)" : "rgba(255,255,255,0.05)",
+            color: copied ? "#34d399" : "var(--text-secondary)",
+            border: `1px solid ${copied ? "rgba(16, 185, 129, 0.4)" : "var(--border)"}`,
+          }}
+        >
+          {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+          {copied ? "Copiado!" : `Copiar log (${logs.length} linhas)`}
+        </button>
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg"
+          style={{
+            backgroundColor: "rgba(255,255,255,0.05)",
+            color: "var(--text-secondary)",
+            border: "1px solid var(--border)",
+          }}
+        >
+          <Terminal className="w-3.5 h-3.5" />
+          {expanded ? "Esconder log" : "Ver log completo"}
+          {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+        </button>
+      </div>
+
+      {expanded && (
+        <div
+          className="rounded-lg p-3 mt-2 h-72 overflow-y-auto w-full"
+          style={{ backgroundColor: "#0d1117", border: "1px solid #30363d" }}
+        >
+          <div
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: "11px",
+              color: "#e6edf3",
+              lineHeight: 1.5,
+            }}
+          >
+            {logs.map((log, i) => (
+              <div key={i} className="whitespace-pre-wrap break-words flex gap-3">
+                <span
+                  style={{
+                    color: "#484f58",
+                    userSelect: "none",
+                    minWidth: "60px",
+                  }}
+                >
+                  {log.timestamp.split("T")[1]?.slice(0, 8) || ""}
+                </span>
+                <span style={{ wordBreak: "break-all" }}>{log.line}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
