@@ -3,35 +3,36 @@ import path from "path";
 
 const FALLBACK_AGENTS_CONFIG_PATH = path.join(process.cwd(), "data", "openclaw-fallback.json");
 
+// NOTE: agents in this default seed do NOT carry a `ui` field. OpenClaw 2026.5.12+
+// rejects unknown keys in agents.list[] with "Unrecognized key: ui", which blocks
+// the daemon from booting. Emoji + color live in AtlasDeck-local storage
+// (data/agents-ui.json) — see src/lib/agents-ui-local.ts.
 export const DEFAULT_AGENTS_CONFIG = {
   agents: {
     defaults: {
       model: {
-        primary: "openai/gpt-5.4-codex",
+        primary: "openai/gpt-5.5-codex",
       },
     },
     list: [
       {
         id: "main",
         name: "Mission Control",
-        ui: { emoji: "🤖", color: "#ff6b35" },
-        model: { primary: "openai/gpt-5.4" },
+        model: { primary: "openai/gpt-5.5-codex" },
         workspace: "./workspace/mission-control",
         subagents: { allowAgents: ["devops", "coder"] },
       },
       {
         id: "devops",
         name: "DevOps Sentinel",
-        ui: { emoji: "🛡️", color: "#10b981" },
-        model: { primary: "openai/gpt-5.4-mini" },
+        model: { primary: "openai/gpt-5.5-mini" },
         workspace: "./workspace/devops",
         subagents: { allowAgents: [] },
       },
       {
         id: "coder",
         name: "Code Architect",
-        ui: { emoji: "💻", color: "#3b82f6" },
-        model: { primary: "openai/gpt-5.4-codex" },
+        model: { primary: "openai/gpt-5.5-codex" },
         workspace: "./workspace/coder",
         subagents: { allowAgents: [] },
       },

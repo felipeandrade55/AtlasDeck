@@ -3,6 +3,12 @@ import { readFileSync, writeFileSync, statSync } from "fs";
 import { join } from "path";
 import { resolveOpenClawAgentsConfigPath } from "@/lib/openclaw-config";
 import { logActivity } from "@/lib/activities-db";
+import {
+  getAgentUi,
+  setAgentUi,
+  deleteAgentUi,
+  migrateAgentUiFromConfig,
+} from "@/lib/agents-ui-local";
 
 export const dynamic = "force-dynamic";
 
@@ -54,8 +60,13 @@ const DEFAULT_AGENT_CONFIG: Record<string, { emoji: string; color: string; name?
 };
 
 function getAgentDisplayInfo(agentId: string, agentConfig: any): { emoji: string; color: string; name: string } {
-  const configEmoji = agentConfig?.ui?.emoji;
-  const configColor = agentConfig?.ui?.color;
+  // Read from AtlasDeck-local storage first (where emoji/color now live so
+  // they don't pollute openclaw.json's strict schema). Fall back to the
+  // legacy `ui` field on the agent (for configs not yet migrated), then to
+  // hardcoded defaults.
+  const localUi = getAgentUi(agentId);
+  const configEmoji = localUi.emoji || agentConfig?.ui?.emoji;
+  const configColor = localUi.color || agentConfig?.ui?.color;
   const configName = agentConfig?.name;
   const defaults = DEFAULT_AGENT_CONFIG[agentId];
 
@@ -70,6 +81,24 @@ export async function GET() {
   try {
     const { path: configPath } = resolveOpenClawAgentsConfigPath();
     const config = JSON.parse(readFileSync(configPath, "utf-8"));
+
+    // One-shot migration: if any agent in the file has a `ui` key, move it
+    // to AtlasDeck-local storage and remove from openclaw.json. Older code
+    // wrote `ui` into the agent object, but OpenClaw 2026.5.12+ rejects it
+    // ("Unrecognized key: ui"), which prevents the daemon from starting.
+    if (migrateAgentUiFromConfig(config)) {
+      try {
+        writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+        logActivity(
+          "config",
+          "Migração: campo `ui` movido de openclaw.json para storage local",
+          "success",
+          { metadata: { configPath } },
+        );
+      } catch (e) {
+        console.error("Failed to persist agents ui migration:", e);
+      }
+    }
 
     if (!config.agents?.list?.length) {
       return NextResponse.json({ agents: [], isDemo: true });
@@ -169,16 +198,19 @@ export async function POST(request: Request) {
     const newAgent = {
       id: body.id,
       name: body.name,
-      ui: {
-        emoji: body.emoji || "🤖",
-        color: body.color || "#666666"
-      },
       model: newAgentModel,
       workspace: body.workspace || `./workspace/${body.id}`,
       subagents: {
         allowAgents: body.allowAgents || []
       }
     };
+
+    // emoji/color go to AtlasDeck-local storage, NEVER into openclaw.json
+    // (OpenClaw rejects unknown keys in agents.list entries)
+    setAgentUi(body.id, {
+      emoji: body.emoji || "🤖",
+      color: body.color || "#666666",
+    });
 
     config.agents.list.push(newAgent);
 
@@ -236,9 +268,13 @@ export async function PUT(request: Request) {
     // Update Agent fields
     const agent = config.agents.list[index];
     if (body.name) agent.name = body.name;
-    if (!agent.ui) agent.ui = {};
-    if (body.emoji) agent.ui.emoji = body.emoji;
-    if (body.color) agent.ui.color = body.color;
+    // emoji/color persisted in AtlasDeck-local storage (out of openclaw.json)
+    if (body.emoji || body.color) {
+      setAgentUi(body.id, { emoji: body.emoji, color: body.color });
+    }
+    // Defensive: if a legacy `ui` key crept in from old code or hand edits,
+    // strip it so OpenClaw doesn't reject the config on next reload.
+    if ("ui" in agent) delete agent.ui;
     if (!agent.model) agent.model = {};
     if (body.model) agent.model.primary = body.model;
     // fallback handling: preserve original shape (`fallback` string or `fallbacks` array)
@@ -304,6 +340,9 @@ export async function DELETE(request: Request) {
 
     const existingAgent = config.agents.list.find((a: any) => a.id === id);
     config.agents.list = config.agents.list.filter((a: any) => a.id !== id);
+
+    // Clean AtlasDeck-local UI storage too (emoji/color)
+    deleteAgentUi(id);
 
     // Clean telegram config
     if (config.channels?.telegram?.accounts?.[id]) {
