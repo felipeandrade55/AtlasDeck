@@ -22,8 +22,8 @@ export interface KnownModel {
 
 export const KNOWN_MODELS: KnownModel[] = [
   // OpenAI — current
-  { id: "openai/gpt-5.5", label: "GPT-5.5 (via Codex OAuth)", provider: "openai", tier: "primary", notes: "Modelo padrão de quem fez `openclaw models auth login --provider openai-codex`" },
-  { id: "openai/gpt-5.5-codex", label: "GPT-5.5 Codex (API)", provider: "openai", tier: "primary", notes: "Requer API key OpenAI direta (não funciona via Codex OAuth)" },
+  { id: "openai/gpt-5.5", label: "GPT-5.5 (via Codex OAuth) — RECOMENDADO", provider: "openai", tier: "primary", notes: "Único nome reconhecido pelo OpenClaw quando autenticado via `openclaw models auth login --provider openai-codex`" },
+  { id: "openai/gpt-5.5-codex", label: "GPT-5.5 Codex (API key only)", provider: "openai", tier: "legacy", notes: "OpenClaw 2026.5.12 NÃO reconhece esse id via OAuth — só funciona se você tiver API key direta da OpenAI configurada" },
   { id: "openai/gpt-5.5-mini", label: "GPT-5.5 Mini", provider: "openai", tier: "fast", notes: "Mais barato, bom pra fallback" },
   { id: "openai/gpt-5.5-nano", label: "GPT-5.5 Nano", provider: "openai", tier: "fast" },
 

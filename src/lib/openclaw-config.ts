@@ -11,14 +11,14 @@ export const DEFAULT_AGENTS_CONFIG = {
   agents: {
     defaults: {
       model: {
-        primary: "openai/gpt-5.5-codex",
+        primary: "openai/gpt-5.5",
       },
     },
     list: [
       {
         id: "main",
         name: "Mission Control",
-        model: { primary: "openai/gpt-5.5-codex" },
+        model: { primary: "openai/gpt-5.5" },
         workspace: "./workspace/mission-control",
         subagents: { allowAgents: ["devops", "coder"] },
       },
@@ -32,7 +32,7 @@ export const DEFAULT_AGENTS_CONFIG = {
       {
         id: "coder",
         name: "Code Architect",
-        model: { primary: "openai/gpt-5.5-codex" },
+        model: { primary: "openai/gpt-5.5" },
         workspace: "./workspace/coder",
         subagents: { allowAgents: [] },
       },
