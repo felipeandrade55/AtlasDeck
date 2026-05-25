@@ -2,6 +2,7 @@
 
 import { Dock, TopBar, StatusBar } from "@/components/AtlasDeck";
 import { ToastProvider } from "@/components/Toast";
+import { SetupGuard } from "@/components/setup/SetupGuard";
 
 export default function DashboardLayout({
   children,
@@ -10,6 +11,7 @@ export default function DashboardLayout({
 }) {
   return (
     <ToastProvider>
+      <SetupGuard />
       <div className="atlasdeck-shell" style={{ minHeight: "100vh" }}>
         <Dock />
         <TopBar />

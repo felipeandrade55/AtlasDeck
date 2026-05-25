@@ -1,12 +1,19 @@
 "use client";
 
 /**
- * Welcome / onboarding tour.
+ * Welcome page — two modes.
  *
- * Linked from the bell notification that fires on first boot. Stays
- * available at /welcome forever so users can revisit. No state of its
- * own — pure documentation rendered with the existing design tokens.
+ *   1. setup_completed_at is null  → render the SetupStepper wizard
+ *      (install OpenClaw, configure model, run interview, pair Telegram)
+ *   2. setup is done               → render the original onboarding guide
+ *
+ * The dashboard layout's SetupGuard redirects here when setup is pending,
+ * so first-time users see the wizard automatically. Once they finish, the
+ * guide stays accessible at /welcome forever.
  */
+import { useEffect, useState } from "react";
+import { Loader2 } from "lucide-react";
+import { SetupStepper, type SetupStatus } from "@/components/setup/SetupStepper";
 import Link from "next/link";
 import {
   Activity,
@@ -147,6 +154,54 @@ const QUICK_START_STEPS = [
 ];
 
 export default function WelcomePage() {
+  const [status, setStatus] = useState<SetupStatus | null>(null);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/setup/status", { cache: "no-store" });
+        if (!cancelled && res.ok) {
+          const json = (await res.json()) as SetupStatus;
+          setStatus(json);
+        }
+      } catch {
+        // network blip — fall through to loaded state with null status
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!loaded) {
+    return (
+      <div
+        style={{
+          padding: "80px 24px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 10,
+          color: "var(--text-muted)",
+        }}
+      >
+        <Loader2 size={16} className="spin" /> Carregando…
+      </div>
+    );
+  }
+
+  if (!status?.setup.completedAt) {
+    return <SetupStepper initialStatus={status} />;
+  }
+
+  return <WelcomeGuide />;
+}
+
+function WelcomeGuide() {
   return (
     <div style={{ padding: "16px 24px 60px", maxWidth: 1080, marginInline: "auto" }}>
       {/* Hero */}

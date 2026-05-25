@@ -36,6 +36,7 @@ const TOPICS = [
   "preferências de comunicação (formal/informal, idioma do agente, tamanho de resposta)",
   "personalidade e tom do agente (nome do agente, vibe, valores, limites)",
   "projeto principal ou foco atual (o que está construindo, prazos, parceiros)",
+  "rotina (horário preferido pro briefing matinal, faixas de foco/reuniões — opcional)",
 ];
 
 export function buildInterviewerPrompt(history: WizardTurn[]): string {
@@ -53,7 +54,7 @@ ${TOPICS.map((t, i) => `${i + 1}. ${t}`).join("\n")}
 - Comece pelos tópicos mais importantes e pessoais
 - Se a resposta anterior já cobriu vários tópicos, pule pra um ainda não coberto
 - Use linguagem informal e calorosa, mas objetiva
-- Quando todos os 5 tópicos tiverem informação suficiente (ou após no máximo 8 perguntas), marque complete=true
+- Quando os tópicos essenciais tiverem informação suficiente (ou após no máximo 8 perguntas), marque complete=true. O tópico de rotina é opcional — se sobrar espaço, pergunte; senão pule.
 - Não invente respostas — só processe o que o usuário disse
 - NÃO repita perguntas já feitas
 

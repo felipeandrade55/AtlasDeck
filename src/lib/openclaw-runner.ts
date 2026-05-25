@@ -18,6 +18,7 @@ import { readOpenClawConfig } from "@/lib/openclaw-config";
 import { streamChat as ollamaStreamChat, getOllamaStatus } from "@/lib/ollama-client";
 import { getSettings } from "@/lib/memory-db";
 import { isWsEnabled, runOpenClawWsChat } from "@/lib/openclaw-ws-client";
+import { buildProviderEnv } from "@/lib/provider-keys";
 
 export interface RunnerInput {
   agentId: string;
@@ -528,6 +529,7 @@ export async function* runOpenClawChat(input: RunnerInput): AsyncGenerator<Runne
     const args = strategy.args(input);
     const env = {
       ...process.env,
+      ...buildProviderEnv(),
       OPENCLAW_DIR: config.openclawDir,
       OPENCLAW_WORKSPACE: input.workspace || config.openclawWorkspace,
     };

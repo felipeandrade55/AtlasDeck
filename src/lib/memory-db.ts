@@ -755,11 +755,15 @@ export interface MemorySettings {
   porcupine_keyword: string;
   wake_engine: WakeEngine;
   openwakeword_threshold: number;
+  setup_step: SetupStep;
+  setup_completed_at: string | null;
 }
 
 export type WakeEngine = "openwakeword" | "porcupine";
 
 export type TtsProvider = "elevenlabs" | "fishaudio";
+
+export type SetupStep = "install" | "ai" | "interview" | "telegram" | "done";
 
 const DEFAULT_SETTINGS: MemorySettings = {
   embedding_provider: "xenova",
@@ -789,7 +793,22 @@ const DEFAULT_SETTINGS: MemorySettings = {
   porcupine_keyword: "Jarvis",
   wake_engine: "openwakeword",
   openwakeword_threshold: 0.5,
+  setup_step: "install",
+  setup_completed_at: null,
 };
+
+function parseSetupStep(value: string | undefined): SetupStep {
+  if (
+    value === "install" ||
+    value === "ai" ||
+    value === "interview" ||
+    value === "telegram" ||
+    value === "done"
+  ) {
+    return value;
+  }
+  return DEFAULT_SETTINGS.setup_step;
+}
 
 function parseNullableFloat(value: string | undefined): number | null {
   if (value === undefined || value === "" || value === "null") return null;
@@ -864,6 +883,8 @@ export function getSettings(): MemorySettings {
       map.get("openwakeword_threshold"),
       DEFAULT_SETTINGS.openwakeword_threshold,
     ),
+    setup_step: parseSetupStep(map.get("setup_step")),
+    setup_completed_at: parseNullableString(map.get("setup_completed_at")),
   };
 }
 

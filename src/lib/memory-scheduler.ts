@@ -16,7 +16,6 @@ import {
   setSettings,
   archiveLowImportance,
   reviewProbationExpired,
-  getStats,
 } from "@/lib/memory-db";
 import { extractRecentSessions } from "@/lib/memory-extractor";
 import { injectAllWorkspaces } from "@/lib/memory-injector";
@@ -113,33 +112,33 @@ async function maybeShowWelcomeNotification(): Promise<void> {
     const settings = getSettings();
     if (settings.welcome_notification_shown) return;
 
-    const stats = getStats();
-    // Show only on a truly fresh install (no memories yet). Avoids
-    // surprising notifications on existing instances that upgrade.
-    if (stats.total > 0) {
+    // If the user already finished the 1-click setup wizard there's no
+    // reason to nag them. Mark as shown so older installs that upgrade
+    // post-setup skip the notification quietly.
+    if (settings.setup_completed_at) {
       setSettings({ welcome_notification_shown: true });
       return;
     }
 
     const ollama = await getOllamaStatus().catch(() => null);
     const ollamaHint = !ollama || !ollama.installed
-      ? "Dica: ative Ollama para zero custo (instruções no guia)."
+      ? "Sem Ollama? Sem problema — o wizard também conecta um modelo cloud (Anthropic / OpenAI / Google) em 1 passo."
       : ollama.running
-      ? "Ollama detectado e rodando — pronto pra entrevista."
-      : "Ollama instalado mas parado — confira o status no guia.";
+      ? "Ollama detectado e rodando — pode escolher rodar tudo local, gratuito."
+      : "Ollama instalado mas parado — o wizard ajuda a religar.";
 
     const message = [
-      "Abra o guia completo para conhecer o sistema menu por menu, fazer o setup da memória adaptativa e personalizar a identidade do seu agente.",
+      "Abra /welcome para fazer a instalação em 5 passos: OpenClaw → modelo de IA → personalidade → Telegram → pronto.",
       "",
       ollamaHint,
     ].join("\n");
 
     await addNotification(
-      "👋 Comece por aqui — guia de boas-vindas",
+      "👋 Vamos instalar seu AtlasDeck em 5 passos",
       message,
       "info",
       "/welcome",
-      { source: "memory-onboarding" },
+      { source: "setup-wizard" },
     );
 
     setSettings({ welcome_notification_shown: true });
