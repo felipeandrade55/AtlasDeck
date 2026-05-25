@@ -126,10 +126,68 @@ export function getWorkspaceStats(absolutePath: string): WorkspaceStats {
   };
 }
 
-/** Resolves an agent.workspace string to an absolute path under OPENCLAW_DIR. */
+/**
+ * Resolves an agent.workspace string to an absolute path. Defensive against
+ * malformed values like `.openclaw/workspace/foo` (without the leading `./`)
+ * which would otherwise get path.resolve'd into double-`.openclaw` paths
+ * like `/root/.openclaw/.openclaw/workspace/foo`.
+ *
+ * Accepted forms (all map to `${WORKSPACE_ROOT}/<folderName>` when they
+ * point inside the workspace tree):
+ *   ./workspace/foo               (canonical)
+ *   workspace/foo                  (sem ./)
+ *   .openclaw/workspace/foo        (typo comum — leading dot, no ./)
+ *   ~/.openclaw/workspace/foo      (some tools expand ~ before save)
+ *   /root/.openclaw/workspace/foo  (já absoluto)
+ *   foo                            (folder name nu — assume workspace/)
+ */
 export function resolveWorkspacePath(workspace: string): string {
-  if (path.isAbsolute(workspace)) return workspace;
-  return path.resolve(OPENCLAW_DIR, workspace);
+  if (!workspace) return WORKSPACE_ROOT;
+
+  let p = workspace.trim();
+
+  // Already absolute path? Return as-is (caller will validate it's under root)
+  if (path.isAbsolute(p)) return p;
+
+  // Strip leading `~/` or `./`
+  p = p.replace(/^~\/?/, "").replace(/^\.\/+/, "");
+
+  // If path contains `.openclaw/workspace/<x>`, pull just the folder name
+  // (handles typos like `.openclaw/workspace/main` and full expansions)
+  const mWith = p.match(/(?:^|\/)\.openclaw\/workspace\/([^/]+)/);
+  if (mWith) {
+    return path.join(WORKSPACE_ROOT, mWith[1]);
+  }
+
+  // `workspace/<x>` — anchor at WORKSPACE_ROOT explicitly
+  const mWs = p.match(/^workspace\/([^/]+)/);
+  if (mWs) {
+    return path.join(WORKSPACE_ROOT, mWs[1]);
+  }
+
+  // Bare folder name → assume it's a workspace folder
+  if (!p.includes("/")) {
+    return path.join(WORKSPACE_ROOT, p);
+  }
+
+  // Otherwise resolve relative to OPENCLAW_DIR (legacy behavior)
+  return path.resolve(OPENCLAW_DIR, p);
+}
+
+/**
+ * Inverse of resolveWorkspacePath: takes any form and returns the canonical
+ * `./workspace/<folderName>` string suitable for storing in agent.workspace.
+ * Used by /api/agents POST/PUT to normalize what gets written to openclaw.json,
+ * so we don't perpetuate malformed values like `.openclaw/workspace/main`.
+ */
+export function normalizeWorkspacePath(workspace: string): string {
+  const abs = resolveWorkspacePath(workspace);
+  if (!abs.startsWith(WORKSPACE_ROOT + path.sep) && abs !== WORKSPACE_ROOT) {
+    // Outside the workspace tree — keep whatever user gave (legacy escape hatch)
+    return workspace;
+  }
+  const rel = path.relative(WORKSPACE_ROOT, abs);
+  return rel ? `./workspace/${rel}` : "./workspace";
 }
 
 /**

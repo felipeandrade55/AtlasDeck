@@ -7,6 +7,9 @@ import {
   Calendar,
   Database,
   Download,
+  DownloadCloud,
+  Eye,
+  EyeOff,
   FolderOpen,
   KeySquare,
   Loader2,
@@ -84,6 +87,17 @@ export function WorkspaceImporter({ agentId, currentWorkspace, onImported }: Pro
   const [restarting, setRestarting] = useState(false);
   const [restartResult, setRestartResult] = useState<ClientRestartResult | null>(null);
   const [confirmingOverwrite, setConfirmingOverwrite] = useState<string | null>(null);
+  /**
+   * By default we hide folders that don't look like OpenClaw agent
+   * workspaces (no memory/skills/sessions/auth subdir). They're usually
+   * unrelated stuff like Python venvs, the AtlasDeck source itself
+   * (~/.openclaw/workspace/mission-control == /root/.openclaw/workspace
+   * /mission-control if AtlasDeck happens to be installed under there),
+   * dashboards, etc. Importing those would copy gigabytes of garbage.
+   */
+  const [showAll, setShowAll] = useState(false);
+  const [bulkImporting, setBulkImporting] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number; folder: string } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -105,17 +119,95 @@ export function WorkspaceImporter({ agentId, currentWorkspace, onImported }: Pro
   }, [load]);
 
   /**
-   * Surface only workspaces that:
-   *   - are NOT the current agent's workspace
-   *   - have at least one file
-   *   - are EITHER orphan (no owner) OR belong to a different agent
-   * Sort by size (most data first).
+   * Classify each candidate: those with memory/skills/sessions/auth folders
+   * are real agent workspaces and worth importing. Anything else is probably
+   * unrelated content (Python venvs, AtlasDeck source, web dashboards) that
+   * would bloat the agent workspace.
    */
-  const candidates = useMemo(() => {
+  const allCandidates = useMemo(() => {
     return workspaces
       .filter((w) => w.relativePath !== currentWorkspace && w.stats.totalFiles > 0)
-      .sort((a, b) => b.stats.totalBytes - a.stats.totalBytes);
+      .map((w) => ({
+        ...w,
+        looksLikeAgent:
+          w.stats.hasMemory || w.stats.hasSkills || w.stats.hasSessions || w.stats.hasAuth,
+      }))
+      .sort((a, b) => {
+        // agent-like first, then by size desc
+        if (a.looksLikeAgent !== b.looksLikeAgent) return a.looksLikeAgent ? -1 : 1;
+        return b.stats.totalBytes - a.stats.totalBytes;
+      });
   }, [workspaces, currentWorkspace]);
+
+  const agentLike = useMemo(() => allCandidates.filter((c) => c.looksLikeAgent), [allCandidates]);
+  const others = useMemo(() => allCandidates.filter((c) => !c.looksLikeAgent), [allCandidates]);
+  const candidates = showAll ? allCandidates : agentLike;
+
+  /**
+   * Bulk-import every visible candidate sequentially, skip-existing mode.
+   * Runs ONE restart at the end (instead of per-import) so the user doesn't
+   * wait for N restarts in a row.
+   */
+  const runBulkImport = async () => {
+    if (candidates.length === 0) return;
+    setBulkImporting(true);
+    setImportResult(null);
+    setRestartResult(null);
+    setError(null);
+    let totalCopied = 0;
+    let totalSkipped = 0;
+    let totalBytes = 0;
+    let totalErrors = 0;
+    const sources: string[] = [];
+    try {
+      for (let i = 0; i < candidates.length; i++) {
+        const w = candidates[i];
+        setBulkProgress({ current: i + 1, total: candidates.length, folder: w.folderName });
+        try {
+          const res = await fetch("/api/agents/workspaces/import", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              agentId,
+              sourceWorkspace: w.relativePath,
+              overwrite: false,
+            }),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            totalCopied += data.filesCopied || 0;
+            totalSkipped += data.filesSkipped || 0;
+            totalBytes += data.bytesCopied || 0;
+            totalErrors += Array.isArray(data.errors) ? data.errors.length : 0;
+            sources.push(w.folderName);
+          } else {
+            totalErrors += 1;
+          }
+        } catch {
+          totalErrors += 1;
+        }
+      }
+      setImportResult({
+        source: sources.length === 1 ? sources[0] : `${sources.length} workspaces`,
+        filesCopied: totalCopied,
+        filesSkipped: totalSkipped,
+        bytesCopied: totalBytes,
+        errorsCount: totalErrors,
+      });
+      // One restart at the end
+      if (getAutoRestartPref()) {
+        setRestarting(true);
+        const result = await restartGatewayClient();
+        setRestartResult(result);
+        setRestarting(false);
+      }
+      await load();
+      onImported?.();
+    } finally {
+      setBulkImporting(false);
+      setBulkProgress(null);
+    }
+  };
 
   const runImport = async (source: WorkspaceInfo, overwrite: boolean) => {
     setImporting(source.relativePath);
@@ -206,10 +298,84 @@ export function WorkspaceImporter({ agentId, currentWorkspace, onImported }: Pro
         </div>
       )}
 
-      {!loading && candidates.length === 0 && !error && (
+      {!loading && allCandidates.length === 0 && !error && (
         <p className="text-xs italic" style={{ color: "var(--text-muted)" }}>
           Nenhuma outra workspace com dados encontrada. Você está iniciando do zero.
         </p>
+      )}
+
+      {!loading && allCandidates.length > 0 && agentLike.length === 0 && !showAll && (
+        <div
+          className="flex items-start gap-2 p-2.5 rounded text-[11px] mb-2"
+          style={{
+            backgroundColor: "rgba(234, 179, 8, 0.08)",
+            color: "#fde68a",
+            border: "1px solid rgba(234, 179, 8, 0.25)",
+          }}
+        >
+          <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+          <div>
+            Achei {others.length} outra(s) pasta(s) em <code>~/.openclaw/workspace/</code>, mas{" "}
+            <b>nenhuma parece ser uma workspace de agente</b> (sem memory/skills/sessions/auth).
+            Provavelmente são venvs, fontes do dashboard ou pastas tmp — importar bloataria o
+            agente. Lembrando: o OpenClaw guarda memória real em{" "}
+            <code>~/.openclaw/agents/&lt;id&gt;/</code>, separado.
+            <button
+              type="button"
+              onClick={() => setShowAll(true)}
+              className="ml-2 underline"
+              style={{ color: "#fde68a" }}
+            >
+              Mostrar mesmo assim
+            </button>
+          </div>
+        </div>
+      )}
+
+      {(candidates.length > 0 || (showAll && allCandidates.length > 0)) && (
+        <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={runBulkImport}
+              disabled={bulkImporting || !!importing || candidates.length === 0}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium disabled:opacity-40"
+              style={{
+                backgroundColor: "rgba(96, 165, 250, 0.25)",
+                color: "#93c5fd",
+                border: "1px solid rgba(96, 165, 250, 0.5)",
+              }}
+              title="Importa todas as workspaces visíveis sequencialmente (skip-existing)"
+            >
+              {bulkImporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <DownloadCloud className="w-3.5 h-3.5" />}
+              {bulkImporting
+                ? bulkProgress
+                  ? `Importando ${bulkProgress.current}/${bulkProgress.total}: ${bulkProgress.folder}`
+                  : "Importando…"
+                : `Importar tudo (${candidates.length})`}
+            </button>
+            {others.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowAll((v) => !v)}
+                className="flex items-center gap-1 text-[11px] px-2 py-1 rounded"
+                style={{
+                  backgroundColor: "rgba(255,255,255,0.04)",
+                  color: "var(--text-secondary)",
+                  border: "1px solid var(--border)",
+                }}
+              >
+                {showAll ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                {showAll
+                  ? `Esconder ${others.length} não-agente`
+                  : `Mostrar +${others.length} pasta(s) não-agente`}
+              </button>
+            )}
+          </div>
+          <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+            modo: skip-existing
+          </span>
+        </div>
       )}
 
       <div className="space-y-2">

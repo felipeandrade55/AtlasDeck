@@ -10,6 +10,7 @@ import {
   deleteAgentUi,
   migrateAgentUiFromConfig,
 } from "@/lib/agents-ui-local";
+import { normalizeWorkspacePath } from "@/lib/workspace-migration";
 
 /**
  * The agent.workspace field is stored relative to OpenClaw's home dir
@@ -249,7 +250,10 @@ export async function POST(request: Request) {
       id: body.id,
       name: body.name,
       model: newAgentModel,
-      workspace: body.workspace || `./workspace/${body.id}`,
+      // Normalize workspace path so we don't write malformed values like
+      // `.openclaw/workspace/main` (without ./) that would later resolve
+      // to /root/.openclaw/.openclaw/workspace/main and break imports.
+      workspace: normalizeWorkspacePath(body.workspace || `./workspace/${body.id}`),
       subagents: {
         allowAgents: body.allowAgents || []
       }
@@ -350,7 +354,12 @@ export async function PUT(request: Request) {
         delete agent.model.fallback;
       }
     }
-    if (body.workspace) agent.workspace = body.workspace;
+    if (body.workspace) agent.workspace = normalizeWorkspacePath(body.workspace);
+    // Defensive: normalize any pre-existing malformed workspace value too
+    if (typeof agent.workspace === "string") {
+      const normalized = normalizeWorkspacePath(agent.workspace);
+      if (normalized !== agent.workspace) agent.workspace = normalized;
+    }
     if (!agent.subagents) agent.subagents = { allowAgents: [] };
     if (body.allowAgents) agent.subagents.allowAgents = body.allowAgents;
 
