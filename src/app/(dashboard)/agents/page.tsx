@@ -23,6 +23,8 @@ import { ModelPicker } from "@/components/ModelPicker";
 import { OpenClawDefaultsCard } from "@/components/OpenClawDefaultsCard";
 import { RestartStatusBanner } from "@/components/RestartStatusBanner";
 import { WorkspaceImporter } from "@/components/WorkspaceImporter";
+import { AgentMemoryConnector } from "@/components/AgentMemoryConnector";
+import { MemoryConnectNudge } from "@/components/MemoryConnectNudge";
 import { validateModelId } from "@/lib/openclaw-models";
 import {
   restartGatewayClient,
@@ -327,6 +329,16 @@ export default function AgentsPage() {
 
       {/* OpenClaw Defaults (global) */}
       <OpenClawDefaultsCard onSaved={fetchAgents} />
+
+      {/* Nudge: detected memory resources not yet wired to instructions.md */}
+      <MemoryConnectNudge
+        agents={agents.map((a) => ({ id: a.id, name: a.name }))}
+        onOpenAgent={(id) => {
+          const a = agents.find((x) => x.id === id);
+          if (a) handleOpenEdit(a);
+        }}
+        onChanged={fetchAgents}
+      />
 
       <RestartStatusBanner
         restarting={restarting}
@@ -886,6 +898,11 @@ export default function AgentsPage() {
                   currentWorkspace={formWorkspace.trim() || editingAgent.workspace}
                   onImported={fetchAgents}
                 />
+              )}
+
+              {/* Conector de memória custom (memory engine + KB + skills + sessions) */}
+              {editingAgent && (
+                <AgentMemoryConnector agentId={editingAgent.id} onChanged={fetchAgents} />
               )}
 
               <div className="flex gap-3 pt-4 border-t" style={{ borderColor: "var(--border)" }}>
