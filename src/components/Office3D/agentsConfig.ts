@@ -74,7 +74,23 @@ export const AGENTS: AgentConfig[] = [
   },
 ];
 
-export type AgentStatus = "idle" | "working" | "thinking" | "error";
+/**
+ * Mirrors the canonical status set from src/lib/agent-health.ts — the
+ * Office3D consumes the same vocabulary so animations stay in lockstep
+ * with what the orchestrator sees.
+ *
+ * Legacy values ("working" alias for in_progress, "error" alias for stuck)
+ * are mapped at the consumer boundary; the 3D layer only ever deals with
+ * the canonical set below.
+ */
+export type AgentStatus =
+  | "idle"
+  | "thinking"
+  | "working"
+  | "delegating"
+  | "reviewing"
+  | "stuck"
+  | "offline";
 
 export interface AgentState {
   id: string;
@@ -84,4 +100,6 @@ export interface AgentState {
   tokensPerHour?: number;
   tasksInQueue?: number;
   uptime?: number; // days
+  /** Optional id of another agent this one is currently visiting (orchestrator focus). */
+  focusAgentId?: string;
 }

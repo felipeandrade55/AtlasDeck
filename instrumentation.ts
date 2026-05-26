@@ -34,4 +34,14 @@ export async function register(): Promise<void> {
   } catch (err) {
     console.warn("[instrumentation] failed to ensure backup cron:", err);
   }
+
+  // Learner Agent — hourly scan over approved/rejected tasks → preference
+  // model. Idempotent so reruns are cheap; the cron just keeps the watermark
+  // ticking forward without waiting for someone to hit /api/learner/run.
+  try {
+    const { startLearnerScheduler } = await import("@/lib/learner-scheduler");
+    startLearnerScheduler();
+  } catch (err) {
+    console.warn("[instrumentation] failed to start learner scheduler:", err);
+  }
 }

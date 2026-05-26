@@ -9,6 +9,7 @@ import {
   Activity,
   GitBranch,
   LayoutGrid,
+  Radio,
   Plus,
   Edit2,
   Trash2,
@@ -19,6 +20,11 @@ import {
   Sparkles,
 } from "lucide-react";
 import { AgentOrganigrama } from "@/components/AgentOrganigrama";
+import { AgentTemplatePicker, type AgentTemplate } from "@/components/AgentTemplatePicker";
+import { OperatorChatPanel } from "@/components/OperatorChatPanel";
+import { OrchestrationSettingsCard } from "@/components/OrchestrationSettingsCard";
+import { LearningsTimeline } from "@/components/LearningsTimeline";
+import { LiveMissionTab } from "@/components/LiveMission/LiveMissionTab";
 import { ModelPicker } from "@/components/ModelPicker";
 import { OpenClawDefaultsCard } from "@/components/OpenClawDefaultsCard";
 import { RestartStatusBanner } from "@/components/RestartStatusBanner";
@@ -53,12 +59,18 @@ interface Agent {
   status: "online" | "offline";
   lastActivity?: string;
   activeSessions: number;
+  role?: "orchestrator" | "specialist" | "reviewer";
+  specialty?: string[];
+  inherit_jarvis_skills?: boolean;
+  override_autonomous?: "inherit" | "force_manual" | "force_auto";
+  cost_caps?: { per_task_cents?: number | null; per_day_cents?: number | null };
+  template_id?: string;
 }
 
 export default function AgentsPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<"cards" | "organigrama">("cards");
+  const [activeTab, setActiveTab] = useState<"cards" | "organigrama" | "live">("cards");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   
   // Modals / Form State
@@ -79,6 +91,17 @@ export default function AgentsPage() {
   // re-typing the token. Empty string = use own token (formBotToken).
   const [formShareBotWith, setFormShareBotWith] = useState<string>("");
   const [formAllowAgents, setFormAllowAgents] = useState<string[]>([]);
+  // Multi-agent orchestration meta (stored in agents-meta.json on save)
+  const [formRole, setFormRole] = useState<"orchestrator" | "specialist" | "reviewer">("specialist");
+  const [formSpecialty, setFormSpecialty] = useState<string[]>([]);
+  const [formSpecialtyInput, setFormSpecialtyInput] = useState("");
+  const [formInheritSkills, setFormInheritSkills] = useState(true);
+  const [formOverrideAutonomous, setFormOverrideAutonomous] = useState<
+    "inherit" | "force_manual" | "force_auto"
+  >("inherit");
+  const [formCostPerTask, setFormCostPerTask] = useState<string>("");
+  const [formCostPerDay, setFormCostPerDay] = useState<string>("");
+  const [formTemplateId, setFormTemplateId] = useState<string | undefined>(undefined);
   const [errorMsg, setErrorMsg] = useState("");
 
   // Gateway auto-restart after saving an agent (so the new model takes effect)
@@ -137,9 +160,42 @@ export default function AgentsPage() {
     setFormBotToken("");
     setFormShareBotWith("");
     setFormAllowAgents([]);
+    setFormRole("specialist");
+    setFormSpecialty([]);
+    setFormSpecialtyInput("");
+    setFormInheritSkills(true);
+    setFormOverrideAutonomous("inherit");
+    setFormCostPerTask("");
+    setFormCostPerDay("");
+    setFormTemplateId(undefined);
     setErrorMsg("");
     setShowModal(true);
     void fetchTelegramAccountIds();
+  };
+
+  // Pre-fills the create form from a template. Everything stays editable —
+  // the template_id is just persisted so the UI can show "based on dev" later.
+  const applyTemplate = (t: AgentTemplate) => {
+    setFormId((cur) => cur || t.id);
+    setFormName((cur) => cur || t.name);
+    setFormEmoji(t.emoji);
+    setFormColor(t.color);
+    setFormModel(t.suggested_model);
+    setFormFallback(t.suggested_fallback || "");
+    setFormRole(t.role);
+    setFormSpecialty(t.specialty);
+    setFormInheritSkills(t.inherit_jarvis_skills);
+    setFormCostPerTask(
+      t.default_cost_caps?.per_task_cents !== undefined
+        ? String(t.default_cost_caps.per_task_cents)
+        : "",
+    );
+    setFormCostPerDay(
+      t.default_cost_caps?.per_day_cents !== undefined
+        ? String(t.default_cost_caps.per_day_cents)
+        : "",
+    );
+    setFormTemplateId(t.id);
   };
 
   const handleOpenEdit = (agent: Agent) => {
@@ -155,6 +211,18 @@ export default function AgentsPage() {
     setFormBotToken(agent.botToken === "configured" ? "configured" : "");
     setFormShareBotWith("");
     setFormAllowAgents(agent.allowAgents || []);
+    setFormRole(agent.role || "specialist");
+    setFormSpecialty(agent.specialty || []);
+    setFormSpecialtyInput("");
+    setFormInheritSkills(agent.inherit_jarvis_skills ?? true);
+    setFormOverrideAutonomous(agent.override_autonomous || "inherit");
+    setFormCostPerTask(
+      typeof agent.cost_caps?.per_task_cents === "number" ? String(agent.cost_caps.per_task_cents) : "",
+    );
+    setFormCostPerDay(
+      typeof agent.cost_caps?.per_day_cents === "number" ? String(agent.cost_caps.per_day_cents) : "",
+    );
+    setFormTemplateId(agent.template_id);
     setErrorMsg("");
     setShowModal(true);
   };
@@ -202,6 +270,17 @@ export default function AgentsPage() {
       workspace: formWorkspace.trim() || `./workspace/${formId.trim()}`,
       dmPolicy: formDmPolicy,
       allowAgents: formAllowAgents,
+      // Orchestration meta — backend persists in agents-meta.json so the
+      // openclaw.json strict schema stays clean.
+      role: formRole,
+      specialty: formSpecialty,
+      inherit_jarvis_skills: formInheritSkills,
+      override_autonomous: formOverrideAutonomous,
+      cost_caps: {
+        per_task_cents: formCostPerTask.trim() ? Number(formCostPerTask) : null,
+        per_day_cents: formCostPerDay.trim() ? Number(formCostPerDay) : null,
+      },
+      template_id: formTemplateId,
     };
     if (useSharedBot) {
       payload.shareBotWith = formShareBotWith.trim();
@@ -348,6 +427,12 @@ export default function AgentsPage() {
         })}
       </div>
 
+      {/* Orchestration global switches (autonomous_mode etc.) */}
+      <OrchestrationSettingsCard />
+
+      {/* What Jarvis learned about the user — preference model timeline */}
+      <LearningsTimeline />
+
       {/* OpenClaw Defaults (global) */}
       <OpenClawDefaultsCard onSaved={fetchAgents} />
 
@@ -381,6 +466,7 @@ export default function AgentsPage() {
         {[
           { id: "cards" as const, label: "Cards dos Agentes", icon: LayoutGrid },
           { id: "organigrama" as const, label: "Visualização de Fluxos (Organograma)", icon: GitBranch },
+          { id: "live" as const, label: "Live Mission", icon: Radio },
         ].map(({ id, label, icon: Icon }) => (
           <button
             key={id}
@@ -408,6 +494,12 @@ export default function AgentsPage() {
           </div>
           <AgentOrganigrama agents={agents} onSelectAgent={setSelectedAgentId} />
         </div>
+      )}
+
+      {activeTab === "live" && (
+        <LiveMissionTab
+          agents={agents.map((a) => ({ id: a.id, name: a.name, emoji: a.emoji, color: a.color }))}
+        />
       )}
 
       {activeTab === "cards" && agents.length === 0 && (
@@ -725,6 +817,13 @@ export default function AgentsPage() {
                 </div>
               )}
 
+              {!editingAgent && (
+                <AgentTemplatePicker
+                  selectedTemplateId={formTemplateId}
+                  onPick={applyTemplate}
+                />
+              )}
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <label className="block space-y-1">
                   <span className="text-xs font-bold text-zinc-400 uppercase tracking-wide">ID do Agente (Fixo)</span>
@@ -877,6 +976,141 @@ export default function AgentsPage() {
                 </div>
               </div>
 
+              {/* Orchestration Meta Fold */}
+              <div className="pt-3 border-t space-y-3" style={{ borderColor: "var(--border)" }}>
+                <h4 className="font-bold text-xs uppercase text-zinc-400 tracking-wider flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-purple-400" /> Orquestração (Multi-Agente)
+                </h4>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <label className="block space-y-1">
+                    <span className="text-xs font-bold text-zinc-400 uppercase tracking-wide">Papel</span>
+                    <select
+                      value={formRole}
+                      onChange={(e) => setFormRole(e.target.value as typeof formRole)}
+                      className="w-full px-3 py-2 rounded-lg text-xs outline-none bg-zinc-900 border text-white"
+                      style={{ borderColor: "var(--border)" }}
+                    >
+                      <option value="orchestrator">Orquestrador (delega)</option>
+                      <option value="specialist">Especialista (executa)</option>
+                      <option value="reviewer">Revisor (avalia)</option>
+                    </select>
+                  </label>
+
+                  <label className="block space-y-1">
+                    <span className="text-xs font-bold text-zinc-400 uppercase tracking-wide">
+                      Modo Autônomo (override)
+                    </span>
+                    <select
+                      value={formOverrideAutonomous}
+                      onChange={(e) =>
+                        setFormOverrideAutonomous(e.target.value as typeof formOverrideAutonomous)
+                      }
+                      className="w-full px-3 py-2 rounded-lg text-xs outline-none bg-zinc-900 border text-white"
+                      style={{ borderColor: "var(--border)" }}
+                    >
+                      <option value="inherit">Herdar do global</option>
+                      <option value="force_manual">Sempre pedir aprovação</option>
+                      <option value="force_auto">Sempre autônomo</option>
+                    </select>
+                  </label>
+                </div>
+
+                <label className="block space-y-1">
+                  <span className="text-xs font-bold text-zinc-400 uppercase tracking-wide">Especialidades</span>
+                  <div className="flex flex-wrap gap-1.5 mb-1">
+                    {formSpecialty.map((s) => (
+                      <span
+                        key={s}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] bg-zinc-800 text-zinc-200 border"
+                        style={{ borderColor: "var(--border)" }}
+                      >
+                        {s}
+                        <button
+                          type="button"
+                          onClick={() => setFormSpecialty((arr) => arr.filter((x) => x !== s))}
+                          className="text-zinc-500 hover:text-red-400"
+                          style={{ background: "none", border: "none", cursor: "pointer", padding: 0 }}
+                          aria-label={`Remover ${s}`}
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                  <input
+                    value={formSpecialtyInput}
+                    onChange={(e) => setFormSpecialtyInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === ",") {
+                        e.preventDefault();
+                        const v = formSpecialtyInput.trim().replace(/,$/, "");
+                        if (v && !formSpecialty.includes(v)) {
+                          setFormSpecialty([...formSpecialty, v]);
+                        }
+                        setFormSpecialtyInput("");
+                      }
+                    }}
+                    placeholder="ex: coding, debugging — Enter ou vírgula para adicionar"
+                    className="w-full px-3 py-2 rounded-lg text-xs outline-none bg-zinc-900 border text-white"
+                    style={{ borderColor: "var(--border)" }}
+                  />
+                  <span className="text-[10px] text-zinc-500 block">
+                    Usado pelo orquestrador para decidir quem deve receber cada tarefa.
+                  </span>
+                </label>
+
+                <label className="flex items-start gap-2 p-2.5 rounded-lg bg-zinc-900/60 border cursor-pointer hover:bg-zinc-900" style={{ borderColor: "var(--border)" }}>
+                  <input
+                    type="checkbox"
+                    checked={formInheritSkills}
+                    onChange={(e) => setFormInheritSkills(e.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <div className="flex-1">
+                    <div className="text-xs font-semibold text-white">Herdar skills do Jarvis</div>
+                    <div className="text-[11px] text-zinc-400 leading-relaxed">
+                      Quando ativo, este agente acessa todas as skills do agente principal
+                      (Jarvis) além das próprias. Desligue se quiser isolar o agente.
+                    </div>
+                  </div>
+                </label>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block space-y-1">
+                    <span className="text-xs font-bold text-zinc-400 uppercase tracking-wide">
+                      Cap por tarefa (¢)
+                    </span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={formCostPerTask}
+                      onChange={(e) => setFormCostPerTask(e.target.value)}
+                      placeholder="ex: 200 = US$ 2,00"
+                      className="w-full px-3 py-2 rounded-lg text-xs outline-none bg-zinc-900 border text-white"
+                      style={{ borderColor: "var(--border)" }}
+                    />
+                  </label>
+                  <label className="block space-y-1">
+                    <span className="text-xs font-bold text-zinc-400 uppercase tracking-wide">
+                      Cap por dia (¢)
+                    </span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={formCostPerDay}
+                      onChange={(e) => setFormCostPerDay(e.target.value)}
+                      placeholder="ex: 2000 = US$ 20,00"
+                      className="w-full px-3 py-2 rounded-lg text-xs outline-none bg-zinc-900 border text-white"
+                      style={{ borderColor: "var(--border)" }}
+                    />
+                  </label>
+                </div>
+                <span className="text-[10px] text-zinc-500 block -mt-2">
+                  Valores em centavos. Vazio = sem limite. O dispatcher pausa quando excede.
+                </span>
+              </div>
+
               {/* Telegram Integration Fold */}
               <div className="pt-3 border-t space-y-3" style={{ borderColor: "var(--border)" }}>
                 <h4 className="font-bold text-xs uppercase text-zinc-400 tracking-wider flex items-center gap-1.5">
@@ -1024,6 +1258,9 @@ export default function AgentsPage() {
           </div>
         </div>
       )}
+
+      {/* Persistent Operator Chat — floats over content, fixed bottom-right */}
+      <OperatorChatPanel />
     </div>
   );
 }

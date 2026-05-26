@@ -12,17 +12,23 @@ import VoxelMacMini from './VoxelMacMini';
 const IDLE_STATE: AgentState = { id: '', status: 'idle' };
 
 const STATUS_COLOR: Record<string, string> = {
-  working:  '#22c55e',
-  thinking: '#3b82f6',
-  error:    '#ef4444',
-  idle:     '#6b7280',
+  idle:        '#6b7280',
+  thinking:    '#3b82f6',
+  working:     '#22c55e',
+  delegating:  '#a855f7',
+  reviewing:   '#f97316',
+  stuck:       '#ef4444',
+  offline:     '#3f3f46',
 };
 
 const STATUS_EMISSIVE: Record<string, string> = {
-  working:  '#15803d',
-  thinking: '#1e40af',
-  error:    '#991b1b',
-  idle:     '#374151',
+  idle:        '#374151',
+  thinking:    '#1e40af',
+  working:     '#15803d',
+  delegating:  '#6b21a8',
+  reviewing:   '#9a3412',
+  stuck:       '#991b1b',
+  offline:     '#18181b',
 };
 
 interface AgentDeskProps {
@@ -42,8 +48,15 @@ export default function AgentDesk({ agent, state, onClick, isSelected }: AgentDe
   const monitorEmissive = STATUS_EMISSIVE[s.status] ?? STATUS_EMISSIVE.idle;
 
   useFrame((frameState) => {
-    if (monitorRef.current && s.status === 'thinking') {
+    if (!monitorRef.current) return;
+    // Pulse the monitor for any state where the agent is "thinking-ish".
+    // Stuck pulses faster + more intense as a visual alarm.
+    if (s.status === 'thinking' || s.status === 'reviewing') {
       monitorRef.current.scale.setScalar(1 + Math.sin(frameState.clock.elapsedTime * 2) * 0.05);
+    } else if (s.status === 'stuck') {
+      monitorRef.current.scale.setScalar(1 + Math.sin(frameState.clock.elapsedTime * 6) * 0.10);
+    } else {
+      monitorRef.current.scale.setScalar(1);
     }
   });
 
@@ -78,7 +91,13 @@ export default function AgentDesk({ agent, state, onClick, isSelected }: AgentDe
         <meshStandardMaterial
           color={statusColor}
           emissive={monitorEmissive}
-          emissiveIntensity={s.status === 'idle' ? 0.1 : 0.5}
+          emissiveIntensity={
+            s.status === 'idle' || s.status === 'offline'
+              ? 0.1
+              : s.status === 'stuck'
+              ? 0.8
+              : 0.5
+          }
         />
       </Box>
 

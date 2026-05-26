@@ -17,7 +17,10 @@ export default function AgentPanel({ agent, state: stateProp, onClose }: AgentPa
     switch (state.status) {
       case 'working': return 'text-green-500';
       case 'thinking': return 'text-blue-500 animate-pulse';
-      case 'error': return 'text-red-500';
+      case 'delegating': return 'text-purple-500';
+      case 'reviewing': return 'text-orange-500 animate-pulse';
+      case 'stuck': return 'text-red-500 animate-pulse';
+      case 'offline': return 'text-zinc-600';
       case 'idle':
       default: return 'text-gray-500';
     }
@@ -27,7 +30,10 @@ export default function AgentPanel({ agent, state: stateProp, onClose }: AgentPa
     switch (state.status) {
       case 'working': return 'bg-green-500/20';
       case 'thinking': return 'bg-blue-500/20';
-      case 'error': return 'bg-red-500/20';
+      case 'delegating': return 'bg-purple-500/20';
+      case 'reviewing': return 'bg-orange-500/20';
+      case 'stuck': return 'bg-red-500/20';
+      case 'offline': return 'bg-zinc-700/30';
       case 'idle':
       default: return 'bg-gray-500/20';
     }

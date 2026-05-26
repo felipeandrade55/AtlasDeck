@@ -1,0 +1,239 @@
+/**
+ * Writes the orchestrator's runtime context — tool definitions, current
+ * sub-agent roster, in-flight tasks, learned preferences, autonomous mode —
+ * into the orchestrator's workspace `MEMORY.md` between dedicated markers.
+ *
+ * OpenClaw loads MEMORY.md as part of standard workspace context, so this
+ * is how Jarvis "learns" about its tools and the state of the swarm without
+ * a custom request-time injection (which OpenClaw 2026.5.x doesn't expose
+ * a hook for).
+ *
+ * Idempotent. Safe to call on a cron + after any orchestration mutation
+ * (new task delegated, agent created, settings changed).
+ */
+import { promises as fs } from "fs";
+import fsSync from "fs";
+import path from "path";
+import { OPENCLAW_DIR } from "@/lib/paths";
+import { getAllAgentMeta } from "@/lib/agents-meta";
+import { listTasks } from "@/lib/tasks-db";
+import { getPreferencesForPrompt } from "@/lib/preference-model";
+import { getOrchestrationSettings, isAutonomousFor } from "@/lib/orchestration-settings";
+import { renderToolDocs, TOOL_DEFINITIONS } from "@/lib/orchestrator-tools";
+
+const BEGIN = "<!-- BEGIN ATLASDECK ORCHESTRATOR — do not edit; this section regenerates -->";
+const END = "<!-- END ATLASDECK ORCHESTRATOR -->";
+
+export interface OrchestratorInjectionResult {
+  agent_id: string;
+  memory_file: string;
+  bytes_written: number;
+  changed: boolean;
+  skipped_reason?: string;
+}
+
+interface AgentLike {
+  id: string;
+  name?: string;
+  workspace?: string;
+}
+
+/**
+ * Resolve the absolute path for the orchestrator's workspace, mirroring
+ * the fallback strategy from task-workspace.ts: prefer the configured
+ * OpenClaw dir when it exists and is writable, otherwise drop into
+ * AtlasDeck's local `data/dev-workspaces/` so dev environments without
+ * /root/.openclaw still get a real MEMORY.md file.
+ */
+function resolveWorkspaceAbsPath(workspace: string): string {
+  if (!workspace) return "";
+  if (path.isAbsolute(workspace)) return workspace;
+
+  // Production: OpenClaw dir exists and we can write — use it.
+  if (fsSync.existsSync(OPENCLAW_DIR)) {
+    try {
+      fsSync.accessSync(OPENCLAW_DIR, fsSync.constants.W_OK);
+      return path.join(OPENCLAW_DIR, workspace);
+    } catch {
+      // fall through
+    }
+  }
+  // Dev fallback: strip the leading "./workspace/" if any so we don't
+  // double-nest, then put it under data/dev-workspaces/.
+  const stripped = workspace.replace(/^\.\/?workspace\//, "").replace(/^\.\//, "");
+  return path.join(process.cwd(), "data", "dev-workspaces", stripped);
+}
+
+function splice(existing: string, payload: string): string {
+  const beginIdx = existing.indexOf(BEGIN);
+  const endIdx = existing.indexOf(END);
+  const block = `${BEGIN}\n## Orchestrator (managed by AtlasDeck)\n_Atualizado em ${new Date().toISOString()}_\n\n${payload}\n${END}`;
+
+  if (beginIdx !== -1 && endIdx !== -1 && endIdx > beginIdx) {
+    const before = existing.slice(0, beginIdx).trimEnd();
+    const after = existing.slice(endIdx + END.length).trimStart();
+    return [before, block, after].filter(Boolean).join("\n\n").trim() + "\n";
+  }
+  const base = existing.trimEnd();
+  return base ? `${base}\n\n${block}\n` : `${block}\n`;
+}
+
+function buildPayload(orchestrator: AgentLike, peers: Array<AgentLike & { role?: string; specialty?: string[] }>): string {
+  const settings = getOrchestrationSettings();
+  const autonomous = isAutonomousFor(undefined); // global flag (orchestrators usually inherit)
+
+  const subAgents = peers.filter((a) => a.id !== orchestrator.id);
+  const subList = subAgents.length
+    ? subAgents
+        .map(
+          (a) =>
+            `- \`${a.id}\` — ${a.name || a.id} · papel: ${a.role || "specialist"} · skills: ${(a.specialty ?? []).join(", ") || "(generalista)"}`,
+        )
+        .join("\n")
+    : "_(nenhum sub-agente cadastrado ainda)_";
+
+  // Snapshot of tasks in flight (visible to the orchestrator so it doesn't
+  // re-delegate work that's already running).
+  const active = listTasks({
+    status: ["planning", "inbox", "assigned", "in_progress", "testing", "review"],
+    limit: 30,
+    sort: "newest",
+  });
+  const activeList = active.length
+    ? active
+        .map(
+          (t) =>
+            `- [${t.status}] \`${t.id.slice(0, 8)}\` → \`${t.assigned_to ?? "—"}\`: ${t.title || t.prompt.slice(0, 80)}`,
+        )
+        .join("\n")
+    : "_(nenhuma task em voo)_";
+
+  const prefs = getPreferencesForPrompt(orchestrator.id, 6);
+  const prefsBlock = prefs ? prefs : "_(ainda sem preferências aprendidas)_";
+
+  const toolList = TOOL_DEFINITIONS.map((t) => `- **${t.name}** — ${t.description.split(".")[0]}.`).join("\n");
+
+  return [
+    `### Você é o orquestrador "${orchestrator.id}"`,
+    `Sua função: delegar tarefas para sub-agentes especializados, revisar resultados e entregar o briefing ao usuário.`,
+    "",
+    `**Modo Autônomo (global):** ${autonomous ? "🚀 LIGADO (executa sem pedir aprovação)" : "🛑 DESLIGADO (sempre pedir aprovação)"}`,
+    `**Aprovação humana antes de \"done\":** ${settings.require_user_approval ? "obrigatória" : "desligada"}`,
+    `**Cost caps:** ${settings.cost_caps_enforce ? "aplicados pelo dispatcher" : "advisory only"}`,
+    "",
+    `#### Ferramentas disponíveis`,
+    toolList,
+    "",
+    `Veja a documentação completa de cada tool abaixo ↓`,
+    "",
+    `#### Sub-agentes disponíveis`,
+    subList,
+    "",
+    `#### Tarefas em voo (snapshot)`,
+    activeList,
+    "",
+    `#### Preferências aprendidas do usuário`,
+    prefsBlock,
+    "",
+    `---`,
+    "",
+    `### Como invocar uma tool`,
+    `Emita um bloco fenced com a linguagem \`atlas-tool\` seguida pelo nome da tool, e o conteúdo em JSON:`,
+    "",
+    "```atlas-tool delegate_to",
+    `{ "agent_id": "dev", "task": "implementar paginação no /list" }`,
+    "```",
+    "",
+    `O bloco será capturado pelo runner do AtlasDeck e o resultado da execução virá de volta como mensagem do sistema na próxima rodada.`,
+    "",
+    `### Documentação das tools`,
+    "",
+    renderToolDocs(),
+  ].join("\n");
+}
+
+/**
+ * Inject the orchestrator block into a single agent's MEMORY.md. Skipped
+ * silently if the agent has no `workspace` configured (config is malformed).
+ */
+export async function injectOrchestratorContext(
+  orchestrator: AgentLike,
+  peers: Array<AgentLike & { role?: string; specialty?: string[] }>,
+): Promise<OrchestratorInjectionResult> {
+  if (!orchestrator.workspace) {
+    return {
+      agent_id: orchestrator.id,
+      memory_file: "",
+      bytes_written: 0,
+      changed: false,
+      skipped_reason: "missing workspace",
+    };
+  }
+
+  const wsAbs = resolveWorkspaceAbsPath(orchestrator.workspace);
+  if (!wsAbs) {
+    return {
+      agent_id: orchestrator.id,
+      memory_file: "",
+      bytes_written: 0,
+      changed: false,
+      skipped_reason: "workspace path unresolved",
+    };
+  }
+  // If the workspace dir doesn't exist (dev / fresh install), create it
+  // — same behaviour as ensureAgentWorkspace in /api/agents POST.
+  if (!fsSync.existsSync(wsAbs)) {
+    try {
+      fsSync.mkdirSync(wsAbs, { recursive: true });
+    } catch (e) {
+      return {
+        agent_id: orchestrator.id,
+        memory_file: "",
+        bytes_written: 0,
+        changed: false,
+        skipped_reason: `mkdir failed: ${(e as Error).message}`,
+      };
+    }
+  }
+
+  const memoryFile = path.join(wsAbs, "MEMORY.md");
+
+  let existing = "";
+  try {
+    existing = await fs.readFile(memoryFile, "utf-8");
+  } catch {
+    existing = "# MEMORY\n";
+  }
+
+  const payload = buildPayload(orchestrator, peers);
+  const next = splice(existing, payload);
+
+  if (next === existing) {
+    return { agent_id: orchestrator.id, memory_file: memoryFile, bytes_written: 0, changed: false };
+  }
+  await fs.writeFile(memoryFile, next, "utf-8");
+  return {
+    agent_id: orchestrator.id,
+    memory_file: memoryFile,
+    bytes_written: Buffer.byteLength(next, "utf-8"),
+    changed: true,
+  };
+}
+
+/**
+ * Refresh every orchestrator's MEMORY.md. `peers` is the full agent list
+ * (the caller supplies it — usually from /api/agents response).
+ */
+export async function refreshAllOrchestrators(
+  peers: Array<AgentLike & { role?: string; specialty?: string[] }>,
+): Promise<OrchestratorInjectionResult[]> {
+  const meta = getAllAgentMeta();
+  const orchestrators = peers.filter(
+    (p) => (meta[p.id]?.role ?? "specialist") === "orchestrator" || p.id === "main" || p.id === "jarvis",
+  );
+  const out: OrchestratorInjectionResult[] = [];
+  for (const o of orchestrators) {
+    out.push(await injectOrchestratorContext(o, peers));
+  }
+  return out;
+}

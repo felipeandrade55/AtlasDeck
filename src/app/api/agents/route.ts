@@ -10,7 +10,43 @@ import {
   deleteAgentUi,
   migrateAgentUiFromConfig,
 } from "@/lib/agents-ui-local";
+import {
+  getAgentMeta,
+  setAgentMeta,
+  deleteAgentMeta,
+  getAllAgentMeta,
+  type AgentRole,
+  type AgentAutonomousOverride,
+  type AgentCostCaps,
+} from "@/lib/agents-meta";
+import { refreshAllOrchestrators } from "@/lib/orchestrator-injector";
 import { normalizeWorkspacePath } from "@/lib/workspace-migration";
+
+/**
+ * Re-render the managed orchestrator block in every orchestrator's
+ * MEMORY.md. Called after any mutation that could change the swarm shape
+ * (new agent, role change, deletion). Best-effort: failures are logged but
+ * never block the API response.
+ */
+async function refreshOrchestratorsBestEffort(
+  configList: Array<{ id: string; name?: string; workspace?: string }>,
+): Promise<void> {
+  try {
+    const meta = getAllAgentMeta();
+    const peers = configList.map((a) => ({
+      id: a.id,
+      name: a.name,
+      workspace: a.workspace,
+      role:
+        meta[a.id]?.role ??
+        (a.id === "main" || a.id === "jarvis" ? "orchestrator" : "specialist"),
+      specialty: meta[a.id]?.specialty ?? [],
+    }));
+    await refreshAllOrchestrators(peers);
+  } catch (e) {
+    console.warn("[/api/agents] refreshAllOrchestrators failed:", e);
+  }
+}
 
 /**
  * The agent.workspace field is stored relative to OpenClaw's home dir
@@ -104,6 +140,13 @@ interface Agent {
   status: "online" | "offline";
   lastActivity?: string;
   activeSessions: number;
+  // Multi-agent orchestration meta (stored locally, not in openclaw.json)
+  role: AgentRole;
+  specialty: string[];
+  inherit_jarvis_skills: boolean;
+  override_autonomous: AgentAutonomousOverride;
+  cost_caps: AgentCostCaps;
+  template_id?: string;
 }
 
 /**
@@ -229,6 +272,8 @@ export async function GET() {
         };
       });
 
+      const meta = getAgentMeta(agent.id);
+
       return {
         id: agent.id,
         name: agent.name || agentInfo.name,
@@ -244,6 +289,12 @@ export async function GET() {
         status,
         lastActivity,
         activeSessions: 0,
+        role: meta.role!,
+        specialty: meta.specialty ?? [],
+        inherit_jarvis_skills: meta.inherit_jarvis_skills ?? true,
+        override_autonomous: meta.override_autonomous ?? "inherit",
+        cost_caps: meta.cost_caps ?? {},
+        template_id: meta.template_id,
       };
     });
 
@@ -312,6 +363,19 @@ export async function POST(request: Request) {
     setAgentUi(body.id, {
       emoji: body.emoji || "🤖",
       color: body.color || "#666666",
+    });
+
+    // Orchestration metadata (role, specialty, inherit_jarvis_skills,
+    // override_autonomous, cost_caps, template_id) also lives outside
+    // openclaw.json to keep its strict schema clean.
+    setAgentMeta(body.id, {
+      role: body.role,
+      specialty: Array.isArray(body.specialty) ? body.specialty : undefined,
+      inherit_jarvis_skills:
+        typeof body.inherit_jarvis_skills === "boolean" ? body.inherit_jarvis_skills : undefined,
+      override_autonomous: body.override_autonomous,
+      cost_caps: body.cost_caps,
+      template_id: body.template_id,
     });
 
     config.agents.list.push(newAgent);
@@ -384,6 +448,9 @@ export async function POST(request: Request) {
         metadata: { id: newAgent.id, model: newAgent.model?.primary, workspace: newAgent.workspace },
       });
     } catch {}
+    // Swarm changed — regenerate the orchestrator memory block so Jarvis
+    // sees the new sub-agent on its next session boot.
+    void refreshOrchestratorsBestEffort(config.agents.list);
     return NextResponse.json({ success: true });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -414,6 +481,26 @@ export async function PUT(request: Request) {
     // emoji/color persisted in AtlasDeck-local storage (out of openclaw.json)
     if (body.emoji || body.color) {
       setAgentUi(body.id, { emoji: body.emoji, color: body.color });
+    }
+    // Orchestration metadata — partial update, only patches fields actually
+    // sent. Keeps role/specialty/etc. out of openclaw.json's strict schema.
+    if (
+      body.role !== undefined ||
+      body.specialty !== undefined ||
+      body.inherit_jarvis_skills !== undefined ||
+      body.override_autonomous !== undefined ||
+      body.cost_caps !== undefined ||
+      body.template_id !== undefined
+    ) {
+      setAgentMeta(body.id, {
+        role: body.role,
+        specialty: Array.isArray(body.specialty) ? body.specialty : undefined,
+        inherit_jarvis_skills:
+          typeof body.inherit_jarvis_skills === "boolean" ? body.inherit_jarvis_skills : undefined,
+        override_autonomous: body.override_autonomous,
+        cost_caps: body.cost_caps,
+        template_id: body.template_id,
+      });
     }
     // Defensive: if a legacy `ui` key crept in from old code or hand edits,
     // strip it so OpenClaw doesn't reject the config on next reload.
@@ -515,6 +602,7 @@ export async function PUT(request: Request) {
         metadata: { id: body.id, fields: changed },
       });
     } catch {}
+    void refreshOrchestratorsBestEffort(config.agents.list);
     return NextResponse.json({ success: true });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -540,6 +628,8 @@ export async function DELETE(request: Request) {
 
     // Clean AtlasDeck-local UI storage too (emoji/color)
     deleteAgentUi(id);
+    // Clean orchestration metadata (role, specialty, cost caps, etc.)
+    deleteAgentMeta(id);
 
     // Clean telegram config
     if (config.channels?.telegram?.accounts?.[id]) {
@@ -560,6 +650,7 @@ export async function DELETE(request: Request) {
         metadata: { id },
       });
     } catch {}
+    void refreshOrchestratorsBestEffort(config.agents.list);
     return NextResponse.json({ success: true });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
