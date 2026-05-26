@@ -18,6 +18,7 @@ import {
   type AgentRole,
   type AgentAutonomousOverride,
   type AgentCostCaps,
+  type AgentMetaEntry,
 } from "@/lib/agents-meta";
 import { refreshAllOrchestrators } from "@/lib/orchestrator-injector";
 import { normalizeWorkspacePath } from "@/lib/workspace-migration";
@@ -92,6 +93,64 @@ function ensureTelegramBindings(config: any): boolean {
 }
 
 /**
+ * Self-heal: drop "phantom" sub-agent Telegram accounts.
+ *
+ * Background: the previous shareBotWith implementation copied the parent's
+ * botToken into `channels.telegram.accounts[<sub_id>]` so sub-agents could
+ * "ride on" the main bot. That created multiple accounts on the same bot
+ * — OpenClaw then tried to pair each as a separate destination, leaving
+ * every sub-agent stuck in "1 pendente" forever and breaking the parent's
+ * routing along the way. Symptom: bot stops responding the moment a second
+ * agent is created.
+ *
+ * Correct architecture: only the orchestrator (main) owns the Telegram
+ * account. Sub-agents are invoked by main via `delegate_to` and never
+ * appear as Telegram destinations. The bot-sharing relationship lives in
+ * `agents-meta.json` under `shares_bot_with`, not in openclaw.json.
+ *
+ * This function strips a sub-account when ALL of:
+ *   - id !== "main"
+ *   - its botToken matches main's
+ *   - it has no `chatId` of its own (so we're not deleting a real binding)
+ *   - OR the AtlasDeck meta marks it as `shares_bot_with` something
+ *
+ * The result is OpenClaw seeing exactly one account per real bot, which
+ * unbreaks routing. Idempotent — safe on every GET.
+ */
+function stripSubAgentTelegramAccounts(
+  config: any,
+  metaMap: Record<string, AgentMetaEntry>,
+): string[] {
+  const accounts = config?.channels?.telegram?.accounts;
+  if (!accounts || typeof accounts !== "object") return [];
+  const mainAccount = accounts.main;
+  const mainToken =
+    typeof mainAccount?.botToken === "string" ? mainAccount.botToken.trim() : "";
+
+  const removed: string[] = [];
+  for (const id of Object.keys(accounts)) {
+    if (id === "main") continue;
+    const entry = accounts[id];
+    const entryToken =
+      typeof entry?.botToken === "string" ? entry.botToken.trim() : "";
+    const hasChatId =
+      (typeof entry?.chatId === "string" && entry.chatId.trim().length > 0) ||
+      typeof entry?.chatId === "number";
+    const sharesByMeta = !!metaMap[id]?.shares_bot_with;
+
+    // Strip if either: meta says it shares OR it duplicates main's token
+    // without an independent chatId.
+    const shouldStrip =
+      !hasChatId && (sharesByMeta || (mainToken && entryToken === mainToken));
+    if (shouldStrip) {
+      delete accounts[id];
+      removed.push(id);
+    }
+  }
+  return removed;
+}
+
+/**
  * Self-heal: drop entries from `channels.telegram.accounts` that have no
  * real botToken. They are leftovers from the historical bug where saving
  * a new agent created `{ dmPolicy: "pairing" }` entries without ever
@@ -136,7 +195,14 @@ interface Agent {
     emoji: string;
     color: string;
   }>;
-  botToken?: string;
+  /**
+   * Telegram bot status surfaced to the UI:
+   *   - "configured" → this agent owns its own bot account
+   *   - "shared"     → this agent rides on another agent's bot (see `shares_bot_with`)
+   *   - undefined    → no Telegram setup
+   */
+  botToken?: "configured" | "shared";
+  shares_bot_with?: string;
   status: "online" | "offline";
   lastActivity?: string;
   activeSessions: number;
@@ -211,7 +277,19 @@ export async function GET() {
     // docstring). This is what stops the bot from responding after the
     // user adds a second agent.
     const removedAccounts = stripTokenlessTelegramAccounts(config);
-    if (uiMigrated || bindingsStripped || removedAccounts.length > 0) {
+    // Self-heal: drop "phantom" sub-agent accounts that mirror main's bot
+    // token without their own chatId (the v1 shareBotWith bug). Reads meta
+    // so we strip even when the AtlasDeck local file already records the
+    // shares_bot_with relationship but the openclaw.json still has the
+    // duplicate entry.
+    const allMetaForStrip = getAllAgentMeta();
+    const removedSubAccounts = stripSubAgentTelegramAccounts(config, allMetaForStrip);
+    if (
+      uiMigrated ||
+      bindingsStripped ||
+      removedAccounts.length > 0 ||
+      removedSubAccounts.length > 0
+    ) {
       try {
         writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
         const what = [
@@ -219,11 +297,13 @@ export async function GET() {
           bindingsStripped && "stripped invalid agents.bindings",
           removedAccounts.length > 0 &&
             `removed tokenless telegram accounts (${removedAccounts.join(", ")})`,
+          removedSubAccounts.length > 0 &&
+            `removed phantom sub-agent accounts (${removedSubAccounts.join(", ")})`,
         ]
           .filter(Boolean)
           .join(" + ");
         logActivity("config", `Migração openclaw.json: ${what}`, "success", {
-          metadata: { configPath, removedAccounts },
+          metadata: { configPath, removedAccounts, removedSubAccounts },
         });
       } catch (e) {
         console.error("Failed to persist openclaw.json migrations:", e);
@@ -273,6 +353,15 @@ export async function GET() {
       });
 
       const meta = getAgentMeta(agent.id);
+      // Bot status surfaced to the UI: "configured" (owns bot), "shared"
+      // (rides on parent's bot via shares_bot_with), or undefined (no
+      // Telegram setup). The UI uses this to show "via @main" badges
+      // without ever holding the raw token.
+      const botTokenStatus: "configured" | "shared" | undefined = botToken
+        ? "configured"
+        : meta.shares_bot_with
+        ? "shared"
+        : undefined;
 
       return {
         id: agent.id,
@@ -285,7 +374,8 @@ export async function GET() {
         dmPolicy: telegramAccount?.dmPolicy || config.channels?.telegram?.dmPolicy || "pairing",
         allowAgents,
         allowAgentsDetails,
-        botToken: botToken ? "configured" : undefined,
+        botToken: botTokenStatus,
+        shares_bot_with: meta.shares_bot_with,
         status,
         lastActivity,
         activeSessions: 0,
@@ -404,11 +494,20 @@ export async function POST(request: Request) {
     // backend copies channels.telegram.accounts[shareBotWith].botToken
     // into the new account so the operator can spin up linked agents
     // ("dev", "vendas", ...) all answering through the @main_bot.
+    // Resolve telegram setup. Three paths:
+    //  (a) shareBotWith → DON'T write to channels.telegram.accounts; record
+    //      the relationship in agents-meta only. OpenClaw sees one account
+    //      (main's), all incoming messages route to main, Jarvis delegates
+    //      internally via `delegate_to`. This was the source of the
+    //      "criou agente → telegram parou" regression.
+    //  (b) explicit botToken in the form → write a real, independent
+    //      account entry. This is the case for an agent that owns its own
+    //      bot.
+    //  (c) neither → no Telegram setup, no entry written.
     const shareBotWith =
       typeof body.shareBotWith === "string" && body.shareBotWith.trim()
         ? body.shareBotWith.trim()
         : null;
-    let resolvedToken: string | null = null;
     if (shareBotWith) {
       const sourceAccount = config.channels?.telegram?.accounts?.[shareBotWith];
       const sourceToken =
@@ -421,15 +520,15 @@ export async function POST(request: Request) {
           { status: 400 },
         );
       }
-      resolvedToken = sourceToken;
+      // Path (a): record the relationship — DO NOT pollute openclaw.json.
+      setAgentMeta(body.id, { shares_bot_with: shareBotWith });
     } else if (
       typeof body.botToken === "string" &&
       body.botToken.trim() &&
       body.botToken !== "configured"
     ) {
-      resolvedToken = body.botToken.trim();
-    }
-    if (resolvedToken) {
+      // Path (b): independent bot for this agent.
+      const resolvedToken = body.botToken.trim();
       if (!config.channels) config.channels = {};
       if (!config.channels.telegram) config.channels.telegram = { dmPolicy: "pairing" };
       if (!config.channels.telegram.accounts) config.channels.telegram.accounts = {};
@@ -439,6 +538,8 @@ export async function POST(request: Request) {
       const hasIncomingDmPolicy = typeof body.dmPolicy === "string" && body.dmPolicy.trim();
       if (hasIncomingDmPolicy) nextAccount.dmPolicy = body.dmPolicy;
       config.channels.telegram.accounts[body.id] = nextAccount;
+      // Clear any prior shares_bot_with so the UI shows the right state.
+      setAgentMeta(body.id, { shares_bot_with: "" });
     }
 
     writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
@@ -546,6 +647,11 @@ export async function PUT(request: Request) {
     // (which saves it next to a real botToken).
     // `shareBotWith` follows the same shape as POST — used to switch a
     // sub-agent over to share the parent's bot without re-typing the token.
+    // Same three-path resolution as POST — see POST handler for context.
+    // shareBotWith → meta only (no channels.telegram.accounts entry).
+    // Independent botToken → write a real account.
+    // Neither → leave Telegram config alone (dmPolicy edits only land when
+    // a real account already exists).
     const putShareBotWith =
       typeof body.shareBotWith === "string" && body.shareBotWith.trim()
         ? body.shareBotWith.trim()
@@ -554,26 +660,37 @@ export async function PUT(request: Request) {
       typeof body.botToken === "string" && body.botToken.trim() && body.botToken !== "configured";
     const putHasIncomingDmPolicy = typeof body.dmPolicy === "string" && body.dmPolicy.trim();
 
-    let putResolvedToken: string | null = null;
+    const existingAccount = config.channels?.telegram?.accounts?.[body.id];
     if (putShareBotWith) {
+      // Path (a): switch this agent to ride on the parent's bot. Validate
+      // the parent has a real token, then record the relationship in meta
+      // and (defensively) strip any phantom entry we may already have for
+      // this sub-agent — that's exactly the duplicate-entry scenario that
+      // broke routing in the first place.
       const sourceAccount = config.channels?.telegram?.accounts?.[putShareBotWith];
       const sourceToken =
         typeof sourceAccount?.botToken === "string" ? sourceAccount.botToken.trim() : "";
       if (!sourceToken) {
         return NextResponse.json(
-          {
-            error: `shareBotWith="${putShareBotWith}": agente fonte não tem botToken configurado.`,
-          },
+          { error: `shareBotWith="${putShareBotWith}": agente fonte não tem botToken configurado.` },
           { status: 400 },
         );
       }
-      putResolvedToken = sourceToken;
+      setAgentMeta(body.id, { shares_bot_with: putShareBotWith });
+      if (config.channels?.telegram?.accounts?.[body.id]) {
+        // Only delete if it's a phantom (no independent chatId).
+        const phantomToken =
+          typeof config.channels.telegram.accounts[body.id]?.botToken === "string"
+            ? config.channels.telegram.accounts[body.id].botToken.trim()
+            : "";
+        const phantomChat = config.channels.telegram.accounts[body.id]?.chatId;
+        if (!phantomChat && phantomToken === sourceToken) {
+          delete config.channels.telegram.accounts[body.id];
+        }
+      }
     } else if (putHasIncomingTokenInput) {
-      putResolvedToken = body.botToken.trim();
-    }
-
-    const existingAccount = config.channels?.telegram?.accounts?.[body.id];
-    if (putResolvedToken) {
+      // Path (b): independent bot for this agent.
+      const putResolvedToken = body.botToken.trim();
       if (!config.channels) config.channels = {};
       if (!config.channels.telegram) config.channels.telegram = { dmPolicy: "pairing" };
       if (!config.channels.telegram.accounts) config.channels.telegram.accounts = {};
@@ -582,6 +699,8 @@ export async function PUT(request: Request) {
       const nextAccount = { ...cur, botToken: putResolvedToken };
       if (putHasIncomingDmPolicy) nextAccount.dmPolicy = body.dmPolicy;
       config.channels.telegram.accounts[body.id] = nextAccount;
+      // Clear any prior shares_bot_with — agent now owns its bot.
+      setAgentMeta(body.id, { shares_bot_with: "" });
     } else if (
       putHasIncomingDmPolicy &&
       existingAccount &&

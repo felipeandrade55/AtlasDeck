@@ -26,6 +26,19 @@ export interface AgentMetaEntry {
   override_autonomous?: AgentAutonomousOverride;
   cost_caps?: AgentCostCaps;
   template_id?: string;
+  /**
+   * Records that this agent "rides on" another agent's Telegram bot — set
+   * to the parent agent id (e.g. `"main"`). When present, the agents API
+   * intentionally DOES NOT create a `channels.telegram.accounts[<this id>]`
+   * entry, because OpenClaw routes incoming Telegram messages by account
+   * id and having two accounts on the same bot token without a `chatId`
+   * confuses the daemon (it tries to pair each as a separate destination).
+   *
+   * Sub-agents reached via the orchestrator (Jarvis) don't need their own
+   * Telegram account — Jarvis is the entry point and delegates internally
+   * via `delegate_to` tool calls.
+   */
+  shares_bot_with?: string;
 }
 
 function readAll(): Record<string, AgentMetaEntry> {
@@ -62,6 +75,7 @@ export function getAgentMeta(id: string): AgentMetaEntry {
     override_autonomous: entry.override_autonomous ?? "inherit",
     cost_caps: entry.cost_caps ?? {},
     template_id: entry.template_id,
+    shares_bot_with: entry.shares_bot_with,
   };
 }
 
@@ -93,6 +107,12 @@ export function setAgentMeta(id: string, meta: Partial<AgentMetaEntry>): void {
     next.cost_caps = caps;
   }
   if (meta.template_id !== undefined) next.template_id = meta.template_id || undefined;
+  if (meta.shares_bot_with !== undefined) {
+    // Empty string clears the relationship (agent now owns its own bot or
+    // has none); a real id sets it.
+    const v = typeof meta.shares_bot_with === "string" ? meta.shares_bot_with.trim() : "";
+    next.shares_bot_with = v || undefined;
+  }
 
   all[id] = next;
   writeAll(all);
