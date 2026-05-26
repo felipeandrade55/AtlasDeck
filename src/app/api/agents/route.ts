@@ -93,6 +93,41 @@ function ensureTelegramBindings(config: any): boolean {
 }
 
 /**
+ * Self-heal: clamp `dmPolicy` to one of OpenClaw's canonical values.
+ *
+ * OpenClaw's Telegram channel only understands `pairing`, `open`, and
+ * `off`. Anything else (e.g. `allowlist` left from an old UI option or
+ * hand-edit) makes the daemon silently drop incoming DMs — symptom: bot
+ * is "Conectado", chat is paired, but messages never trigger a response
+ * and the agent shows "Última ação: Nunca".
+ *
+ * Normalizes both the channel-level default and each account's override.
+ * Returns ids of any account that was clamped (for the migration log).
+ */
+const VALID_DM_POLICIES = new Set(["pairing", "open", "off"]);
+function normalizeTelegramDmPolicies(config: any): string[] {
+  const tg = config?.channels?.telegram;
+  if (!tg) return [];
+  const fixed: string[] = [];
+
+  if (typeof tg.dmPolicy === "string" && !VALID_DM_POLICIES.has(tg.dmPolicy)) {
+    tg.dmPolicy = "pairing";
+    fixed.push("(channel default)");
+  }
+  const accounts = tg.accounts;
+  if (accounts && typeof accounts === "object") {
+    for (const id of Object.keys(accounts)) {
+      const acct = accounts[id];
+      if (acct && typeof acct.dmPolicy === "string" && !VALID_DM_POLICIES.has(acct.dmPolicy)) {
+        acct.dmPolicy = "pairing";
+        fixed.push(id);
+      }
+    }
+  }
+  return fixed;
+}
+
+/**
  * Self-heal: drop "phantom" sub-agent Telegram accounts.
  *
  * Background: the previous shareBotWith implementation copied the parent's
@@ -284,11 +319,15 @@ export async function GET() {
     // duplicate entry.
     const allMetaForStrip = getAllAgentMeta();
     const removedSubAccounts = stripSubAgentTelegramAccounts(config, allMetaForStrip);
+    // Self-heal: clamp dmPolicy to canonical values (pairing/open/off).
+    // Anything else (e.g. "allowlist") makes OpenClaw silently drop DMs.
+    const fixedDmPolicies = normalizeTelegramDmPolicies(config);
     if (
       uiMigrated ||
       bindingsStripped ||
       removedAccounts.length > 0 ||
-      removedSubAccounts.length > 0
+      removedSubAccounts.length > 0 ||
+      fixedDmPolicies.length > 0
     ) {
       try {
         writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
@@ -299,11 +338,13 @@ export async function GET() {
             `removed tokenless telegram accounts (${removedAccounts.join(", ")})`,
           removedSubAccounts.length > 0 &&
             `removed phantom sub-agent accounts (${removedSubAccounts.join(", ")})`,
+          fixedDmPolicies.length > 0 &&
+            `clamped invalid dmPolicy → pairing (${fixedDmPolicies.join(", ")})`,
         ]
           .filter(Boolean)
           .join(" + ");
         logActivity("config", `Migração openclaw.json: ${what}`, "success", {
-          metadata: { configPath, removedAccounts, removedSubAccounts },
+          metadata: { configPath, removedAccounts, removedSubAccounts, fixedDmPolicies },
         });
       } catch (e) {
         console.error("Failed to persist openclaw.json migrations:", e);
