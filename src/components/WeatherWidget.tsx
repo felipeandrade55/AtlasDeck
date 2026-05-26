@@ -5,7 +5,7 @@ import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { Wind, Droplets, Thermometer, CloudRain, Settings } from "lucide-react";
 import { LocationPicker } from "./LocationPicker";
-import { shortCityName } from "@/lib/location-display";
+import { cityFromAddress, shortCityName, NominatimAddress } from "@/lib/location-display";
 
 interface Forecast {
   day: string;
@@ -78,39 +78,54 @@ export function WeatherWidget() {
         });
     };
 
-    // Priority 1: server-saved home location
-    fetchJsonWithTimeout<{ lat: number | null; lon: number | null; label?: string | null }>('/api/user/location', 3000)
-      .then((loc) => {
-        if (cancelled) return;
-        if (loc && typeof loc.lat === 'number' && typeof loc.lon === 'number') {
-          setGeoStatus('home');
-          fetchWeather(loc.lat, loc.lon, loc.label || undefined);
-          return;
-        }
-        tryBrowserGeo();
-      })
-      .catch(() => !cancelled && tryBrowserGeo());
-
-    function tryBrowserGeo() {
-      if (cancelled) return;
-      if (typeof navigator !== 'undefined' && navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-          (pos) => {
-            if (cancelled) return;
-            setGeoStatus('ok');
-            fetchWeather(pos.coords.latitude, pos.coords.longitude);
-          },
-          (err) => {
-            if (cancelled) return;
-            setGeoStatus(err.code === 1 ? 'denied' : 'unavailable');
-            fetchWeather();
-          },
-          { timeout: 5000 }
+    const reverseGeocode = async (lat: number, lon: number): Promise<string | undefined> => {
+      try {
+        const res = await fetch(
+          `https://nominatim.openstreetmap.org/reverse?format=json&addressdetails=1&lat=${lat}&lon=${lon}`,
+          { headers: { "Accept-Language": "pt-BR" } }
         );
-      } else {
-        setGeoStatus('unavailable');
-        fetchWeather();
+        const data = (await res.json()) as { display_name?: string; address?: NominatimAddress };
+        return cityFromAddress(data.address) || shortCityName(data.display_name) || undefined;
+      } catch {
+        return undefined;
       }
+    };
+
+    const loadFromHome = () => {
+      fetchJsonWithTimeout<{ lat: number | null; lon: number | null; label?: string | null }>('/api/user/location', 3000)
+        .then((loc) => {
+          if (cancelled) return;
+          if (loc && typeof loc.lat === 'number' && typeof loc.lon === 'number') {
+            setGeoStatus('home');
+            fetchWeather(loc.lat, loc.lon, loc.label || undefined);
+            return;
+          }
+          fetchWeather();
+        })
+        .catch(() => !cancelled && fetchWeather());
+    };
+
+    // Priority 1: actual current location via browser geolocation
+    if (typeof navigator !== 'undefined' && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+          if (cancelled) return;
+          setGeoStatus('ok');
+          const label = await reverseGeocode(pos.coords.latitude, pos.coords.longitude);
+          if (cancelled) return;
+          fetchWeather(pos.coords.latitude, pos.coords.longitude, label);
+        },
+        (err) => {
+          if (cancelled) return;
+          setGeoStatus(err.code === 1 ? 'denied' : 'unavailable');
+          // Fallback: saved home location (e.g. when permission denied)
+          loadFromHome();
+        },
+        { timeout: 10000, maximumAge: 5 * 60 * 1000, enableHighAccuracy: true }
+      );
+    } else {
+      setGeoStatus('unavailable');
+      loadFromHome();
     }
 
     const timer = setInterval(() => setNow(new Date()), 1000);
@@ -199,13 +214,14 @@ export function WeatherWidget() {
             onClick={() => setPickerOpen(true)}
             style={{ fontSize: "0.75rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "0.125rem", cursor: "pointer" }}
             title={
-              geoStatus === 'home' ? 'Localização salva — clique para editar' :
-              geoStatus === 'denied' ? 'Geolocalização bloqueada — clique para definir manualmente' :
-              geoStatus === 'unavailable' ? 'Geolocalização indisponível — clique para definir manualmente' :
+              geoStatus === 'ok' ? 'Localização atual detectada pelo navegador — clique para editar a casa' :
+              geoStatus === 'home' ? 'Localização salva (casa) — clique para editar' :
+              geoStatus === 'denied' ? 'Geolocalização bloqueada pelo navegador — usando casa salva. Libere no cadeado da URL para detecção automática' :
+              geoStatus === 'unavailable' ? 'Geolocalização indisponível — usando casa salva' :
               'Clique para configurar sua localização'
             }
           >
-            {geoStatus === 'home' ? '🏠' : geoStatus === 'denied' ? '🔒' : '📍'} {shortCityName(weather.city) || weather.city}
+            {geoStatus === 'ok' ? '📍' : geoStatus === 'home' ? '🏠' : geoStatus === 'denied' ? '🔒' : '📍'} {shortCityName(weather.city) || weather.city}
             {(geoStatus === 'denied' || geoStatus === 'unavailable') && (
               <span style={{ fontSize: "0.65rem", marginLeft: "4px", opacity: 0.7 }}>(padrão)</span>
             )}
