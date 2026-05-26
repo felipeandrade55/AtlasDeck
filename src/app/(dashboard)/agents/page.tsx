@@ -73,6 +73,11 @@ export default function AgentsPage() {
   const [formWorkspace, setFormWorkspace] = useState("");
   const [formDmPolicy, setFormDmPolicy] = useState("pairing");
   const [formBotToken, setFormBotToken] = useState("");
+  // When set to an agent id (e.g. "main"), the backend reuses that agent's
+  // saved botToken for the new/edited agent — letting the user spin up
+  // unlimited sub-agents that all answer on the same Telegram bot without
+  // re-typing the token. Empty string = use own token (formBotToken).
+  const [formShareBotWith, setFormShareBotWith] = useState<string>("");
   const [formAllowAgents, setFormAllowAgents] = useState<string[]>([]);
   const [errorMsg, setErrorMsg] = useState("");
 
@@ -130,6 +135,7 @@ export default function AgentsPage() {
     setFormWorkspace("");
     setFormDmPolicy("pairing");
     setFormBotToken("");
+    setFormShareBotWith("");
     setFormAllowAgents([]);
     setErrorMsg("");
     setShowModal(true);
@@ -147,6 +153,7 @@ export default function AgentsPage() {
     setFormWorkspace(agent.workspace);
     setFormDmPolicy(agent.dmPolicy || "pairing");
     setFormBotToken(agent.botToken === "configured" ? "configured" : "");
+    setFormShareBotWith("");
     setFormAllowAgents(agent.allowAgents || []);
     setErrorMsg("");
     setShowModal(true);
@@ -176,7 +183,16 @@ export default function AgentsPage() {
     const url = "/api/agents";
     const method = isEdit ? "PUT" : "POST";
 
-    const payload = {
+    // When the user opted to reuse another agent's bot, send shareBotWith
+    // INSTEAD of botToken so the backend pulls the token from the source
+    // account — the real token never crosses back through the browser.
+    // Filter out shareBotWith pointing at the current agent (would be a
+    // self-reference no-op) and ignore it when editing the source agent
+    // itself (you can't reuse your own bot).
+    const useSharedBot =
+      formShareBotWith.trim().length > 0 && formShareBotWith.trim() !== formId.trim();
+
+    const payload: Record<string, unknown> = {
       id: formId.trim(),
       name: formName.trim(),
       emoji: formEmoji,
@@ -185,9 +201,13 @@ export default function AgentsPage() {
       fallback: formFallback.trim(),
       workspace: formWorkspace.trim() || `./workspace/${formId.trim()}`,
       dmPolicy: formDmPolicy,
-      botToken: formBotToken,
-      allowAgents: formAllowAgents
+      allowAgents: formAllowAgents,
     };
+    if (useSharedBot) {
+      payload.shareBotWith = formShareBotWith.trim();
+    } else {
+      payload.botToken = formBotToken;
+    }
 
     try {
       const res = await fetch(url, {
@@ -863,15 +883,87 @@ export default function AgentsPage() {
                   <MessageSquare className="w-3.5 h-3.5 text-[#0088cc]" /> Integração Telegram (Opcional)
                 </h4>
 
+                {/* Share-bot shortcut: lets the user create a sub-agent that
+                    responds on the SAME Telegram bot as an existing agent
+                    (typically `main`) — no need to re-type the token. The
+                    backend copies the source account's token server-side. */}
+                {telegramAccountIds.filter((id) => id !== formId.trim()).length > 0 && (
+                  <label className="flex items-start gap-2 p-2.5 rounded-lg bg-zinc-900/60 border cursor-pointer hover:bg-zinc-900" style={{ borderColor: "var(--border)" }}>
+                    <input
+                      type="checkbox"
+                      checked={formShareBotWith.length > 0}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          const defaultSource =
+                            telegramAccountIds.find((id) => id === "main" && id !== formId.trim()) ||
+                            telegramAccountIds.find((id) => id !== formId.trim()) ||
+                            "";
+                          setFormShareBotWith(defaultSource);
+                          // Token field doesn't apply when sharing — clear it to
+                          // avoid the user thinking they need to paste anything.
+                          if (formBotToken !== "configured") setFormBotToken("");
+                        } else {
+                          setFormShareBotWith("");
+                        }
+                      }}
+                      className="mt-0.5"
+                    />
+                    <div className="flex-1 space-y-1">
+                      <div className="text-xs font-semibold text-white">
+                        Reusar o bot de outro agente
+                      </div>
+                      <div className="text-[11px] text-zinc-400 leading-relaxed">
+                        Esse agente vai responder no mesmo bot do Telegram de outro
+                        agente já configurado — útil para sub-agentes ligados ao{" "}
+                        <code className="text-[10px] px-1 py-0.5 rounded bg-zinc-800">main</code>.
+                        Sem isso, você precisa colar um token de bot separado embaixo.
+                      </div>
+                      {formShareBotWith.length > 0 && (
+                        <div className="pt-1">
+                          <span className="text-[11px] text-zinc-400">Bot de origem: </span>
+                          <select
+                            value={formShareBotWith}
+                            onChange={(e) => setFormShareBotWith(e.target.value)}
+                            className="text-[11px] px-2 py-0.5 rounded bg-zinc-800 border text-white"
+                            style={{ borderColor: "var(--border)" }}
+                          >
+                            {telegramAccountIds
+                              .filter((id) => id !== formId.trim())
+                              .map((id) => (
+                                <option key={id} value={id}>
+                                  {id}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                  </label>
+                )}
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <label className="block space-y-1">
-                    <span className="text-xs font-bold text-zinc-400 uppercase tracking-wide">Token do Telegram Bot</span>
+                  <label className="block space-y-1" style={{ opacity: formShareBotWith.length > 0 ? 0.5 : 1 }}>
+                    <span className="text-xs font-bold text-zinc-400 uppercase tracking-wide">
+                      Token do Telegram Bot
+                      {formShareBotWith.length > 0 && (
+                        <span className="text-[10px] font-normal text-zinc-500 normal-case ml-1">
+                          (ignorado — usando bot de &quot;{formShareBotWith}&quot;)
+                        </span>
+                      )}
+                    </span>
                     <input
                       type="password"
                       value={formBotToken}
                       onChange={(e) => setFormBotToken(e.target.value)}
-                      placeholder={formBotToken === "configured" ? "•••••••••••••••••••••" : "ex: 123456:ABC-DEF..."}
-                      className="w-full px-3 py-2 rounded-lg text-xs outline-none bg-zinc-900 border text-white font-mono"
+                      disabled={formShareBotWith.length > 0}
+                      placeholder={
+                        formShareBotWith.length > 0
+                          ? "—"
+                          : formBotToken === "configured"
+                          ? "•••••••••••••••••••••"
+                          : "ex: 123456:ABC-DEF... (cole um token separado pra dar canal próprio)"
+                      }
+                      className="w-full px-3 py-2 rounded-lg text-xs outline-none bg-zinc-900 border text-white font-mono disabled:cursor-not-allowed"
                       style={{ borderColor: "var(--border)" }}
                     />
                   </label>

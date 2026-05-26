@@ -333,15 +333,45 @@ export async function POST(request: Request) {
     // provided a real bot token. dmPolicy without a token is meaningless
     // anyway — the channel-level default (channels.telegram.dmPolicy) is
     // applied at read-time when no account-level override exists.
-    const hasIncomingToken =
-      typeof body.botToken === "string" && body.botToken.trim() && body.botToken !== "configured";
-    if (hasIncomingToken) {
+    //
+    // `shareBotWith` is a server-side shortcut that lets the agent form
+    // create a sub-agent reusing the SAME bot as another existing agent
+    // without the token ever crossing back through the browser. The
+    // backend copies channels.telegram.accounts[shareBotWith].botToken
+    // into the new account so the operator can spin up linked agents
+    // ("dev", "vendas", ...) all answering through the @main_bot.
+    const shareBotWith =
+      typeof body.shareBotWith === "string" && body.shareBotWith.trim()
+        ? body.shareBotWith.trim()
+        : null;
+    let resolvedToken: string | null = null;
+    if (shareBotWith) {
+      const sourceAccount = config.channels?.telegram?.accounts?.[shareBotWith];
+      const sourceToken =
+        typeof sourceAccount?.botToken === "string" ? sourceAccount.botToken.trim() : "";
+      if (!sourceToken) {
+        return NextResponse.json(
+          {
+            error: `shareBotWith="${shareBotWith}": agente fonte não tem botToken configurado. Configure o bot do "${shareBotWith}" primeiro (Telegram Setup) e tente novamente.`,
+          },
+          { status: 400 },
+        );
+      }
+      resolvedToken = sourceToken;
+    } else if (
+      typeof body.botToken === "string" &&
+      body.botToken.trim() &&
+      body.botToken !== "configured"
+    ) {
+      resolvedToken = body.botToken.trim();
+    }
+    if (resolvedToken) {
       if (!config.channels) config.channels = {};
       if (!config.channels.telegram) config.channels.telegram = { dmPolicy: "pairing" };
       if (!config.channels.telegram.accounts) config.channels.telegram.accounts = {};
 
       const existingAccount = config.channels.telegram.accounts[body.id] || {};
-      const nextAccount = { ...existingAccount, botToken: body.botToken.trim() };
+      const nextAccount = { ...existingAccount, botToken: resolvedToken };
       const hasIncomingDmPolicy = typeof body.dmPolicy === "string" && body.dmPolicy.trim();
       if (hasIncomingDmPolicy) nextAccount.dmPolicy = body.dmPolicy;
       config.channels.telegram.accounts[body.id] = nextAccount;
@@ -427,20 +457,50 @@ export async function PUT(request: Request) {
     // including the tokenless-entry bug: dmPolicy alone never creates an
     // account entry. To save dmPolicy for an agent, use the TelegramSetupModal
     // (which saves it next to a real botToken).
-    const putHasIncomingToken =
+    // `shareBotWith` follows the same shape as POST — used to switch a
+    // sub-agent over to share the parent's bot without re-typing the token.
+    const putShareBotWith =
+      typeof body.shareBotWith === "string" && body.shareBotWith.trim()
+        ? body.shareBotWith.trim()
+        : null;
+    const putHasIncomingTokenInput =
       typeof body.botToken === "string" && body.botToken.trim() && body.botToken !== "configured";
     const putHasIncomingDmPolicy = typeof body.dmPolicy === "string" && body.dmPolicy.trim();
+
+    let putResolvedToken: string | null = null;
+    if (putShareBotWith) {
+      const sourceAccount = config.channels?.telegram?.accounts?.[putShareBotWith];
+      const sourceToken =
+        typeof sourceAccount?.botToken === "string" ? sourceAccount.botToken.trim() : "";
+      if (!sourceToken) {
+        return NextResponse.json(
+          {
+            error: `shareBotWith="${putShareBotWith}": agente fonte não tem botToken configurado.`,
+          },
+          { status: 400 },
+        );
+      }
+      putResolvedToken = sourceToken;
+    } else if (putHasIncomingTokenInput) {
+      putResolvedToken = body.botToken.trim();
+    }
+
     const existingAccount = config.channels?.telegram?.accounts?.[body.id];
-    if (putHasIncomingToken) {
+    if (putResolvedToken) {
       if (!config.channels) config.channels = {};
       if (!config.channels.telegram) config.channels.telegram = { dmPolicy: "pairing" };
       if (!config.channels.telegram.accounts) config.channels.telegram.accounts = {};
 
       const cur = config.channels.telegram.accounts[body.id] || {};
-      const nextAccount = { ...cur, botToken: body.botToken.trim() };
+      const nextAccount = { ...cur, botToken: putResolvedToken };
       if (putHasIncomingDmPolicy) nextAccount.dmPolicy = body.dmPolicy;
       config.channels.telegram.accounts[body.id] = nextAccount;
-    } else if (putHasIncomingDmPolicy && existingAccount && typeof existingAccount.botToken === "string" && existingAccount.botToken.trim()) {
+    } else if (
+      putHasIncomingDmPolicy &&
+      existingAccount &&
+      typeof existingAccount.botToken === "string" &&
+      existingAccount.botToken.trim()
+    ) {
       // Only let dmPolicy edits land when an account ALREADY exists with a
       // real token. Without this guard, an edit-modal save would create the
       // same tokenless entry as the POST bug above.
