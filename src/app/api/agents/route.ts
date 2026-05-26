@@ -214,6 +214,28 @@ function stripTokenlessTelegramAccounts(config: any): string[] {
 
 export const dynamic = "force-dynamic";
 
+/**
+ * Normalize a model id so OpenClaw's strict-schema validator accepts it.
+ *
+ * OpenClaw requires `model.primary` (and `fallback`) to be in the form
+ * `<provider>/<model>` (e.g. `openai/gpt-5.5`, `ollama/qwen2.5-coder:32b`).
+ * The UI's ModelPicker emits the prefixed form, but custom inputs and
+ * legacy edits sometimes drop the prefix — `gpt-5.5` alone is rejected
+ * with `agents.list.N.model: Invalid input` and the daemon falls back to
+ * the last-known-good config (undoing other fixes in the process).
+ *
+ * Defensive guardrail: if a model id is non-empty and doesn't already
+ * start with `<provider>/`, prefix it with `openai/`. Empty strings stay
+ * empty (the caller decides whether to fall back to defaults).
+ */
+function normalizeModelId(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  if (/^[a-z][a-z0-9_-]+\//i.test(trimmed)) return trimmed;
+  return `openai/${trimmed}`;
+}
+
 interface Agent {
   id: string;
   name?: string;
@@ -322,15 +344,55 @@ export async function GET() {
     // Self-heal: clamp dmPolicy to canonical values (pairing/open/off).
     // Anything else (e.g. "allowlist") makes OpenClaw silently drop DMs.
     const fixedDmPolicies = normalizeTelegramDmPolicies(config);
+    // Self-heal: prefix any model id missing a provider/ slug. OpenClaw
+    // rejects "gpt-5.5" as invalid; we map it to "openai/gpt-5.5". Without
+    // this, `openclaw doctor --fix` rolls the config back to a backup —
+    // wiping every other fix we made on the way.
+    const fixedModels: Array<{ id: string; field: string; from: string; to: string }> = [];
+    if (Array.isArray(config?.agents?.list)) {
+      for (const agent of config.agents.list) {
+        if (!agent || typeof agent !== "object" || !agent.model) continue;
+        if (typeof agent.model.primary === "string") {
+          const normalized = normalizeModelId(agent.model.primary);
+          if (normalized && normalized !== agent.model.primary) {
+            fixedModels.push({ id: agent.id, field: "primary", from: agent.model.primary, to: normalized });
+            agent.model.primary = normalized;
+          }
+        }
+        if (typeof agent.model.fallback === "string") {
+          const normalized = normalizeModelId(agent.model.fallback);
+          if (normalized && normalized !== agent.model.fallback) {
+            fixedModels.push({ id: agent.id, field: "fallback", from: agent.model.fallback, to: normalized });
+            agent.model.fallback = normalized;
+          }
+        }
+        if (Array.isArray(agent.model.fallbacks)) {
+          for (let i = 0; i < agent.model.fallbacks.length; i++) {
+            const v = agent.model.fallbacks[i];
+            if (typeof v !== "string") continue;
+            const normalized = normalizeModelId(v);
+            if (normalized && normalized !== v) {
+              fixedModels.push({ id: agent.id, field: `fallbacks[${i}]`, from: v, to: normalized });
+              agent.model.fallbacks[i] = normalized;
+            }
+          }
+        }
+      }
+    }
     if (
       uiMigrated ||
       bindingsStripped ||
       removedAccounts.length > 0 ||
       removedSubAccounts.length > 0 ||
-      fixedDmPolicies.length > 0
+      fixedDmPolicies.length > 0 ||
+      fixedModels.length > 0
     ) {
       try {
         writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+        const modelSummary =
+          fixedModels.length > 0
+            ? `prefixed model ids (${fixedModels.map((f) => `${f.id}.${f.field}: ${f.from}→${f.to}`).join("; ")})`
+            : null;
         const what = [
           uiMigrated && "ui→local",
           bindingsStripped && "stripped invalid agents.bindings",
@@ -340,11 +402,18 @@ export async function GET() {
             `removed phantom sub-agent accounts (${removedSubAccounts.join(", ")})`,
           fixedDmPolicies.length > 0 &&
             `clamped invalid dmPolicy → pairing (${fixedDmPolicies.join(", ")})`,
+          modelSummary,
         ]
           .filter(Boolean)
           .join(" + ");
         logActivity("config", `Migração openclaw.json: ${what}`, "success", {
-          metadata: { configPath, removedAccounts, removedSubAccounts, fixedDmPolicies },
+          metadata: {
+            configPath,
+            removedAccounts,
+            removedSubAccounts,
+            fixedDmPolicies,
+            fixedModels,
+          },
         });
       } catch (e) {
         console.error("Failed to persist openclaw.json migrations:", e);
@@ -457,11 +526,16 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Agent ID already exists" }, { status: 400 });
     }
 
+    // Always normalize so a UI-typed "gpt-5.5" can't slip through and
+    // poison the config (OpenClaw rejects unprefixed model ids and reverts
+    // to last-known-good, undoing other fixes in the process).
+    const primaryRaw = body.model || config.agents.defaults?.model?.primary || "openai/gpt-5.4-codex";
     const newAgentModel: { primary: string; fallback?: string } = {
-      primary: body.model || config.agents.defaults?.model?.primary || "openai/gpt-5.4-codex",
+      primary: normalizeModelId(primaryRaw) || "openai/gpt-5.4-codex",
     };
     if (typeof body.fallback === "string" && body.fallback.trim()) {
-      newAgentModel.fallback = body.fallback.trim();
+      const fb = normalizeModelId(body.fallback);
+      if (fb) newAgentModel.fallback = fb;
     }
 
     const newAgent = {
@@ -648,10 +722,22 @@ export async function PUT(request: Request) {
     // strip it so OpenClaw doesn't reject the config on next reload.
     if ("ui" in agent) delete agent.ui;
     if (!agent.model) agent.model = {};
-    if (body.model) agent.model.primary = body.model;
+    if (body.model) {
+      // Normalize on the way in (UI may have dropped the provider/ prefix)
+      const normalized = normalizeModelId(body.model);
+      if (normalized) agent.model.primary = normalized;
+    }
+    // Also normalize any pre-existing malformed primary that crept in from
+    // older edits / hand-edits. Prevents the doctor revert loop.
+    if (typeof agent.model.primary === "string") {
+      const normalizedExisting = normalizeModelId(agent.model.primary);
+      if (normalizedExisting && normalizedExisting !== agent.model.primary) {
+        agent.model.primary = normalizedExisting;
+      }
+    }
     // fallback handling: preserve original shape (`fallback` string or `fallbacks` array)
     if (body.fallback !== undefined) {
-      const fb = typeof body.fallback === "string" ? body.fallback.trim() : "";
+      const fb = normalizeModelId(body.fallback);
       if (Array.isArray(agent.model.fallbacks)) {
         agent.model.fallbacks = fb ? [fb] : [];
       } else if (fb) {
