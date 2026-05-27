@@ -238,6 +238,111 @@ function extractDeltaText(payload: Record<string, unknown>): string {
   return "";
 }
 
+// Streams (within `event: "agent"`) that carry no assistant text and
+// should be ignored entirely. These are the gateway's own lifecycle
+// signals + health pings + Codex-app server bookkeeping — extracting
+// from them would just dump runIds and timestamps into the bubble.
+const META_AGENT_STREAMS = new Set([
+  "lifecycle",
+  "health",
+  "telemetry",
+  "ping",
+  "pong",
+  "ack",
+  "session",
+  "session.update",
+]);
+
+function isMetaAgentStream(stream: string): boolean {
+  if (!stream) return false;
+  if (META_AGENT_STREAMS.has(stream)) return true;
+  // Codex-app-server internal streams are all bookkeeping (lifecycle,
+  // exec, etc.). The assistant's actual reply lands on streams without
+  // this prefix (typically `item`, `message`, `output`, …).
+  if (stream.startsWith("codex_app_server")) return true;
+  if (stream.startsWith("lifecycle")) return true;
+  if (stream.startsWith("health")) return true;
+  return false;
+}
+
+/**
+ * Extracts assistant text from an `event: "agent"` payload. OpenClaw's
+ * current gateway wraps the agent's stream into a transport envelope
+ * with a `stream` discriminator and a `data` (or similar) sub-object
+ * shaped like the underlying model's streaming format (Codex / OpenAI
+ * Responses API, with `item.content[].text` chunks). We look in every
+ * shape we've seen so far, returning the first non-empty string match.
+ */
+function extractAgentEventText(payload: Record<string, unknown>): string {
+  // Top-level known fields (deltaText / text / content / etc.)
+  const top = extractDeltaText(payload);
+  if (top) return top;
+
+  // `data` sub-object — the gateway often nests the model frame in here.
+  const data = isRecord(payload.data) ? (payload.data as Record<string, unknown>) : null;
+  if (data) {
+    const dataText = extractDeltaText(data);
+    if (dataText) return dataText;
+
+    // Codex item shape: { item: { content: [{ type: "output_text", text: "…" }] } }
+    const item = isRecord(data.item) ? (data.item as Record<string, unknown>) : null;
+    if (item) {
+      const itemText = extractItemText(item);
+      if (itemText) return itemText;
+    }
+
+    // Some builds put the textual delta straight in `delta` as a string
+    if (typeof data.delta === "string" && data.delta.length > 0) {
+      return data.delta;
+    }
+    // Or `delta.text` / `delta.content` when it's an object
+    const delta = isRecord(data.delta) ? (data.delta as Record<string, unknown>) : null;
+    if (delta) {
+      const dt = extractDeltaText(delta);
+      if (dt) return dt;
+    }
+  }
+
+  // Direct `item` at top level (some builds skip the `data` wrap)
+  const directItem = isRecord(payload.item) ? (payload.item as Record<string, unknown>) : null;
+  if (directItem) {
+    const itemText = extractItemText(directItem);
+    if (itemText) return itemText;
+  }
+
+  // Top-level `delta` string
+  if (typeof payload.delta === "string" && payload.delta.length > 0) {
+    return payload.delta;
+  }
+
+  return "";
+}
+
+function extractItemText(item: Record<string, unknown>): string {
+  // Codex: item.content is an array of content parts, each may have
+  // type="output_text"|"text"|"input_text" and a `text` string field.
+  if (Array.isArray(item.content)) {
+    const parts: string[] = [];
+    for (const part of item.content as unknown[]) {
+      if (!isRecord(part)) continue;
+      const partRec = part as Record<string, unknown>;
+      const type = typeof partRec.type === "string" ? partRec.type : "";
+      // Skip non-text parts (image, tool, etc.)
+      if (type && !/text|output_text|input_text/i.test(type)) continue;
+      if (typeof partRec.text === "string" && partRec.text) {
+        parts.push(partRec.text);
+      }
+    }
+    if (parts.length > 0) return parts.join("");
+  }
+  // Flat: item.text / item.delta / item.message
+  if (typeof item.text === "string" && item.text) return item.text;
+  if (typeof item.delta === "string" && item.delta) return item.delta;
+  if (typeof item.message === "string" && item.message) return item.message;
+  if (typeof item.value === "string" && item.value) return item.value;
+  return "";
+}
+
 /**
  * Pulls the visible assistant reply out of a `chat.event` payload regardless
  * of where the gateway placed it. Different OpenClaw builds put the text in
@@ -378,7 +483,9 @@ function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
 
     // Allow-list of event names that legitimately carry assistant text
     // OR a state machine (delta/final/aborted/error). Everything else
-    // is ignored for text extraction.
+    // is ignored for text extraction. `agent` is the catch-all envelope
+    // current OpenClaw gateways use for the underlying model stream —
+    // it has a `stream` discriminator inside `payload` we sub-filter on.
     const CHAT_EVENTS = new Set([
       "chat.event",
       "chat",
@@ -386,6 +493,7 @@ function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
       "chat.token",
       "chat.message",
       "chat.final",
+      "agent",
       "agent.delta",
       "agent.message",
       "assistant.delta",
@@ -397,6 +505,24 @@ function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
     if (isChatEvent) {
       if (typeof payload.runId === "string") state.runId = payload.runId;
       const eventState = typeof payload.state === "string" ? payload.state : undefined;
+      const stream = typeof payload.stream === "string" ? payload.stream : "";
+
+      // For `event:"agent"` frames, the gateway sub-types via the
+      // `stream` field. Bookkeeping streams (lifecycle/health/codex_app_server_*)
+      // never carry text — skip them outright. Otherwise treat the
+      // frame as a delta-shaped chunk and try the Codex-aware
+      // extractor.
+      if (eventName === "agent") {
+        if (!stream || isMetaAgentStream(stream)) {
+          return events;
+        }
+        const text = extractAgentEventText(payload);
+        if (text) {
+          events.push({ type: "token", delta: text });
+          state.tokensEmitted = true;
+        }
+        return events;
+      }
 
       // Treat events without an explicit state but with a delta-style
       // name (chat.delta, chat.token, etc.) as deltas. Same for
