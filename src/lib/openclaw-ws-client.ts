@@ -51,6 +51,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * `JSON.stringify` with a small fence against circular refs so the
+ * diagnostic dump can't crash the stream when the gateway happens to
+ * send a self-referential structure.
+ */
+function safeStringify(value: unknown, indent = 2): string {
+  const seen = new WeakSet();
+  try {
+    return JSON.stringify(
+      value,
+      (_key, v) => {
+        if (typeof v === "object" && v !== null) {
+          if (seen.has(v as object)) return "[Circular]";
+          seen.add(v as object);
+        }
+        return v;
+      },
+      indent,
+    );
+  } catch {
+    return String(value);
+  }
+}
+
 interface WsCandidate {
   url: string;
   token: string | null;
@@ -99,26 +123,120 @@ interface RunnerState {
 }
 
 /**
+ * Field names where OpenClaw builds have historically placed the visible
+ * assistant reply inside a `chat.event` payload. Order matters — the
+ * left-most known field wins. Listed in the rough order they were
+ * introduced across gateway versions so the most current name takes
+ * priority while older builds still get matched.
+ */
+const KNOWN_TEXT_FIELDS = [
+  "deltaText",
+  "text",
+  "responseText",
+  "message",
+  "content",
+  "reply",
+  "output",
+  "answer",
+  "assistantText",
+  "value",
+  "data",
+] as const;
+
+/**
+ * Last-resort recursive scan: walks the payload graph collecting every
+ * string value and returns the longest one above `minLength`. Stops at
+ * `maxDepth` and skips obviously diagnostic keys (ids, types, codes,
+ * timestamps, model names) so we don't accidentally pick up "chat.event"
+ * or a runId as the assistant reply.
+ *
+ * This is the safety net for OpenClaw builds whose `final` frame puts
+ * the reply under a key we don't yet know about — better to surface
+ * *something* (we can always refine the parser later) than to leave the
+ * user staring at an empty bubble.
+ */
+const TEXT_SKIP_KEYS = new Set([
+  "type",
+  "event",
+  "id",
+  "runId",
+  "sessionId",
+  "sessionKey",
+  "connId",
+  "code",
+  "kind",
+  "state",
+  "phase",
+  "name",
+  "model",
+  "provider",
+  "mode",
+  "lang",
+  "locale",
+  "ts",
+  "createdAt",
+  "updatedAt",
+  "version",
+  "platform",
+  "userAgent",
+]);
+
+function findLongestStringDeep(
+  value: unknown,
+  minLength: number,
+  maxDepth: number,
+): string {
+  let best = "";
+  const visit = (node: unknown, depth: number) => {
+    if (depth > maxDepth) return;
+    if (typeof node === "string") {
+      if (node.length >= minLength && node.length > best.length) best = node;
+      return;
+    }
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item, depth + 1);
+      return;
+    }
+    if (node && typeof node === "object") {
+      for (const [key, child] of Object.entries(node as Record<string, unknown>)) {
+        if (TEXT_SKIP_KEYS.has(key)) continue;
+        visit(child, depth + 1);
+      }
+    }
+  };
+  visit(value, 0);
+  return best;
+}
+
+/**
  * Pulls the visible assistant reply out of a `chat.event` payload regardless
  * of where the gateway placed it. Different OpenClaw builds put the text in
  * different fields: streaming builds use `deltaText`; buffered builds put
  * the whole answer under `text`, `payloads[0].text`, or nest the full CLI
  * envelope under `result.payloads[0].text` /
- * `result.meta.finalAssistantVisibleText`. We accept any of them.
+ * `result.meta.finalAssistantVisibleText`. We accept any of them, plus a
+ * recursive longest-string fallback for builds with a not-yet-mapped
+ * field name.
  */
 function extractPayloadText(payload: Record<string, unknown>): string {
-  if (typeof payload.deltaText === "string" && payload.deltaText) {
-    return payload.deltaText;
+  // Pass 1 — known top-level fields, in priority order.
+  for (const field of KNOWN_TEXT_FIELDS) {
+    const value = payload[field];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value;
+    }
   }
-  if (typeof payload.text === "string" && payload.text) return payload.text;
-  if (typeof payload.responseText === "string" && payload.responseText) {
-    return payload.responseText;
-  }
+  // Pass 2 — known nested locations (payloads[0].text, result.*).
   const payloads = Array.isArray(payload.payloads)
     ? (payload.payloads as Array<Record<string, unknown>>)
     : null;
-  if (payloads && payloads[0] && typeof payloads[0].text === "string") {
-    return payloads[0].text;
+  if (payloads && payloads[0]) {
+    for (const field of KNOWN_TEXT_FIELDS) {
+      const value = payloads[0][field];
+      if (typeof value === "string" && value.trim().length > 0) {
+        return value;
+      }
+    }
   }
   const result = isRecord(payload.result)
     ? (payload.result as Record<string, unknown>)
@@ -127,26 +245,37 @@ function extractPayloadText(payload: Record<string, unknown>): string {
     const resultPayloads = Array.isArray(result.payloads)
       ? (result.payloads as Array<Record<string, unknown>>)
       : null;
-    if (
-      resultPayloads &&
-      resultPayloads[0] &&
-      typeof resultPayloads[0].text === "string"
-    ) {
-      return resultPayloads[0].text;
+    if (resultPayloads && resultPayloads[0]) {
+      for (const field of KNOWN_TEXT_FIELDS) {
+        const value = resultPayloads[0][field];
+        if (typeof value === "string" && value.trim().length > 0) {
+          return value;
+        }
+      }
     }
     const meta = isRecord(result.meta)
       ? (result.meta as Record<string, unknown>)
       : null;
     if (meta) {
-      if (typeof meta.finalAssistantVisibleText === "string") {
+      if (
+        typeof meta.finalAssistantVisibleText === "string" &&
+        meta.finalAssistantVisibleText.trim().length > 0
+      ) {
         return meta.finalAssistantVisibleText;
       }
-      if (typeof meta.finalAssistantRawText === "string") {
+      if (
+        typeof meta.finalAssistantRawText === "string" &&
+        meta.finalAssistantRawText.trim().length > 0
+      ) {
         return meta.finalAssistantRawText;
       }
     }
   }
-  return "";
+  // Pass 3 — last resort: longest string anywhere in the payload. Better
+  // to surface the wrong-looking blob than leave the user staring at an
+  // empty bubble; the operator can paste the diagnostic log and we'll
+  // learn the new field name from it.
+  return findLongestStringDeep(payload, 8, 6);
 }
 
 function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
@@ -204,6 +333,26 @@ function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
             const finalText = extractPayloadText(payload);
             if (finalText) {
               events.push({ type: "token", delta: finalText });
+              state.tokensEmitted = true;
+            } else {
+              // Gateway sent `final` but we couldn't find any text field
+              // we recognise. Dump the raw payload to the server log so
+              // we can learn the new field name, AND surface the dump
+              // inside the chat bubble itself — the user can paste it
+              // back and we add the field. Beats staring at empty space.
+              const dump = safeStringify(payload).slice(0, 4000);
+              console.warn(
+                `[ws] chat.event state=final without recognised text. Payload dump:\n${dump}`,
+              );
+              events.push({
+                type: "token",
+                delta:
+                  `⚠ O gateway respondeu, mas o texto veio em um campo desconhecido.\n` +
+                  `Cole este payload no chat para eu mapear:\n\n` +
+                  "```json\n" +
+                  dump +
+                  "\n```",
+              });
               state.tokensEmitted = true;
             }
           }
