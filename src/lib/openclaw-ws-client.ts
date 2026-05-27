@@ -318,6 +318,16 @@ function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
         code === "DEVICE_REQUIRED"
       ) {
         code = "WS_DEVICE_REQUIRED";
+      } else if (
+        /invalid\s+connect\s+params/i.test(msg) ||
+        /must\s+have\s+required\s+property/i.test(msg) ||
+        /unexpected\s+property/i.test(msg)
+      ) {
+        // Schema-validation rejection — keep the gateway's full
+        // message so the operator sees exactly which field is wrong.
+        // Distinct code lets the UI offer a different banner ("você
+        // precisa atualizar o AtlasDeck" vs "ative o auth bypass").
+        code = "WS_INVALID_PARAMS";
       }
       events.push({ type: "error", message: msg, code });
       return events;
@@ -474,33 +484,42 @@ function describe(candidate: WsCandidate): string {
 }
 
 function buildConnectRequest(token: string | null): Record<string, unknown> {
-  // Minimal shape per docs.openclaw.ai/gateway/protocol — "Trusted
-  // same-process backend clients (`client.id: "gateway-client"`,
-  // `client.mode: "backend"`) may omit `device` on direct loopback
-  // connections when they authenticate with the shared gateway token".
-  // The earlier wide shape (platform/scopes/caps/permissions/locale/
-  // userAgent) was making OpenClaw 2026.5+ reject the handshake with
-  // "device identity required" — the strict schema doesn't accept
-  // those fields for the backend trust path. Sending only what the
-  // doc lists keeps the door to the loopback bypass open.
-  const params: Record<string, unknown> = {
-    minProtocol: 4,
-    maxProtocol: 4,
-    client: {
-      id: "gateway-client",
-      version: "1.0.0",
-      mode: "backend",
-    },
-    role: "operator",
-  };
-  if (token) {
-    params.auth = { token };
-  }
+  // OpenClaw gateway 2026.5+ has a STRICT JSON-schema for connect
+  // params — it rejects both extra AND missing fields. Empirically:
+  //   - `platform`  REQUIRED  (gateway returns "must have required
+  //                            property 'platform'" without it)
+  //   - `client.mode: "backend"` + token → skips device pairing on
+  //     loopback (still need dangerouslyDisableDeviceAuth=true in
+  //     openclaw.json for some recent builds — the auth auto-fix
+  //     handles that)
+  //   - `scopes/caps/commands/permissions/locale/userAgent` accepted
+  //     as long as they're well-formed; sending them keeps the
+  //     handshake working across the largest range of gateway versions
+  // The doc at docs.openclaw.ai/gateway/protocol shows a "minimal"
+  // example without `platform`, but real builds reject that — keep
+  // the wider shape that mirrors what the OpenClaw CLI itself sends.
   return {
     type: "req",
     id: randomUUID(),
     method: "connect",
-    params,
+    params: {
+      minProtocol: 3,
+      maxProtocol: 4,
+      client: {
+        id: "gateway-client",
+        version: "1.0.0",
+        platform: process.platform,
+        mode: "backend",
+      },
+      role: "operator",
+      scopes: ["operator.read", "operator.write"],
+      caps: [],
+      commands: [],
+      permissions: {},
+      auth: token ? { token } : {},
+      locale: "pt-BR",
+      userAgent: "atlasdeck-mission-control/1.0",
+    },
   };
 }
 
