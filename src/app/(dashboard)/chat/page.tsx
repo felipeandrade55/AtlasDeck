@@ -96,6 +96,129 @@ export default function ChatPage() {
     stubReply: boolean;
     heartbeatLeak: boolean;
   }>({ buffered: false, stubReply: false, heartbeatLeak: false });
+  // Tracks an in-flight "Corrigir automaticamente" call so the buttons
+  // disable themselves and show progress while the server applies the
+  // fix. Distinct keys so streaming + heartbeat fixes can run
+  // independently without each other's spinners getting confused.
+  const [autoFixBusy, setAutoFixBusy] = useState<
+    null | "streaming" | "heartbeat" | "all"
+  >(null);
+  const [autoFixResult, setAutoFixResult] = useState<string | null>(null);
+  // Pre-emptive health check: when the chat page loads we ping the
+  // server for a non-mutating diagnostic. If something is off (no
+  // streaming config or no heartbeat guard) the relevant banner is
+  // shown immediately, so the user can fix things BEFORE talking to
+  // the agent and seeing the broken behaviour.
+  const [healthCheck, setHealthCheck] = useState<{
+    streamingOk: boolean;
+    heartbeatGuardOk: boolean;
+  } | null>(null);
+
+  const runAutoFix = useCallback(
+    async (which: "streaming" | "heartbeat" | "all") => {
+      if (autoFixBusy) return;
+      setAutoFixBusy(which);
+      setAutoFixResult(null);
+      try {
+        const res = await fetch("/api/openclaw/auto-fix", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ fix: which, restart: true }),
+        });
+        const data = (await res.json()) as {
+          ok: boolean;
+          applied: string[];
+          streaming?: { alreadyCorrect: boolean; error?: string };
+          heartbeat?: { alreadyCorrect: boolean; error?: string };
+          restart?: { ok: boolean; method: string; detail: string; error?: string };
+        };
+        if (!data.ok) {
+          const err =
+            data.streaming?.error ||
+            data.heartbeat?.error ||
+            data.restart?.error ||
+            "falha desconhecida";
+          setAutoFixResult(`⚠ Auto-fix falhou: ${err}`);
+        } else if (data.applied.length === 0) {
+          setAutoFixResult("✓ Config já estava correta — nada a fazer.");
+          // Dismiss the relevant banner since it's actually clean now.
+          setAgentDiagnostics((d) => ({
+            ...d,
+            buffered: which === "streaming" || which === "all" ? false : d.buffered,
+            heartbeatLeak: which === "heartbeat" || which === "all" ? false : d.heartbeatLeak,
+          }));
+        } else {
+          const parts = data.applied.map((a) =>
+            a === "streaming" ? "streaming" : "heartbeat guard",
+          );
+          const restartMsg = data.restart
+            ? data.restart.ok
+              ? ` · gateway reiniciado (${data.restart.method})`
+              : ` · ⚠ não consegui reiniciar o gateway automaticamente`
+            : "";
+          setAutoFixResult(`✓ Aplicado: ${parts.join(", ")}${restartMsg}`);
+          // Clear the banners that were causing this to be needed —
+          // the auto-fix already addressed them.
+          setAgentDiagnostics((d) => ({
+            ...d,
+            buffered: which === "streaming" || which === "all" ? false : d.buffered,
+            heartbeatLeak: which === "heartbeat" || which === "all" ? false : d.heartbeatLeak,
+          }));
+          // Refresh health snapshot so the proactive banners disappear.
+          try {
+            const hc = await fetch("/api/openclaw/health-check");
+            if (hc.ok) {
+              const j = (await hc.json()) as {
+                streamingOk: boolean;
+                heartbeatGuardOk: boolean;
+              };
+              setHealthCheck({
+                streamingOk: j.streamingOk,
+                heartbeatGuardOk: j.heartbeatGuardOk,
+              });
+            }
+          } catch {
+            // ignore — banner just stays until next reload
+          }
+        }
+        // Auto-dismiss the result toast after ~6s
+        setTimeout(() => setAutoFixResult((r) => (r ? null : r)), 6000);
+      } catch (err) {
+        setAutoFixResult(`⚠ Auto-fix falhou: ${(err as Error).message}`);
+      } finally {
+        setAutoFixBusy(null);
+      }
+    },
+    [autoFixBusy],
+  );
+
+  // Run the proactive health check once when the chat mounts. Failures
+  // here are non-fatal — the banners that fire on actual issues are the
+  // hard fallback.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/openclaw/health-check");
+        if (!res.ok || cancelled) return;
+        const j = (await res.json()) as {
+          streamingOk: boolean;
+          heartbeatGuardOk: boolean;
+        };
+        if (!cancelled) {
+          setHealthCheck({
+            streamingOk: j.streamingOk,
+            heartbeatGuardOk: j.heartbeatGuardOk,
+          });
+        }
+      } catch {
+        // ignore — proactive nag is best-effort
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const stream = useChatStream();
   const tts = useTtsEngine();
@@ -899,19 +1022,127 @@ export default function ChatPage() {
         {wakeTeaser && (
           <div style={wakeTeaserStyle}>🎙 {wakeTeaser}</div>
         )}
+        {autoFixResult && (
+          <div
+            style={{
+              ...wakeTeaserStyle,
+              background: autoFixResult.startsWith("✓")
+                ? "rgba(16,185,129,0.10)"
+                : "rgba(245,158,11,0.10)",
+              borderBottom: `1px solid ${
+                autoFixResult.startsWith("✓") ? "#10b981" : "#f59e0b"
+              }`,
+              color: autoFixResult.startsWith("✓") ? "#10b981" : "#f59e0b",
+            }}
+          >
+            {autoFixResult}
+          </div>
+        )}
+        {healthCheck &&
+          !healthCheck.streamingOk &&
+          !agentDiagnostics.buffered && (
+            <div style={diagnosticBannerStyle}>
+              <span style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+                <span>
+                  <strong>ℹ Streaming não está ligado no OpenClaw</strong>
+                  <br />
+                  Detectei que <code style={inlineCodeStyle}>blockStreaming</code> está
+                  desligado no <code style={inlineCodeStyle}>~/.openclaw/openclaw.json</code>.
+                  Sem ele, a resposta vem só depois de pronta (5–10s de espera). Posso
+                  ligar agora pra você?
+                </span>
+                <span style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
+                  <button
+                    type="button"
+                    disabled={autoFixBusy !== null}
+                    onClick={() => runAutoFix("streaming")}
+                    style={{
+                      ...primaryBtnStyle,
+                      opacity: autoFixBusy !== null ? 0.5 : 1,
+                      cursor: autoFixBusy !== null ? "wait" : "pointer",
+                    }}
+                  >
+                    {autoFixBusy === "streaming" ? "Aplicando..." : "Ligar streaming"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setHealthCheck((h) => (h ? { ...h, streamingOk: true } : h))
+                    }
+                    style={dismissBtnStyle}
+                  >
+                    Dispensar
+                  </button>
+                </span>
+              </span>
+            </div>
+          )}
+        {healthCheck &&
+          !healthCheck.heartbeatGuardOk &&
+          !agentDiagnostics.heartbeatLeak && (
+            <div style={diagnosticBannerStyle}>
+              <span style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+                <span>
+                  <strong>ℹ Guard do HEARTBEAT ainda não foi instalado</strong>
+                  <br />
+                  Sem essa proteção no <code style={inlineCodeStyle}>AGENTS.md</code> o
+                  agente pode confundir mensagens normais (&ldquo;bom dia&rdquo;) com o
+                  ping do cron das 7h e responder o template em vez da pergunta. Posso
+                  instalar agora?
+                </span>
+                <span style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
+                  <button
+                    type="button"
+                    disabled={autoFixBusy !== null}
+                    onClick={() => runAutoFix("heartbeat")}
+                    style={{
+                      ...primaryBtnStyle,
+                      opacity: autoFixBusy !== null ? 0.5 : 1,
+                      cursor: autoFixBusy !== null ? "wait" : "pointer",
+                    }}
+                  >
+                    {autoFixBusy === "heartbeat" ? "Aplicando..." : "Instalar guard"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setHealthCheck((h) =>
+                        h ? { ...h, heartbeatGuardOk: true } : h,
+                      )
+                    }
+                    style={dismissBtnStyle}
+                  >
+                    Dispensar
+                  </button>
+                </span>
+              </span>
+            </div>
+          )}
         {agentDiagnostics.buffered && (
           <div style={diagnosticBannerStyle}>
             <span style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
               <span>
                 <strong>⚡ Latência: gateway está bufferizando a resposta inteira</strong>
                 <br />
-                Para streaming real (1º token em ~2s), edite{" "}
-                <code style={inlineCodeStyle}>~/.openclaw/openclaw.json</code> no servidor e adicione em{" "}
-                <code style={inlineCodeStyle}>agents.defaults</code>:
-                <pre style={preStyle}>{BUFFERED_CONFIG_SNIPPET}</pre>
-                Depois: <code style={inlineCodeStyle}>systemctl restart openclaw-gateway</code>
+                Para streaming real (1º token em ~2s) é preciso ligar{" "}
+                <code style={inlineCodeStyle}>blockStreaming</code> em{" "}
+                <code style={inlineCodeStyle}>~/.openclaw/openclaw.json</code>. O
+                AtlasDeck pode fazer isso pra você no servidor — clique no botão.
               </span>
               <span style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
+                <button
+                  type="button"
+                  disabled={autoFixBusy !== null}
+                  onClick={() => runAutoFix("streaming")}
+                  style={{
+                    ...primaryBtnStyle,
+                    opacity: autoFixBusy !== null ? 0.5 : 1,
+                    cursor: autoFixBusy !== null ? "wait" : "pointer",
+                  }}
+                  title="Edita openclaw.json + reinicia o gateway, sem abrir o terminal"
+                >
+                  {autoFixBusy === "streaming" ? "Aplicando..." : "Corrigir automaticamente"}
+                </button>
                 <button
                   type="button"
                   onClick={async () => {
@@ -923,9 +1154,10 @@ export default function ChatPage() {
                       setStatusBanner("⚠ Não foi possível copiar — copie manualmente");
                     }
                   }}
-                  style={primaryBtnStyle}
+                  style={dismissBtnStyle}
+                  title="Backup: copia o JSON pra você colar manualmente"
                 >
-                  Copiar JSON
+                  Copiar JSON (manual)
                 </button>
                 <button
                   type="button"
@@ -992,24 +1224,26 @@ export default function ChatPage() {
                 <br />
                 A resposta retornada parece ser o próprio system prompt
                 (&ldquo;Read HEARTBEAT.md...&rdquo;) em vez de uma resposta à sua mensagem.
-                Isso significa que o <code style={inlineCodeStyle}>AGENTS.md</code> do agente{" "}
-                <code style={inlineCodeStyle}>main</code> está tratando TODA mensagem como um
-                heartbeat de cron, em vez de aplicar essa regra só ao briefing matinal das 7h.
-                <br />
-                <br />
-                <strong>Para corrigir no VPS:</strong>
-                <br />
-                1. Edite <code style={inlineCodeStyle}>~/.openclaw/workspace/AGENTS.md</code>
-                <br />
-                2. Encontre o bloco que instrui &ldquo;Read HEARTBEAT.md...&rdquo;
-                <br />
-                3. Adicione uma condição: aplicar SÓ quando a mensagem do user for literalmente{" "}
+                O AtlasDeck pode corrigir isso pra você adicionando uma regra
+                condicional no <code style={inlineCodeStyle}>AGENTS.md</code> que só
+                dispara o heartbeat quando a mensagem é literalmente{" "}
                 <code style={inlineCodeStyle}>HEARTBEAT</code> ou{" "}
-                <code style={inlineCodeStyle}>PING</code>. Exemplo:
-                <pre style={preStyle}>{HEARTBEAT_FIX_SNIPPET}</pre>
-                4. Salve e reinicie: <code style={inlineCodeStyle}>systemctl --user restart openclaw-gateway</code>
+                <code style={inlineCodeStyle}>PING</code>.
               </span>
               <span style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
+                <button
+                  type="button"
+                  disabled={autoFixBusy !== null}
+                  onClick={() => runAutoFix("heartbeat")}
+                  style={{
+                    ...primaryBtnStyle,
+                    opacity: autoFixBusy !== null ? 0.5 : 1,
+                    cursor: autoFixBusy !== null ? "wait" : "pointer",
+                  }}
+                  title="Adiciona guard ao AGENTS.md + reinicia o gateway, sem abrir o terminal"
+                >
+                  {autoFixBusy === "heartbeat" ? "Aplicando..." : "Corrigir automaticamente"}
+                </button>
                 <button
                   type="button"
                   disabled={stream.isStreaming || !lastUserPrompt}
@@ -1019,14 +1253,14 @@ export default function ChatPage() {
                     void handleSend(lastUserPrompt, { forceInline: true });
                   }}
                   style={{
-                    ...primaryBtnStyle,
+                    ...dismissBtnStyle,
                     opacity: stream.isStreaming || !lastUserPrompt ? 0.5 : 1,
                     cursor: stream.isStreaming || !lastUserPrompt ? "not-allowed" : "pointer",
                   }}
                   title={
                     !lastUserPrompt
                       ? "Nenhuma pergunta recente"
-                      : "Reenvia com hint que instrui o agente a ignorar templates de heartbeat"
+                      : "Reenvia com hint inline (workaround temporário, sem editar AGENTS.md)"
                   }
                 >
                   Reenviar com hint

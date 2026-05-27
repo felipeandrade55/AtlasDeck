@@ -816,6 +816,44 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
+# FASE 3.8 — AUTO-FIX DO OPENCLAW (streaming + heartbeat guard)
+# ══════════════════════════════════════════════════════════════════════════════
+# Garante que o AtlasDeck funcione "out of the box" mesmo numa reinstalação
+# limpa, sem o user precisar abrir terminal para:
+#   - ligar blockStreaming no openclaw.json (sem isso, chat real-time
+#     fica bufferizado e a bolha demora 5–10s pra mostrar a resposta)
+#   - instalar o guard do HEARTBEAT no AGENTS.md (sem isso, o agente
+#     vaza o template "Read HEARTBEAT.md..." em vez de responder o user)
+#
+# Espelha o que a UI faz quando o operador clica em "Corrigir automaticamente"
+# — mesmas regras, mesma lib (src/lib/openclaw-auto-fix.ts), mas rodando
+# direto via node sem subir o Next.js. Idempotente: se já está OK, sai 0
+# sem mudança. Soft-fail: erros aqui nunca bloqueiam o deploy.
+step "Auto-fix do OpenClaw (streaming + heartbeat guard)..."
+T=$(now)
+phase_status "openclaw-auto-fix" "running"
+
+cd "$VPS_DIR"
+if [ -f scripts/openclaw-auto-fix.cjs ]; then
+  # Sem --no-restart: quando o auto-fix muda algo, ele tenta reiniciar o
+  # gateway automaticamente (systemctl --user / sudo systemctl / pm2).
+  # Se nada mudou, não reinicia nada e o gateway segue intocado.
+  if node scripts/openclaw-auto-fix.cjs --all 2>&1 | tee -a /tmp/openclaw-auto-fix.log; then
+    ok "Auto-fix do OpenClaw concluído"
+    record "OpenClaw auto-fix" "ok" "$(elapsed $T)"
+    phase_status "openclaw-auto-fix" "ok" "$(elapsed $T)"
+  else
+    warn "Auto-fix teve avisos (não bloqueia o deploy)"
+    record "OpenClaw auto-fix" "fail" "$(elapsed $T)"
+    phase_status "openclaw-auto-fix" "fail" "$(elapsed $T)"
+  fi
+else
+  warn "scripts/openclaw-auto-fix.cjs ausente — pulando"
+  record "OpenClaw auto-fix" "skip" "$(elapsed $T)"
+  phase_status "openclaw-auto-fix" "skip" "$(elapsed $T)"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
 # FASE 4 — BUILD
 # ══════════════════════════════════════════════════════════════════════════════
 step "Build..."
