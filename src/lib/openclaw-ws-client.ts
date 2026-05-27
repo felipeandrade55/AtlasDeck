@@ -129,6 +129,23 @@ interface RunnerState {
    * invaluable for diagnosing a gateway that silently swallows replies.
    */
   frameLog: string[];
+  /**
+   * itemIds (Codex `exec-…` identifiers) of routing-tool calls in flight.
+   * Once the agent kicks off `kind:"tool" name:"message"` (or any other
+   * routing tool), the *actual* reply text drips in as a sequence of
+   * later frames sharing the same `data.itemId` — typically as
+   * arguments_delta updates. We track the id so we can scrape text from
+   * those follow-ups instead of letting the bubble go empty just because
+   * the agent decided to deliver via a tool.
+   */
+  routingItemIds: Set<string>;
+  /**
+   * Per-itemId accumulators of recovered tool text. We dedupe against
+   * the running total so we only emit *new* substrings as tokens (Codex
+   * frames often re-send the full args-so-far instead of just the
+   * delta), preventing the UI from showing duplicated chunks.
+   */
+  routingItemText: Map<string, string>;
 }
 
 const FRAME_LOG_MAX = 80;
@@ -354,6 +371,60 @@ function extractToolReplyText(data: Record<string, unknown>): string {
     }
   }
   return "";
+}
+
+/**
+ * Aggressive text scrape for frames whose `data.itemId` matches an
+ * in-flight routing-tool item. Once we know the gateway is delivering
+ * the reply through a tool, ANY string in the frame is fair game —
+ * including the Codex `arguments_delta` (raw delta string), the
+ * accumulated `arguments` JSON blob, item.content[], and the recursive
+ * longest-string fallback. False positives are acceptable here: the
+ * tradeoff is between scraping a metadata field once vs. leaving the
+ * user with an empty bubble after every turn.
+ */
+function scrapeRoutingItemText(
+  payload: Record<string, unknown>,
+  data: Record<string, unknown> | null,
+): string {
+  // 1) Direct named fields (delta / text / etc.) on data and payload
+  if (data) {
+    const direct = extractToolReplyText(data);
+    if (direct) return direct;
+    // Codex arguments_delta: incremental piece of the tool args string
+    if (typeof data.arguments_delta === "string" && data.arguments_delta) {
+      return data.arguments_delta;
+    }
+    if (typeof data.arguments === "string" && data.arguments) {
+      // `arguments` here is usually a JSON-encoded blob. Try to parse it
+      // and pull a known text field out; if parsing fails, fall back to
+      // the raw string (better than nothing).
+      try {
+        const parsed = JSON.parse(data.arguments);
+        if (isRecord(parsed)) {
+          const inner = extractToolReplyText(parsed as Record<string, unknown>);
+          if (inner) return inner;
+        }
+      } catch {
+        // not JSON yet — partial args during streaming. Skip the raw
+        // blob to avoid showing the user JSON noise.
+      }
+    }
+    // Item.content[] (Codex output_text style) under data
+    const item = isRecord(data.item) ? (data.item as Record<string, unknown>) : null;
+    if (item) {
+      const itemText = extractItemText(item);
+      if (itemText) return itemText;
+    }
+  }
+  // 2) Top-level on payload
+  const topDirect = extractToolReplyText(payload);
+  if (topDirect) return topDirect;
+  // 3) Recursive longest-string fallback as last resort — same logic the
+  // `final` handler uses. We know the frame is *supposed* to carry
+  // reply text so even a long blob with some noise is a net win.
+  const deep = findLongestStringDeep(data ?? payload, 12, 5);
+  return deep;
 }
 
 /**
@@ -629,39 +700,85 @@ function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
         if (!stream || isMetaAgentStream(stream)) {
           return events;
         }
-        // Stream:item kind:tool — detect tools that route the reply
-        // elsewhere (Telegram, sessions_send, …) and try to salvage
-        // text from the tool input so the bubble is at least usable.
-        if (stream === "item") {
-          const data = isRecord(payload.data)
-            ? (payload.data as Record<string, unknown>)
-            : null;
-          const kind =
-            typeof data?.kind === "string" ? (data.kind as string) : "";
-          const toolName =
-            typeof data?.name === "string" ? (data.name as string) : "";
+        const data = isRecord(payload.data)
+          ? (payload.data as Record<string, unknown>)
+          : null;
+        const itemId =
+          typeof data?.itemId === "string" ? (data.itemId as string) : "";
+
+        // Routing-tool registration: first time we see a tool-call start
+        // for a routing tool, remember its itemId so subsequent frames
+        // (Codex `arguments_delta` style) can be scraped for the actual
+        // reply text the agent is trying to send via the tool.
+        if (stream === "item" && data) {
+          const kind = typeof data.kind === "string" ? (data.kind as string) : "";
+          const toolName = typeof data.name === "string" ? (data.name as string) : "";
           if (kind === "tool" && isRoutingToolName(toolName)) {
-            // Surface the tool_use so the UI can show a banner and
-            // (eventually) the operator can wire an auto-fix that
-            // forbids this tool for web:atlasdeck.
+            if (itemId) state.routingItemIds.add(itemId);
             events.push({
               type: "tool_use",
               name: toolName,
-              input: data ?? {},
+              input: data,
             });
-            // Best-effort recovery of the visible text from the tool's
-            // input — works when the tool was called with
-            //   { text: "hello", to: "..." } or similar shapes.
-            if (data && !state.tokensEmitted) {
-              const salvaged = extractToolReplyText(data);
-              if (salvaged) {
+            // Try the start frame too — when the tool was invoked with
+            // arguments inline they may already be present here.
+            const salvaged = extractToolReplyText(data);
+            if (salvaged && itemId) {
+              const prev = state.routingItemText.get(itemId) ?? "";
+              if (salvaged.startsWith(prev)) {
+                const newPart = salvaged.slice(prev.length);
+                if (newPart) {
+                  events.push({ type: "token", delta: newPart });
+                  state.tokensEmitted = true;
+                  state.routingItemText.set(itemId, salvaged);
+                }
+              } else {
                 events.push({ type: "token", delta: salvaged });
                 state.tokensEmitted = true;
+                state.routingItemText.set(itemId, salvaged);
               }
             }
             return events;
           }
         }
+
+        // Routing-tool follow-up: any subsequent frame carrying a known
+        // routing itemId is treated as a text-bearing update. We scrape
+        // every shape we know of (delta string, args, input, item
+        // content array, …) and only emit the NEW portion of the text
+        // — Codex frames re-send the full args-so-far each time.
+        if (itemId && state.routingItemIds.has(itemId)) {
+          const text = scrapeRoutingItemText(payload, data);
+          if (text) {
+            const prev = state.routingItemText.get(itemId) ?? "";
+            let toEmit = "";
+            if (text.startsWith(prev)) {
+              toEmit = text.slice(prev.length);
+              if (toEmit) state.routingItemText.set(itemId, text);
+            } else if (text.length > prev.length && prev.length > 0) {
+              // Server reset the accumulator — emit the whole text again
+              // but use it as the new baseline.
+              toEmit = text;
+              state.routingItemText.set(itemId, text);
+            } else {
+              toEmit = text;
+              state.routingItemText.set(itemId, text);
+            }
+            if (toEmit) {
+              events.push({ type: "token", delta: toEmit });
+              state.tokensEmitted = true;
+            }
+          }
+          // Also detect tool completion to free the slot — keeps the
+          // accumulator from growing unbounded across many turns.
+          const phase = typeof data?.phase === "string" ? data.phase : "";
+          if (phase === "completed" || phase === "done" || phase === "complete") {
+            state.routingItemIds.delete(itemId);
+          }
+          return events;
+        }
+
+        // Normal (non-tool) item — proceed as before.
         const text = extractAgentEventText(payload, stream);
         if (text) {
           events.push({ type: "token", delta: text });
@@ -955,6 +1072,8 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
     helloOk: false,
     tokensEmitted: false,
     frameLog: [],
+    routingItemIds: new Set<string>(),
+    routingItemText: new Map<string, string>(),
   };
 
   // Timing instrumentation — each phase records its delta from t0.
