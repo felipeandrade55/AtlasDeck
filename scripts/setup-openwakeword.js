@@ -88,3 +88,53 @@ for (const file of RUNTIME_FILES) {
 if (copied > 0) {
   console.log(`[setup-openwakeword] linked ${copied} onnxruntime asset(s) into dist + public`);
 }
+
+// ---------------------------------------------------------------------------
+// Patch the bundled `import(e)` so webpack does not replace it with a stub.
+//
+// openwakeword-js ships its own copy of onnxruntime-web inlined into
+// `dist/index.js`. Inside that bundle there is:
+//
+//   oo = async e => (await import(e)).default
+//
+// where `e` is the runtime URL of `ort-wasm-simd-threaded(.jsep).mjs`.
+// webpack treats this as a "too dynamic" import — it cannot statically
+// determine which modules might be loaded, so the production build
+// replaces the `import(e)` expression with a stub that throws:
+//
+//   Error: Cannot find module as expression is too dynamic
+//   throw t.code = "MODULE_NOT_FOUND"
+//
+// All four ORT backends ([wasm], [cpu], [webnn], [webgpu]) depend on
+// that loader, so the model surface fails to initialize with
+// "no available backend found" and wake-word detection never starts.
+//
+// Fix: rewrite the `import(e)` calls to add the `/* webpackIgnore: true */`
+// magic comment. webpack then leaves the dynamic import alone, the
+// browser executes a native ESM `import(<url>)` at runtime, and ORT
+// loads its glue module from `/openwakeword/` like we already serve it.
+//
+// Idempotent: matches the un-patched form only.
+// ---------------------------------------------------------------------------
+const DIST_INDEX = path.join(PKG_DIST, "index.js");
+if (fs.existsSync(DIST_INDEX)) {
+  try {
+    const original = fs.readFileSync(DIST_INDEX, "utf8");
+    // Match `await import(<single-identifier>)` exactly — avoids touching
+    // any patched form that already carries a magic comment.
+    const dynamicImport = /await import\(([A-Za-z_$][\w$]*)\)/g;
+    let touched = 0;
+    const patched = original.replace(dynamicImport, (full, ident) => {
+      touched += 1;
+      return `await import(/* webpackIgnore: true */ ${ident})`;
+    });
+    if (touched > 0 && patched !== original) {
+      fs.writeFileSync(DIST_INDEX, patched);
+      console.log(
+        `[setup-openwakeword] patched ${touched} dynamic import(s) in openwakeword-js/dist/index.js (webpackIgnore)`,
+      );
+    }
+  } catch (err) {
+    console.warn("[setup-openwakeword] failed to patch dist/index.js:", err.message);
+  }
+}

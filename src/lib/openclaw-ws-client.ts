@@ -86,6 +86,67 @@ function buildWsUrlCandidates(): WsCandidate[] {
 interface RunnerState {
   runId: string | null;
   helloOk: boolean;
+  /**
+   * Tracks whether we already emitted at least one `delta` token to the
+   * caller. When the gateway runs in buffered mode (no `blockStreamingDefault`
+   * server-side), the entire reply arrives in a single `final` frame with
+   * the text in `deltaText` / `result.payloads[0].text` / etc. and zero
+   * preceding `delta` frames. We use this flag in the `final` handler to
+   * decide whether we still need to emit the visible text as a token so
+   * the UI bubble doesn't render blank.
+   */
+  tokensEmitted: boolean;
+}
+
+/**
+ * Pulls the visible assistant reply out of a `chat.event` payload regardless
+ * of where the gateway placed it. Different OpenClaw builds put the text in
+ * different fields: streaming builds use `deltaText`; buffered builds put
+ * the whole answer under `text`, `payloads[0].text`, or nest the full CLI
+ * envelope under `result.payloads[0].text` /
+ * `result.meta.finalAssistantVisibleText`. We accept any of them.
+ */
+function extractPayloadText(payload: Record<string, unknown>): string {
+  if (typeof payload.deltaText === "string" && payload.deltaText) {
+    return payload.deltaText;
+  }
+  if (typeof payload.text === "string" && payload.text) return payload.text;
+  if (typeof payload.responseText === "string" && payload.responseText) {
+    return payload.responseText;
+  }
+  const payloads = Array.isArray(payload.payloads)
+    ? (payload.payloads as Array<Record<string, unknown>>)
+    : null;
+  if (payloads && payloads[0] && typeof payloads[0].text === "string") {
+    return payloads[0].text;
+  }
+  const result = isRecord(payload.result)
+    ? (payload.result as Record<string, unknown>)
+    : null;
+  if (result) {
+    const resultPayloads = Array.isArray(result.payloads)
+      ? (result.payloads as Array<Record<string, unknown>>)
+      : null;
+    if (
+      resultPayloads &&
+      resultPayloads[0] &&
+      typeof resultPayloads[0].text === "string"
+    ) {
+      return resultPayloads[0].text;
+    }
+    const meta = isRecord(result.meta)
+      ? (result.meta as Record<string, unknown>)
+      : null;
+    if (meta) {
+      if (typeof meta.finalAssistantVisibleText === "string") {
+        return meta.finalAssistantVisibleText;
+      }
+      if (typeof meta.finalAssistantRawText === "string") {
+        return meta.finalAssistantRawText;
+      }
+    }
+  }
+  return "";
 }
 
 function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
@@ -129,10 +190,23 @@ function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
       switch (eventState) {
         case "delta": {
           const deltaText = typeof payload.deltaText === "string" ? payload.deltaText : "";
-          if (deltaText) events.push({ type: "token", delta: deltaText });
+          if (deltaText) {
+            events.push({ type: "token", delta: deltaText });
+            state.tokensEmitted = true;
+          }
           break;
         }
         case "final": {
+          // Buffered mode: when no `delta` frames preceded this `final`,
+          // the entire reply is carried inside the final payload. Emit it
+          // as a single token so the UI bubble actually renders content.
+          if (!state.tokensEmitted) {
+            const finalText = extractPayloadText(payload);
+            if (finalText) {
+              events.push({ type: "token", delta: finalText });
+              state.tokensEmitted = true;
+            }
+          }
           const usage = isRecord(payload.usage) ? (payload.usage as Record<string, unknown>) : null;
           if (usage) {
             events.push({
@@ -316,7 +390,7 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
   let resolveNext: ((value: void) => void) | null = null;
   let closed = false;
   let chatSendDispatched = false;
-  const state: RunnerState = { runId: null, helloOk: false };
+  const state: RunnerState = { runId: null, helloOk: false, tokensEmitted: false };
 
   // Timing instrumentation — each phase records its delta from t0.
   // The chat page surfaces these in the bubble badge so it's obvious
