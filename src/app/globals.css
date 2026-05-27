@@ -465,3 +465,11 @@ code, pre, .font-mono {
   0%, 50% { opacity: 1; }
   51%, 100% { opacity: 0; }
 }
+
+/* Conversation-mode button "live" pulse — green tint breathing so it's
+   obvious at a glance that the mic is hot and any speech will be sent
+   straight to the chat. */
+@keyframes atlas-conversation-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.55); }
+  50% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+}

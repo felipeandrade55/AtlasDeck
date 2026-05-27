@@ -10,7 +10,7 @@ import {
 } from "react";
 // handleSend ref forwarded to the wake word hook so the callback can call
 // the latest version without forcing it to be declared before the hook.
-import { Bot, Download, Settings as SettingsIcon, Volume2, VolumeX } from "lucide-react";
+import { Bot, Download, Radio, Settings as SettingsIcon, Volume2, VolumeX } from "lucide-react";
 import { ThreadList } from "@/components/chat/ThreadList";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { Composer } from "@/components/chat/Composer";
@@ -21,6 +21,7 @@ import { WakeIndicator } from "@/components/chat/WakeIndicator";
 import { HeardPanel } from "@/components/chat/HeardPanel";
 import { PushToTalkOverlay } from "@/components/chat/PushToTalkOverlay";
 import { useChatStream } from "@/components/chat/useChatStream";
+import { useConversationMode } from "@/components/chat/useConversationMode";
 import { usePushToTalk } from "@/components/chat/usePushToTalk";
 import { usePorcupineWakeWord } from "@/components/chat/usePorcupineWakeWord";
 import { useOpenWakeWord } from "@/components/chat/useOpenWakeWord";
@@ -70,6 +71,12 @@ export default function ChatPage() {
   const [showWakeModal, setShowWakeModal] = useState(false);
   const [wakeEnabled, setWakeEnabled] = useState(true);
   const [wakeTeaser, setWakeTeaser] = useState<string | null>(null);
+  // "Modo Conversa" — hands-free voice loop without wake-word. When ON,
+  // every utterance the user speaks is auto-sent to the chat; the wake
+  // path is suspended to avoid two SpeechRecognition instances fighting
+  // over the same mic (Chrome only allows one per tab). See
+  // useConversationMode for the loop semantics.
+  const [conversationActive, setConversationActive] = useState(false);
   // Tracks which transport answered the last turn. Drives the top-bar
   // transport badge so the user can see at a glance whether real-time
   // WS is actually being used vs. the legacy CLI/Ollama fallback.
@@ -467,8 +474,25 @@ export default function ChatPage() {
   }, [handleSend]);
 
   const pushToTalk = usePushToTalk({
-    enabled: !stream.isStreaming,
+    // Space-bar push-to-talk and Modo Conversa would race for the same
+    // SpeechRecognition slot; suspend push-to-talk while conversation
+    // mode owns the mic. The user can still type during streams.
+    enabled: !stream.isStreaming && !conversationActive,
     onCommand: (text) => {
+      void handleSendRef.current?.(text);
+    },
+  });
+
+  // Hands-free conversation loop. `paused` covers both the round-trip
+  // (so we don't keep listening while the request is in flight) and TTS
+  // playback (so the assistant's own voice doesn't feed back into the
+  // mic). When TTS finishes and the stream settles, `paused` flips to
+  // false and the hook re-opens the mic transparently.
+  const conversation = useConversationMode({
+    active: conversationActive,
+    paused: stream.isStreaming || speakingId !== null,
+    onUtterance: (text) => {
+      setStatusBanner(null);
       void handleSendRef.current?.(text);
     },
   });
@@ -525,7 +549,10 @@ export default function ChatPage() {
   }, [followUp]);
 
   const openWake = useOpenWakeWord({
-    enabled: wakeEnabled && wakeEngine === "openwakeword",
+    // Modo Conversa owns the mic exclusively while engaged — keep the
+    // wake-word path fully disabled so the ONNX worker doesn't compete
+    // for the same MediaStream and trip the recogniser.
+    enabled: wakeEnabled && !conversationActive && wakeEngine === "openwakeword",
     paused:
       stream.isStreaming ||
       speakingId !== null ||
@@ -536,7 +563,7 @@ export default function ChatPage() {
   });
 
   const porcupine = usePorcupineWakeWord({
-    enabled: wakeEnabled && wakeEngine === "porcupine",
+    enabled: wakeEnabled && !conversationActive && wakeEngine === "porcupine",
     paused:
       stream.isStreaming ||
       speakingId !== null ||
@@ -561,7 +588,10 @@ export default function ChatPage() {
   const webSpeechWakeActive = wakeEnabled && !acousticActive;
 
   const wake = useWakeWord({
-    enabled: webSpeechWakeActive,
+    // Same exclusivity rule applies to the Web Speech wake fallback:
+    // Chrome allows a single SpeechRecognition per tab, so Modo Conversa
+    // and the wake recogniser cannot coexist.
+    enabled: webSpeechWakeActive && !conversationActive,
     paused:
       stream.isStreaming ||
       speakingId !== null ||
@@ -619,6 +649,47 @@ export default function ChatPage() {
                 </option>
               ))}
             </select>
+            <button
+              type="button"
+              onClick={() => {
+                // Toggling on requires a user gesture so the browser
+                // grants mic access for the long-lived recogniser
+                // session — that's why this lives on a click, not on
+                // a useEffect. Turning off keeps the gesture too.
+                setConversationActive((v) => {
+                  const next = !v;
+                  if (next) {
+                    setStatusBanner("🎙 Modo Conversa ativado — fale à vontade, sem precisar de wake word.");
+                    setTimeout(
+                      () =>
+                        setStatusBanner((s) =>
+                          s?.startsWith("🎙 Modo Conversa ativado") ? null : s,
+                        ),
+                      4000,
+                    );
+                  }
+                  return next;
+                });
+              }}
+              style={conversationButtonStyle(conversationActive, conversation.listening)}
+              title={
+                !conversation.supported
+                  ? "Web Speech API não suportado neste navegador (use Chrome/Edge)"
+                  : conversationActive
+                  ? conversation.listening
+                    ? "Modo Conversa ouvindo — clique para parar"
+                    : "Modo Conversa pausado (aguardando resposta) — clique para parar"
+                  : "Modo Conversa: fale livre, sem precisar dizer 'ei Jarvis'"
+              }
+              disabled={!conversation.supported}
+            >
+              <Radio size={16} />
+              {conversationActive
+                ? conversation.listening
+                  ? "Conversa LIVE"
+                  : "Conversa ⏸"
+                : "Conversa"}
+            </button>
             <button
               type="button"
               onClick={() => {
@@ -776,6 +847,46 @@ export default function ChatPage() {
                 Dispensar
               </button>
             </span>
+          </div>
+        )}
+        {conversationActive && (
+          <div style={conversationBannerStyle(conversation.listening)}>
+            <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <Radio size={14} />
+              {conversation.errorMessage ? (
+                <>
+                  <strong>Modo Conversa erro:</strong>
+                  <span>{conversation.errorMessage}</span>
+                </>
+              ) : conversation.listening ? (
+                <>
+                  <strong>Modo Conversa</strong>
+                  <span style={{ opacity: 0.85 }}>
+                    {conversation.interim
+                      ? `🎙 ouvindo: "${conversation.interim}"`
+                      : "ouvindo… fale e a frase é enviada quando você pausar 1.5s"}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <strong>Modo Conversa</strong>
+                  <span style={{ opacity: 0.85 }}>
+                    {stream.isStreaming
+                      ? "aguardando resposta…"
+                      : speakingId
+                      ? "Jarvis falando — retomando após o áudio"
+                      : "pausado"}
+                  </span>
+                </>
+              )}
+            </span>
+            <button
+              type="button"
+              onClick={() => setConversationActive(false)}
+              style={dismissBtnStyle}
+            >
+              Encerrar
+            </button>
           </div>
         )}
         {wakeTeaser && (
@@ -953,6 +1064,13 @@ function EmptyState() {
       </p>
       <ul style={emptyStateListStyle}>
         <li>
+          <strong>📡 Modo Conversa</strong> — clique no botão{" "}
+          <kbd style={kbdStyle}>Conversa</kbd> no topo: o microfone fica
+          aberto e qualquer frase que você falar é enviada
+          automaticamente, sem precisar dizer &ldquo;ei Jarvis&rdquo;.
+          Ideal se o wake word estiver falhando.
+        </li>
+        <li>
           <strong>&ldquo;ei Jarvis&rdquo;</strong> / <strong>&ldquo;Atlas&rdquo;</strong>{" "}
           — wake word automático em pt-BR (aliases cobrem variantes como
           &ldquo;jarves&rdquo;, &ldquo;hey jarvis&rdquo;, &ldquo;olá jarvis&rdquo;)
@@ -1044,6 +1162,46 @@ function toggleButtonStyle(active: boolean): CSSProperties {
   };
 }
 
+/**
+ * Conversation-mode button has three visual states: idle (off), live
+ * (actively listening, pulsing green), and paused (engaged but waiting
+ * for the round-trip / TTS to finish, soft amber).
+ */
+function conversationButtonStyle(active: boolean, listening: boolean): CSSProperties {
+  if (!active) {
+    return toggleButtonStyle(false);
+  }
+  if (listening) {
+    return {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 6,
+      padding: "6px 10px",
+      borderRadius: 8,
+      background: "rgba(16, 185, 129, 0.18)",
+      border: "1px solid #10b981",
+      color: "#10b981",
+      fontSize: 12,
+      fontWeight: 600,
+      cursor: "pointer",
+      animation: "atlas-conversation-pulse 1.6s ease-in-out infinite",
+    };
+  }
+  return {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    padding: "6px 10px",
+    borderRadius: 8,
+    background: "rgba(245, 158, 11, 0.18)",
+    border: "1px solid #f59e0b",
+    color: "#f59e0b",
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: "pointer",
+  };
+}
+
 const bannerStyle: CSSProperties = {
   padding: "8px 20px",
   background: "var(--danger-soft, rgba(239,68,68,0.1))",
@@ -1059,6 +1217,23 @@ const wakeTeaserStyle: CSSProperties = {
   color: "var(--accent)",
   fontSize: 12,
 };
+
+function conversationBannerStyle(listening: boolean): CSSProperties {
+  // Green while the mic is open, amber while paused (round-trip / TTS).
+  // Matching the button colors keeps the affordance obvious at a glance.
+  const accent = listening ? "#10b981" : "#f59e0b";
+  return {
+    padding: "8px 20px",
+    background: listening ? "rgba(16,185,129,0.10)" : "rgba(245,158,11,0.10)",
+    borderBottom: `1px solid ${accent}`,
+    color: accent,
+    fontSize: 12,
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+  };
+}
 
 const diagnosticBannerStyle: CSSProperties = {
   padding: "10px 20px",
