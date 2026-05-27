@@ -221,6 +221,24 @@ function findLongestStringDeep(
 }
 
 /**
+ * Strict text extractor for `state=delta` frames — ONLY pulls from the
+ * named text fields. No recursive fallback, because per-delta we'd
+ * rather miss text than scrape a runId/sessionId out of the frame and
+ * paste it into the bubble as if it were a reply chunk (the recursive
+ * pass is reserved for `state=final` where missing text means the
+ * bubble would be empty anyway).
+ */
+function extractDeltaText(payload: Record<string, unknown>): string {
+  for (const field of KNOWN_TEXT_FIELDS) {
+    const value = payload[field];
+    if (typeof value === "string" && value.length > 0) {
+      return value;
+    }
+  }
+  return "";
+}
+
+/**
  * Pulls the visible assistant reply out of a `chat.event` payload regardless
  * of where the gateway placed it. Different OpenClaw builds put the text in
  * different fields: streaming builds use `deltaText`; buffered builds put
@@ -228,7 +246,8 @@ function findLongestStringDeep(
  * envelope under `result.payloads[0].text` /
  * `result.meta.finalAssistantVisibleText`. We accept any of them, plus a
  * recursive longest-string fallback for builds with a not-yet-mapped
- * field name.
+ * field name. Use only for terminal `final` frames — for live `delta`
+ * frames use `extractDeltaText` to avoid scraping metadata.
  */
 function extractPayloadText(payload: Record<string, unknown>): string {
   // Pass 1 — known top-level fields, in priority order.
@@ -346,47 +365,64 @@ function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
     return events;
   }
 
-  // Server event: chat streaming. Rather than maintaining a brittle
-  // allow-list of event names (which keeps drifting between OpenClaw
-  // versions), we deny-list the obvious meta-events and try to extract
-  // text from anything else. Unknown payload shapes go through the
-  // recursive longest-string fallback inside `extractPayloadText`, so
-  // even brand-new event names produce a usable bubble.
+  // Server event: chat streaming. We use a conservative allow-list
+  // (chat.event + a handful of well-known aliases) because the prior
+  // permissive deny-list ended up extracting metadata strings from
+  // lifecycle / telemetry / exec frames as if they were reply text
+  // (runIds, sessionIds, "codex_app_server.lifecycle"…) and dumping
+  // that junk into the bubble. Better to miss a brand-new event name
+  // and surface an empty-reply diagnostic than to fabricate garbage.
   if (frameType === "event") {
     const eventName = typeof raw.event === "string" ? raw.event : "";
     const payload = isRecord(raw.payload) ? (raw.payload as Record<string, unknown>) : {};
 
-    // Meta events that carry no assistant text — skip extraction.
-    const META_EVENTS = new Set([
-      "connect.challenge",
-      "ping",
-      "pong",
-      "ack",
-      "heartbeat",
-      "subscription.ack",
-      "session.update",
-      "session.expired",
+    // Allow-list of event names that legitimately carry assistant text
+    // OR a state machine (delta/final/aborted/error). Everything else
+    // is ignored for text extraction.
+    const CHAT_EVENTS = new Set([
+      "chat.event",
+      "chat",
+      "chat.delta",
+      "chat.token",
+      "chat.message",
+      "chat.final",
+      "agent.delta",
+      "agent.message",
+      "assistant.delta",
+      "assistant.message",
+      "message.delta",
     ]);
-    const isMetaEvent = META_EVENTS.has(eventName);
-    const isChatEvent = !isMetaEvent;
+    const isChatEvent = CHAT_EVENTS.has(eventName);
 
     if (isChatEvent) {
       if (typeof payload.runId === "string") state.runId = payload.runId;
       const eventState = typeof payload.state === "string" ? payload.state : undefined;
 
-      // Try to extract text from any chat-shaped event, regardless of
-      // declared state. Some gateway builds emit deltas as plain
-      // `chat.delta` events with the text in `text`/`content`/etc. and
-      // no `state` field at all — we capture them the same way.
-      if (eventState !== "final" && eventState !== "aborted" && eventState !== "error") {
-        const text = extractPayloadText(payload);
+      // Treat events without an explicit state but with a delta-style
+      // name (chat.delta, chat.token, etc.) as deltas. Same for
+      // chat.final → final.
+      const inferredState =
+        eventState ||
+        (eventName === "chat.delta" || eventName === "chat.token" || eventName === "agent.delta" || eventName === "assistant.delta" || eventName === "message.delta"
+          ? "delta"
+          : eventName === "chat.final"
+          ? "final"
+          : undefined);
+
+      // Pure delta path: extract text but ONLY from well-known fields.
+      // The recursive longest-string fallback (extractPayloadText pass
+      // 3) is reserved for `final` because that's the only state where
+      // we'd rather surface *something* than nothing. Per-delta we'd
+      // rather miss text than paste in a runId.
+      if (inferredState === "delta") {
+        const text = extractDeltaText(payload);
         if (text) {
           events.push({ type: "token", delta: text });
           state.tokensEmitted = true;
         }
       }
 
-      switch (eventState) {
+      switch (inferredState) {
         case "final": {
           // Buffered mode: when no `delta` frames preceded this `final`,
           // the reply may still be inside the final payload. Try every
