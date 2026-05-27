@@ -222,7 +222,8 @@ function applyBackendAuthFix() {
   return { changed: true, applied: true, file, fields: changed };
 }
 
-const HEARTBEAT_MARKER = "<!-- atlas:heartbeat-guard:v1 -->";
+const HEARTBEAT_MARKER = "<!-- atlas:heartbeat-guard:v2 -->";
+const HEARTBEAT_OLD_MARKERS = ["<!-- atlas:heartbeat-guard:v1 -->"];
 
 function applyHeartbeatFix() {
   const openclawDir = getOpenClawDir();
@@ -253,9 +254,26 @@ function applyHeartbeatFix() {
     return { changed: false, applied: false, file };
   }
 
+  // Strip older guard versions before appending the new one to avoid
+  // accumulating duplicate blocks each time we bump the marker.
+  let cleaned = content;
+  for (const oldMarker of HEARTBEAT_OLD_MARKERS) {
+    const idx = cleaned.indexOf(oldMarker);
+    if (idx === -1) continue;
+    const tail = cleaned.slice(idx);
+    const stopMatch = tail.search(/\n\n(?!#|$)/);
+    const stopAt = stopMatch === -1 ? cleaned.length : idx + stopMatch;
+    cleaned = (cleaned.slice(0, idx) + cleaned.slice(stopAt)).replace(/\n{3,}/g, "\n\n");
+  }
+  content = cleaned;
+
   const block =
     HEARTBEAT_MARKER + "\n" +
-    "## Heartbeat policy (atlas-managed)\n\n" +
+    "## AtlasDeck web session policy (atlas-managed)\n\n" +
+    "Estas regras governam mensagens que chegam via `sessionKey` começando\n" +
+    "com `agent:*:web:atlasdeck`. Para o briefing matinal de cron e outras\n" +
+    "sessions, mantenha o comportamento normal definido no resto do arquivo.\n\n" +
+    "### 1) Heartbeat só dispara por ping literal\n\n" +
     "A regra de HEARTBEAT só se aplica quando a mensagem do usuário é\n" +
     "**literalmente** uma das strings de ping, sem outras palavras:\n\n" +
     "- `HEARTBEAT` (case-insensitive)\n" +
@@ -266,7 +284,22 @@ function applyHeartbeatFix() {
     "Em **qualquer outra mensagem** (saudação, pergunta, comando, código):\n" +
     "  - Ignore completamente o template HEARTBEAT\n" +
     "  - Não leia `HEARTBEAT.md`\n" +
-    "  - Responda a pergunta do usuário diretamente, em pt-BR, sem ecoar instruções\n\n";
+    "  - Responda a pergunta do usuário diretamente, em pt-BR, sem ecoar instruções\n\n" +
+    "### 2) Resposta SEMPRE como assistant message item\n\n" +
+    "Para sessions `web:atlasdeck`, **JAMAIS** delegue a resposta a uma tool\n" +
+    "de roteamento. Em particular, **NÃO chame** nenhuma destas tools quando\n" +
+    "o destinatário é o chat web:\n\n" +
+    "- `message`\n" +
+    "- `send_message`\n" +
+    "- `sessions_send`\n" +
+    "- `telegram_send` / `telegram`\n" +
+    "- `whatsapp_send` / `whatsapp`\n" +
+    "- `reply` / `send` / `notify` / `broadcast`\n\n" +
+    "Em vez disso, **escreva a resposta como assistant message item direto**\n" +
+    "(texto pt-BR no próprio turno). O AtlasDeck escuta o WS `event:agent`\n" +
+    "`stream:item` esperando `data.kind:\"message\"` — se você usar uma tool\n" +
+    "de envio, o usuário vê o chat vazio e a resposta vai parar em outro\n" +
+    "canal (Telegram, etc.), que NÃO é onde ele está olhando.\n\n";
 
   if (exists) {
     const backup = file + ".bak." + timestamp();

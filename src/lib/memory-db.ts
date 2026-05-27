@@ -27,7 +27,8 @@ export type MemorySource =
   | "extraction"
   | "manual"
   | "reflection"
-  | "import";
+  | "import"
+  | "agent";
 
 export interface MemoryRow {
   id: string;

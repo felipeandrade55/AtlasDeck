@@ -353,12 +353,19 @@ export interface HeartbeatFixReport {
 }
 
 // Marker we use to tell whether AGENTS.md already has the conditional
-// rule applied. Idempotency hinges on matching this string — keep it
-// stable across versions.
-const HEARTBEAT_MARKER = "<!-- atlas:heartbeat-guard:v1 -->";
+// rule applied. Bumping the version invalidates the old guard so the
+// auto-fix re-injects the newer version on the next run.
+const HEARTBEAT_MARKER = "<!-- atlas:heartbeat-guard:v2 -->";
+const HEARTBEAT_OLD_MARKERS = ["<!-- atlas:heartbeat-guard:v1 -->"];
 
 const HEARTBEAT_GUARD_BLOCK = `${HEARTBEAT_MARKER}
-## Heartbeat policy (atlas-managed)
+## AtlasDeck web session policy (atlas-managed)
+
+Estas regras governam mensagens que chegam via \`sessionKey\` começando
+com \`agent:*:web:atlasdeck\`. Para o briefing matinal de cron e outras
+sessions, mantenha o comportamento normal definido no resto do arquivo.
+
+### 1) Heartbeat só dispara por ping literal
 
 A regra de HEARTBEAT só se aplica quando a mensagem do usuário é
 **literalmente** uma das strings de ping, sem outras palavras:
@@ -374,6 +381,28 @@ Em **qualquer outra mensagem** (saudação, pergunta, comando, código):
   - Ignore completamente o template HEARTBEAT
   - Não leia \`HEARTBEAT.md\`
   - Responda a pergunta do usuário diretamente, em pt-BR, sem ecoar instruções
+
+### 2) Resposta SEMPRE como assistant message item
+
+Para sessions \`web:atlasdeck\`, **JAMAIS** delegue a resposta a uma tool
+de roteamento. Em particular, **NÃO chame** nenhuma destas tools quando
+o destinatário é o chat web:
+
+- \`message\`
+- \`send_message\`
+- \`sessions_send\`
+- \`telegram_send\` / \`telegram\`
+- \`whatsapp_send\` / \`whatsapp\`
+- \`reply\` / \`send\` / \`notify\` / \`broadcast\`
+
+Em vez disso, **escreva a resposta como assistant message item direto**
+(texto pt-BR no próprio turno). O AtlasDeck escuta o WS \`event:agent\`
+\`stream:item\` esperando \`data.kind:"message"\` (ou \`output_text\`) — se
+você usar uma tool de envio, o usuário vê o chat vazio e a resposta vai
+parar em outro canal (Telegram, etc.), que NÃO é onde ele está olhando.
+
+Resumo: para \`web:atlasdeck\`, a saída é o texto do próprio turno, não
+uma tool call.
 
 `;
 
@@ -434,7 +463,27 @@ export function ensureHeartbeatRule(): HeartbeatFixReport {
   }
 
   const backup = exists ? backupCopy(file) : null;
-  const next = exists ? `${HEARTBEAT_GUARD_BLOCK}\n${content}` : HEARTBEAT_GUARD_BLOCK;
+
+  // If an older atlas-managed guard is present, strip it before adding
+  // the new one — keeps the file from accumulating duplicate blocks
+  // every time the marker version is bumped.
+  let cleaned = content;
+  for (const oldMarker of HEARTBEAT_OLD_MARKERS) {
+    const idx = cleaned.indexOf(oldMarker);
+    if (idx === -1) continue;
+    // Strip from the old marker through the next blank line that
+    // doesn't have content starting with `##` (rough heuristic: keeps
+    // anything before/after the old guard, removes the guard itself).
+    // We look for the next `\n## ` that is NOT part of the guard, or
+    // EOF. Since the old guard was a single H2 block we can just look
+    // for two consecutive blank lines + something non-blank.
+    const tail = cleaned.slice(idx);
+    const stopMatch = tail.search(/\n\n(?!#|$)/);
+    const stopAt = stopMatch === -1 ? cleaned.length : idx + stopMatch;
+    cleaned = (cleaned.slice(0, idx) + cleaned.slice(stopAt)).replace(/\n{3,}/g, "\n\n");
+  }
+
+  const next = exists ? `${HEARTBEAT_GUARD_BLOCK}\n${cleaned}` : HEARTBEAT_GUARD_BLOCK;
 
   try {
     atomicWrite(file, next);

@@ -296,6 +296,66 @@ function isNonReplyItemKind(kind: string): boolean {
   return NON_REPLY_ITEM_KINDS.has(kind);
 }
 
+// Names of tools whose invocation we recognise as "the agent is routing
+// the reply somewhere else instead of returning it as a message item".
+// Frame [11] of the user's trace showed this:
+//   { kind: "tool", name: "message", suppressChannelProgress: true }
+// which means a custom tool called `message` was invoked — typically
+// these tools push the answer to Telegram / another channel rather than
+// streaming it back to the WS caller. We don't try to *extract* the
+// reply from the tool input (the input may not even be the final text);
+// instead we flag the situation so the UI can show a fix-it banner.
+const ROUTING_TOOL_NAMES = new Set([
+  "message",
+  "send_message",
+  "sessions_send",
+  "telegram_send",
+  "telegram",
+  "whatsapp_send",
+  "whatsapp",
+  "reply",
+  "send",
+  "notify",
+  "broadcast",
+]);
+
+function isRoutingToolName(name: string): boolean {
+  if (!name) return false;
+  if (ROUTING_TOOL_NAMES.has(name)) return true;
+  const low = name.toLowerCase();
+  if (low.includes("send")) return true;
+  if (low.includes("telegram")) return true;
+  if (low.includes("whatsapp")) return true;
+  if (low.includes("notify")) return true;
+  return false;
+}
+
+/**
+ * Best-effort extraction of the assistant text from a tool-call frame.
+ * When the agent routes a reply through a tool like `message`, the
+ * actual reply text is usually buried in the tool's input arguments
+ * (`data.input.text`, `data.args.message`, etc.). Recovering it lets
+ * us still render *something* in the bubble even before the user
+ * fixes their AGENTS.md to stop using the routing tool.
+ */
+function extractToolReplyText(data: Record<string, unknown>): string {
+  // Common input wrappers
+  const wrappers: Record<string, unknown>[] = [data];
+  for (const key of ["input", "args", "arguments", "params", "parameters"]) {
+    const v = data[key];
+    if (isRecord(v)) wrappers.push(v as Record<string, unknown>);
+  }
+  // Common text-bearing fields
+  const fields = ["text", "message", "content", "reply", "body", "output"];
+  for (const w of wrappers) {
+    for (const f of fields) {
+      const v = w[f];
+      if (typeof v === "string" && v.trim().length > 0) return v;
+    }
+  }
+  return "";
+}
+
 /**
  * Extracts assistant text from an `event: "agent"` payload. OpenClaw's
  * current gateway wraps the agent's stream into a transport envelope
@@ -568,6 +628,39 @@ function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
       if (eventName === "agent") {
         if (!stream || isMetaAgentStream(stream)) {
           return events;
+        }
+        // Stream:item kind:tool — detect tools that route the reply
+        // elsewhere (Telegram, sessions_send, …) and try to salvage
+        // text from the tool input so the bubble is at least usable.
+        if (stream === "item") {
+          const data = isRecord(payload.data)
+            ? (payload.data as Record<string, unknown>)
+            : null;
+          const kind =
+            typeof data?.kind === "string" ? (data.kind as string) : "";
+          const toolName =
+            typeof data?.name === "string" ? (data.name as string) : "";
+          if (kind === "tool" && isRoutingToolName(toolName)) {
+            // Surface the tool_use so the UI can show a banner and
+            // (eventually) the operator can wire an auto-fix that
+            // forbids this tool for web:atlasdeck.
+            events.push({
+              type: "tool_use",
+              name: toolName,
+              input: data ?? {},
+            });
+            // Best-effort recovery of the visible text from the tool's
+            // input — works when the tool was called with
+            //   { text: "hello", to: "..." } or similar shapes.
+            if (data && !state.tokensEmitted) {
+              const salvaged = extractToolReplyText(data);
+              if (salvaged) {
+                events.push({ type: "token", delta: salvaged });
+                state.tokensEmitted = true;
+              }
+            }
+            return events;
+          }
         }
         const text = extractAgentEventText(payload, stream);
         if (text) {

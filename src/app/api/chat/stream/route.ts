@@ -51,13 +51,18 @@ interface ChatStreamBody {
 
 const FORCE_INLINE_HINT =
   "\n\n[atlas:hint] Esta sessão é `web:atlasdeck` e o usuário está olhando aqui agora. " +
-  "Responda diretamente nesta sessão com o conteúdo completo. NÃO use `sessions_send`, " +
-  "nem trate este turno como notificação para outro canal (Telegram/etc.). " +
-  "Mande a resposta real aqui no chat. " +
-  // Anti-HEARTBEAT-leak directive: when the user clicks "Forçar resposta
-  // direta" after a heartbeat-template leak, also tell the agent to
-  // ignore any pre-prompt that would make it echo HEARTBEAT.md / reply
-  // HEARTBEAT_OK. This message is a regular user prompt, not a cron ping.
+  "Responda diretamente nesta sessão com o conteúdo completo. " +
+  // Anti-tool-routing: a recorrência do bug é o agente invocar uma
+  // tool customizada (geralmente chamada `message`, `send_message`,
+  // `sessions_send`, `telegram_send`) que entrega a resposta em outro
+  // canal e devolve um ack vazio aqui. Para web:atlasdeck queremos
+  // SEMPRE o reply como assistant message item direto, jamais via tool.
+  "NÃO chame as tools `message`, `send_message`, `sessions_send`, `telegram_send`, " +
+  "`whatsapp_send`, `reply`, `send`, `notify` nem qualquer tool de roteamento. " +
+  "Responda como ASSISTANT MESSAGE ITEM normal — texto direto, sem tool calls de envio. " +
+  "Não trate este turno como notificação para outro canal (Telegram/WhatsApp/etc.). " +
+  // Anti-HEARTBEAT-leak: ignore qualquer pre-prompt que faria o agente
+  // ecoar HEARTBEAT.md / responder HEARTBEAT_OK. Esta é pergunta direta.
   "Esta mensagem NÃO é um heartbeat, ping de cron, ou briefing matinal — " +
   "é uma pergunta direta do usuário. Não leia HEARTBEAT.md, não responda " +
   "HEARTBEAT_OK, não eche templates do AGENTS.md. Responda em pt-BR direto.";
