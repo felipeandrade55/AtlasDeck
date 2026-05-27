@@ -52,7 +52,14 @@ const FORCE_INLINE_HINT =
   "\n\n[atlas:hint] Esta sessão é `web:atlasdeck` e o usuário está olhando aqui agora. " +
   "Responda diretamente nesta sessão com o conteúdo completo. NÃO use `sessions_send`, " +
   "nem trate este turno como notificação para outro canal (Telegram/etc.). " +
-  "Mande a resposta real aqui no chat.";
+  "Mande a resposta real aqui no chat. " +
+  // Anti-HEARTBEAT-leak directive: when the user clicks "Forçar resposta
+  // direta" after a heartbeat-template leak, also tell the agent to
+  // ignore any pre-prompt that would make it echo HEARTBEAT.md / reply
+  // HEARTBEAT_OK. This message is a regular user prompt, not a cron ping.
+  "Esta mensagem NÃO é um heartbeat, ping de cron, ou briefing matinal — " +
+  "é uma pergunta direta do usuário. Não leia HEARTBEAT.md, não responda " +
+  "HEARTBEAT_OK, não eche templates do AGENTS.md. Responda em pt-BR direto.";
 
 function sseLine(event: string, data: unknown): string {
   const payload = typeof data === "string" ? data : JSON.stringify(data);
@@ -190,6 +197,16 @@ export async function POST(req: NextRequest) {
   const timings: Record<string, number> = {};
   let bufferedDetected = false;
   let stubReplyDetected = false;
+  // Distinct from stubReply: detects when the agent echoes the AGENTS.md
+  // HEARTBEAT template instead of replying to the actual user prompt.
+  // The leak looks like:
+  //   "Read HEARTBEAT.md if it exists (workspace context). Follow it
+  //   strictly. ... reply HEARTBEAT_OK."
+  // It means the agent's system prompt is treating *every* incoming
+  // message as a heartbeat ping (probably the morning-briefing cron's
+  // template was made unconditional). The user sees their question
+  // ignored. We surface a banner explaining how to fix AGENTS.md.
+  let heartbeatLeakDetected = false;
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -275,6 +292,7 @@ export async function POST(req: NextRequest) {
           providerDetail: providerDetailForTurn,
           buffered: bufferedDetected,
           stubReply: stubReplyDetected,
+          heartbeatLeak: heartbeatLeakDetected,
         });
         try {
           controller.close();
@@ -311,6 +329,21 @@ export async function POST(req: NextRequest) {
                 trimmedLow.startsWith("ja respondi")
               ) {
                 stubReplyDetected = true;
+              }
+            }
+            // HEARTBEAT-leak detector: agent echoed back the system-prompt
+            // template instead of replying. Triggers on any of the
+            // signature phrases from the morning-briefing template.
+            if (!heartbeatLeakDetected) {
+              const lower = assembled.toLowerCase();
+              if (
+                lower.includes("heartbeat.md") ||
+                lower.includes("heartbeat_ok") ||
+                /reply\s+heartbeat/i.test(assembled) ||
+                /read\s+heartbeat/i.test(assembled) ||
+                lower.includes("do not infer or repeat old tasks")
+              ) {
+                heartbeatLeakDetected = true;
               }
             }
             send("token", { delta: evt.delta });

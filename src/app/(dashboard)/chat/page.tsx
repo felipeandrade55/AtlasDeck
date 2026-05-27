@@ -94,7 +94,8 @@ export default function ChatPage() {
   const [agentDiagnostics, setAgentDiagnostics] = useState<{
     buffered: boolean;
     stubReply: boolean;
-  }>({ buffered: false, stubReply: false });
+    heartbeatLeak: boolean;
+  }>({ buffered: false, stubReply: false, heartbeatLeak: false });
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const stream = useChatStream();
   const tts = useTtsEngine();
@@ -427,7 +428,7 @@ export default function ChatPage() {
             ),
           );
         },
-        onDone: ({ content, provider, providerDetail, buffered, stubReply }) => {
+        onDone: ({ content, provider, providerDetail, buffered, stubReply, heartbeatLeak }) => {
           const totalMs = Date.now() - startedAt;
           setMessages((prev) =>
             prev.map((m) =>
@@ -445,16 +446,22 @@ export default function ChatPage() {
                 : m,
             ),
           );
-          if (buffered || stubReply) {
+          if (buffered || stubReply || heartbeatLeak) {
             setAgentDiagnostics((d) => ({
               buffered: d.buffered || !!buffered,
               stubReply: d.stubReply || !!stubReply,
+              heartbeatLeak: d.heartbeatLeak || !!heartbeatLeak,
             }));
           }
           // Refresh threads list to update lastMessageAt / counts
           loadThreads();
-          // Auto-TTS
-          if (ttsEnabled && content) speak(content, realAssistantId);
+          // Auto-TTS — but suppress when the agent leaked its system
+          // prompt. The user shouldn't hear "Read HEARTBEAT.md..."
+          // spoken back; the banner already surfaces the situation
+          // in text form.
+          if (ttsEnabled && content && !heartbeatLeak) {
+            speak(content, realAssistantId);
+          }
         },
       });
     },
@@ -977,6 +984,64 @@ export default function ChatPage() {
             </span>
           </div>
         )}
+        {agentDiagnostics.heartbeatLeak && (
+          <div style={diagnosticBannerStyle}>
+            <span style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+              <span>
+                <strong>⚠ Agente vazou o template HEARTBEAT no lugar da resposta</strong>
+                <br />
+                A resposta retornada parece ser o próprio system prompt
+                (&ldquo;Read HEARTBEAT.md...&rdquo;) em vez de uma resposta à sua mensagem.
+                Isso significa que o <code style={inlineCodeStyle}>AGENTS.md</code> do agente{" "}
+                <code style={inlineCodeStyle}>main</code> está tratando TODA mensagem como um
+                heartbeat de cron, em vez de aplicar essa regra só ao briefing matinal das 7h.
+                <br />
+                <br />
+                <strong>Para corrigir no VPS:</strong>
+                <br />
+                1. Edite <code style={inlineCodeStyle}>~/.openclaw/workspace/AGENTS.md</code>
+                <br />
+                2. Encontre o bloco que instrui &ldquo;Read HEARTBEAT.md...&rdquo;
+                <br />
+                3. Adicione uma condição: aplicar SÓ quando a mensagem do user for literalmente{" "}
+                <code style={inlineCodeStyle}>HEARTBEAT</code> ou{" "}
+                <code style={inlineCodeStyle}>PING</code>. Exemplo:
+                <pre style={preStyle}>{HEARTBEAT_FIX_SNIPPET}</pre>
+                4. Salve e reinicie: <code style={inlineCodeStyle}>systemctl --user restart openclaw-gateway</code>
+              </span>
+              <span style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
+                <button
+                  type="button"
+                  disabled={stream.isStreaming || !lastUserPrompt}
+                  onClick={() => {
+                    if (!lastUserPrompt) return;
+                    setAgentDiagnostics((d) => ({ ...d, heartbeatLeak: false }));
+                    void handleSend(lastUserPrompt, { forceInline: true });
+                  }}
+                  style={{
+                    ...primaryBtnStyle,
+                    opacity: stream.isStreaming || !lastUserPrompt ? 0.5 : 1,
+                    cursor: stream.isStreaming || !lastUserPrompt ? "not-allowed" : "pointer",
+                  }}
+                  title={
+                    !lastUserPrompt
+                      ? "Nenhuma pergunta recente"
+                      : "Reenvia com hint que instrui o agente a ignorar templates de heartbeat"
+                  }
+                >
+                  Reenviar com hint
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAgentDiagnostics((d) => ({ ...d, heartbeatLeak: false }))}
+                  style={dismissBtnStyle}
+                >
+                  Dispensar
+                </button>
+              </span>
+            </span>
+          </div>
+        )}
 
         <div style={messageScrollStyle}>
           <div style={messageListStyle}>
@@ -1290,6 +1355,21 @@ const primaryBtnStyle: CSSProperties = {
 const BUFFERED_CONFIG_SNIPPET = `"blockStreamingDefault": "on",
 "blockStreamingBreak": "text_end",
 "blockStreamingChunk": { "minChars": 50, "maxChars": 200 }`;
+
+// Exemplo de regra condicional para o AGENTS.md — só dispara o
+// HEARTBEAT workflow quando a mensagem do user é literalmente "HEARTBEAT"
+// ou "PING". Para qualquer outra mensagem (saudação, pergunta, comando),
+// segue o fluxo normal do agente.
+const HEARTBEAT_FIX_SNIPPET = `## Heartbeat (apenas para pings de cron)
+
+SE a mensagem do usuário for exatamente "HEARTBEAT" ou "PING"
+(case-insensitive, sem outras palavras), ENTÃO:
+  - Leia HEARTBEAT.md se existir
+  - Responda HEARTBEAT_OK se nada precisa de atenção
+
+CASO CONTRÁRIO (mensagem normal do usuário):
+  - Ignore HEARTBEAT.md
+  - Responda à pergunta diretamente em pt-BR`;
 
 const messageScrollStyle: CSSProperties = {
   flex: 1,

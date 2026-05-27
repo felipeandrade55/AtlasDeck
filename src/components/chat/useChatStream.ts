@@ -28,7 +28,7 @@ export interface SendOptions {
   onToolResult?: (payload: { id?: string; output: string }) => void;
   onUsage?: (payload: { tokensIn: number; tokensOut: number; cost?: number; model?: string }) => void;
   onError?: (message: string) => void;
-  onDone?: (payload: { assistantMessageId: string; content: string; tokensIn: number; tokensOut: number; cost: number; provider?: string; providerDetail?: string; buffered?: boolean; stubReply?: boolean }) => void;
+  onDone?: (payload: { assistantMessageId: string; content: string; tokensIn: number; tokensOut: number; cost: number; provider?: string; providerDetail?: string; buffered?: boolean; stubReply?: boolean; heartbeatLeak?: boolean }) => void;
 }
 
 /**
@@ -177,6 +177,7 @@ function parseEvent(raw: string, opts: SendOptions) {
         providerDetail: data.providerDetail as string | undefined,
         buffered: data.buffered === true,
         stubReply: data.stubReply === true,
+        heartbeatLeak: data.heartbeatLeak === true,
       });
       break;
   }
