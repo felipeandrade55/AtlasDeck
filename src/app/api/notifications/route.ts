@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { loadNotifications, saveNotifications, addNotification } from '@/lib/notifications';
 import { startUpdateScheduler, ensureRecentCheck } from '@/lib/update-scheduler';
 import { startCalendarScheduler } from '@/lib/calendar-scheduler';
+import { startHealthMonitor } from '@/lib/health-monitor';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,6 +12,7 @@ export async function GET(request: NextRequest) {
     // se a última verificação foi há mais de 5 min (o sino pinga a cada 30s).
     startUpdateScheduler();
     startCalendarScheduler();
+    startHealthMonitor();
     void ensureRecentCheck();
 
     const { searchParams } = new URL(request.url);

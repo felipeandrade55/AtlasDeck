@@ -362,7 +362,7 @@ export async function POST(req: NextRequest) {
   const url = new URL(req.url);
   const action = url.searchParams.get("action") || "";
 
-  let body: { accountId?: string; chatId?: string; message?: string; token?: string } = {};
+  let body: { accountId?: string; chatId?: string; message?: string; token?: string; dropPending?: boolean } = {};
   try {
     body = await req.json();
   } catch {
@@ -424,7 +424,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === "clear-webhook") {
-      const r = await tgCall(token, "deleteWebhook", { drop_pending_updates: false });
+      const r = await tgCall(token, "deleteWebhook", { drop_pending_updates: !!body.dropPending });
       if (!r.ok) {
         return NextResponse.json({
           success: false,

@@ -11,11 +11,13 @@ import {
   Settings as SettingsIcon,
   Loader2,
   AlertTriangle,
+  Stethoscope,
   type LucideIcon,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { TelegramSetupModal } from "./TelegramSetupModal";
+import { TelegramDoctor } from "./TelegramDoctor";
 
 interface Integration {
   id: string;
@@ -85,6 +87,7 @@ interface TelegramQuickStatus {
 
 export function IntegrationStatus({ integrations }: IntegrationStatusProps) {
   const [telegramOpen, setTelegramOpen] = useState(false);
+  const [doctorOpen, setDoctorOpen] = useState(false);
   const [tg, setTg] = useState<TelegramQuickStatus>({
     loading: true,
     enabled: false,
@@ -130,6 +133,22 @@ export function IntegrationStatus({ integrations }: IntegrationStatusProps) {
   useEffect(() => {
     fetchTelegram();
     // refresh quick status whenever the modal closes (changes might have been saved)
+  }, []);
+
+  // Deep-link from bell notification: /settings?openDoctor=1 opens the
+  // doctor automatically and then strips the param so a refresh doesn't
+  // re-trigger it. Uses window.location to avoid Suspense boundary issues
+  // with useSearchParams in nested client components.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("openDoctor") === "1") {
+      setDoctorOpen(true);
+      params.delete("openDoctor");
+      const search = params.toString();
+      const newUrl = window.location.pathname + (search ? `?${search}` : "");
+      window.history.replaceState({}, "", newUrl);
+    }
   }, []);
 
   useEffect(() => {
@@ -200,19 +219,36 @@ export function IntegrationStatus({ integrations }: IntegrationStatusProps) {
                       <span className="text-sm font-medium">{status.label}</span>
                     </div>
                     {isTelegram && (
-                      <button
-                        onClick={() => setTelegramOpen(true)}
-                        className="flex items-center gap-1 px-2 py-1 rounded text-xs"
-                        style={{
-                          backgroundColor: "rgba(139,92,246,0.15)",
-                          color: "#c4b5fd",
-                          border: "1px solid rgba(139,92,246,0.35)",
-                        }}
-                        title="Abrir configuração & diagnóstico"
-                      >
-                        <SettingsIcon className="w-3 h-3" />
-                        Setup
-                      </button>
+                      <>
+                        <button
+                          onClick={() => setDoctorOpen(true)}
+                          className="flex items-center gap-1 px-2 py-1 rounded text-xs"
+                          style={{
+                            backgroundColor: tg.healthy
+                              ? "rgba(16,185,129,0.12)"
+                              : "rgba(250,204,21,0.15)",
+                            color: tg.healthy ? "#86efac" : "#fde047",
+                            border: `1px solid ${tg.healthy ? "rgba(16,185,129,0.35)" : "rgba(250,204,21,0.35)"}`,
+                          }}
+                          title="Rodar diagnóstico completo + mandar teste"
+                        >
+                          <Stethoscope className="w-3 h-3" />
+                          Diagnosticar
+                        </button>
+                        <button
+                          onClick={() => setTelegramOpen(true)}
+                          className="flex items-center gap-1 px-2 py-1 rounded text-xs"
+                          style={{
+                            backgroundColor: "rgba(139,92,246,0.15)",
+                            color: "#c4b5fd",
+                            border: "1px solid rgba(139,92,246,0.35)",
+                          }}
+                          title="Abrir configuração"
+                        >
+                          <SettingsIcon className="w-3 h-3" />
+                          Setup
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>
@@ -298,6 +334,11 @@ export function IntegrationStatus({ integrations }: IntegrationStatusProps) {
       </div>
 
       <TelegramSetupModal open={telegramOpen} onClose={() => setTelegramOpen(false)} />
+      <TelegramDoctor
+        open={doctorOpen}
+        onClose={() => setDoctorOpen(false)}
+        onChanged={fetchTelegram}
+      />
     </>
   );
 }
