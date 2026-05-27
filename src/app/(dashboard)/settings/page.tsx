@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Settings, RefreshCw } from "lucide-react";
 import { SystemInfo } from "@/components/SystemInfo";
 import { IntegrationStatus } from "@/components/IntegrationStatus";
+import { MemoryMcpCard } from "@/components/MemoryMcpCard";
 import { QuickActions } from "@/components/QuickActions";
 import { RecoveryPanel } from "@/components/RecoveryPanel";
 import { UpdatePanel } from "@/components/UpdatePanel";
@@ -128,6 +129,11 @@ export default function SettingsPage() {
         {/* Recovery Panel - Full width, prominent */}
         <div className="lg:col-span-2">
           <RecoveryPanel />
+        </div>
+
+        {/* Memory MCP — agent-curated memory (Hermes-style) */}
+        <div className="lg:col-span-2">
+          <MemoryMcpCard />
         </div>
 
         {/* Integration Status */}

@@ -44,4 +44,32 @@ export async function register(): Promise<void> {
   } catch (err) {
     console.warn("[instrumentation] failed to start learner scheduler:", err);
   }
+
+  // Memory MCP — write the atlasdeck-memory entry into
+  // ~/.openclaw/mcp.json so the agent gets real memory tools on its
+  // next boot. We intentionally DO NOT restart the gateway here —
+  // that would interrupt any in-flight conversation. The IntegrationStatus
+  // card surfaces a "reload now" prompt to the user when needed.
+  try {
+    const fs = await import("fs");
+    const { getOpenClawDir } = await import("@/lib/openclaw-config");
+    if (fs.existsSync(getOpenClawDir())) {
+      const { ensureMemoryMcpInstalledQuiet } = await import(
+        "@/lib/memory-mcp-orchestrator"
+      );
+      const r = ensureMemoryMcpInstalledQuiet({ agentId: "main" });
+      if (r.ok && r.changed) {
+        console.log(
+          "[instrumentation] atlasdeck-memory MCP entry written/updated in mcp.json",
+        );
+      } else if (!r.ok) {
+        console.warn(
+          "[instrumentation] failed to ensure memory MCP install:",
+          r.error,
+        );
+      }
+    }
+  } catch (err) {
+    console.warn("[instrumentation] memory MCP install hook failed:", err);
+  }
 }

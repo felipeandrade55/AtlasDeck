@@ -62,7 +62,6 @@ import {
   getStats,
   recordAccess,
   type MemoryRow,
-  type MemoryType,
 } from "../src/lib/memory-db";
 import { embedTexts } from "../src/lib/embeddings";
 
