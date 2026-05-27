@@ -120,7 +120,19 @@ interface RunnerState {
    * the UI bubble doesn't render blank.
    */
   tokensEmitted: boolean;
+  /**
+   * Rolling log of every WS frame received in this session, truncated to
+   * 600 chars each and capped at 40 entries. When `final` arrives with
+   * no text we dump the full transcript so the operator can see exactly
+   * what the gateway sent and we can patch the parser if a new event
+   * shape shows up. Cheap to maintain (one Array.push per frame) and
+   * invaluable for diagnosing a gateway that silently swallows replies.
+   */
+  frameLog: string[];
 }
+
+const FRAME_LOG_MAX = 40;
+const FRAME_LOG_TRUNC = 600;
 
 /**
  * Field names where OpenClaw builds have historically placed the visible
@@ -308,49 +320,87 @@ function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
     return events;
   }
 
-  // Server event: chat streaming
+  // Server event: chat streaming. Rather than maintaining a brittle
+  // allow-list of event names (which keeps drifting between OpenClaw
+  // versions), we deny-list the obvious meta-events and try to extract
+  // text from anything else. Unknown payload shapes go through the
+  // recursive longest-string fallback inside `extractPayloadText`, so
+  // even brand-new event names produce a usable bubble.
   if (frameType === "event") {
-    const eventName = typeof raw.event === "string" ? raw.event : undefined;
+    const eventName = typeof raw.event === "string" ? raw.event : "";
     const payload = isRecord(raw.payload) ? (raw.payload as Record<string, unknown>) : {};
 
-    if (eventName === "chat.event" || eventName === "chat") {
+    // Meta events that carry no assistant text — skip extraction.
+    const META_EVENTS = new Set([
+      "connect.challenge",
+      "ping",
+      "pong",
+      "ack",
+      "heartbeat",
+      "subscription.ack",
+      "session.update",
+      "session.expired",
+    ]);
+    const isMetaEvent = META_EVENTS.has(eventName);
+    const isChatEvent = !isMetaEvent;
+
+    if (isChatEvent) {
       if (typeof payload.runId === "string") state.runId = payload.runId;
       const eventState = typeof payload.state === "string" ? payload.state : undefined;
-      switch (eventState) {
-        case "delta": {
-          const deltaText = typeof payload.deltaText === "string" ? payload.deltaText : "";
-          if (deltaText) {
-            events.push({ type: "token", delta: deltaText });
-            state.tokensEmitted = true;
-          }
-          break;
+
+      // Try to extract text from any chat-shaped event, regardless of
+      // declared state. Some gateway builds emit deltas as plain
+      // `chat.delta` events with the text in `text`/`content`/etc. and
+      // no `state` field at all — we capture them the same way.
+      if (eventState !== "final" && eventState !== "aborted" && eventState !== "error") {
+        const text = extractPayloadText(payload);
+        if (text) {
+          events.push({ type: "token", delta: text });
+          state.tokensEmitted = true;
         }
+      }
+
+      switch (eventState) {
         case "final": {
           // Buffered mode: when no `delta` frames preceded this `final`,
-          // the entire reply is carried inside the final payload. Emit it
-          // as a single token so the UI bubble actually renders content.
+          // the reply may still be inside the final payload. Try every
+          // known field plus the recursive longest-string fallback.
           if (!state.tokensEmitted) {
             const finalText = extractPayloadText(payload);
             if (finalText) {
               events.push({ type: "token", delta: finalText });
               state.tokensEmitted = true;
             } else {
-              // Gateway sent `final` but we couldn't find any text field
-              // we recognise. Dump the raw payload to the server log so
-              // we can learn the new field name, AND surface the dump
-              // inside the chat bubble itself — the user can paste it
-              // back and we add the field. Beats staring at empty space.
-              const dump = safeStringify(payload).slice(0, 4000);
+              // Gateway closed the stream without ever sending the
+              // reply text. We surface the full frame trace inside the
+              // chat bubble itself — the user can copy/paste it back
+              // and we patch the parser if a new event shape appeared.
+              // Also written to the server log so `pm2 logs` shows it
+              // without `MEMORY_DEBUG=1`. We do NOT fall back to CLI
+              // here because CLI defeats the real-time UX; the user
+              // would rather see a diagnostic than wait 30s for a
+              // CLI round-trip.
+              const trace = state.frameLog
+                .map((line, idx) => `[${idx + 1}] ${line}`)
+                .join("\n");
               console.warn(
-                `[ws] chat.event state=final without recognised text. Payload dump:\n${dump}`,
+                `[ws] state=final without any text — gateway swallowed the reply.\n` +
+                  `Full session trace:\n${trace}`,
               );
+              const inlineTrace = trace.slice(0, 4000);
               events.push({
                 type: "token",
                 delta:
-                  `⚠ O gateway respondeu, mas o texto veio em um campo desconhecido.\n` +
-                  `Cole este payload no chat para eu mapear:\n\n` +
+                  `⚠ **Gateway respondeu, mas não entregou texto.**\n\n` +
+                  `Isso normalmente indica um dos seguintes:\n` +
+                  `  1. O agente roteou a resposta real para outro canal (Telegram, etc.) — confira ` +
+                  `\`~/.openclaw/workspace/AGENTS.md\`/\`TOOLS.md\` e remova rotas condicionais por \`sessionKey\`.\n` +
+                  `  2. \`blockStreamingDefault\` está OFF no \`~/.openclaw/openclaw.json\` — adicione ` +
+                  `os campos sugeridos no banner amarelo e \`systemctl --user restart openclaw-gateway\`.\n` +
+                  `  3. Bug do gateway na versão atual — me cole o trace abaixo e mapeio o campo.\n\n` +
+                  `**Trace dos frames recebidos via WS nesta sessão:**\n` +
                   "```json\n" +
-                  dump +
+                  inlineTrace +
                   "\n```",
               });
               state.tokensEmitted = true;
@@ -373,7 +423,11 @@ function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
           break;
         case "error": {
           const errorMsg =
-            typeof payload.errorMessage === "string" ? payload.errorMessage : "Chat error";
+            typeof payload.errorMessage === "string"
+              ? payload.errorMessage
+              : typeof payload.error === "string"
+              ? payload.error
+              : "Chat error";
           events.push({ type: "error", message: errorMsg });
           break;
         }
@@ -442,11 +496,32 @@ function buildChatSendRequest(input: WsChatInput): Record<string, unknown> {
   // matching the gateway's own defaults (agent-config driven).
   //   ATLAS_CHAT_THINKING=off|minimal|low|medium|high|max
   //   ATLAS_CHAT_FAST_MODE=true|false
+  //
+  // STREAMING — we send several alternative hints because different
+  // OpenClaw builds expose the streaming toggle under different keys
+  // (gateway 2026.5.x uses `blockStreamingDefault`/`blockStreamingBreak`
+  // at config level; some forks accept per-request `stream`/`streaming`).
+  // Sending every shape together is safe: unknown params are ignored by
+  // the gateway's request validator. The goal is to force the agent to
+  // emit `chat.event state=delta` frames token-by-token instead of
+  // accumulating the whole reply into a single `final` (which is what
+  // produces the empty-bubble bug — the gateway *closes* the run before
+  // delivering the text under any field we can find).
   const params: Record<string, unknown> = {
     sessionKey: input.sessionKey,
     message: input.prompt,
     idempotencyKey: randomUUID(),
     ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+    // Streaming hints (per-request override candidates):
+    stream: true,
+    streaming: true,
+    realtime: true,
+    incremental: true,
+    // Block-streaming hints (mirrors openclaw.json agents.defaults):
+    blockStreaming: "on",
+    blockStreamingDefault: "on",
+    blockStreamingBreak: "text_end",
+    blockStreamingChunk: { minChars: 24, maxChars: 200 },
   };
   const thinking = process.env.ATLAS_CHAT_THINKING?.trim();
   if (thinking) params.thinking = thinking;
@@ -539,7 +614,12 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
   let resolveNext: ((value: void) => void) | null = null;
   let closed = false;
   let chatSendDispatched = false;
-  const state: RunnerState = { runId: null, helloOk: false, tokensEmitted: false };
+  const state: RunnerState = {
+    runId: null,
+    helloOk: false,
+    tokensEmitted: false,
+    frameLog: [],
+  };
 
   // Timing instrumentation — each phase records its delta from t0.
   // The chat page surfaces these in the bubble badge so it's obvious
@@ -599,6 +679,13 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
     const text = data.toString("utf8");
     if (!text) return;
     if (debug) console.log("[ws] msg", text.slice(0, 240));
+
+    // Always record the frame in the rolling log so we can dump the
+    // whole session if the gateway closes without ever sending text.
+    // The translate path may drop unknown shapes silently — this log
+    // is the ground truth of what arrived on the socket.
+    if (state.frameLog.length >= FRAME_LOG_MAX) state.frameLog.shift();
+    state.frameLog.push(text.length > FRAME_LOG_TRUNC ? `${text.slice(0, FRAME_LOG_TRUNC)}…` : text);
 
     let parsed: unknown;
     try {
