@@ -175,18 +175,74 @@ function asError(message: string) {
   };
 }
 
+// Embedding lifecycle is the riskiest part of cold start: the first
+// call to embedTexts() downloads ~30MB of Xenova model and unpacks
+// the inference pipeline. That can take 30-90 seconds on a fresh
+// install, and during that window the MCP tool handler would block
+// — long enough for OpenClaw to time out and kill the child, which
+// makes the agent unresponsive on Telegram. So we:
+//   1. Kick off a single warmup in the BACKGROUND right after boot
+//      so the first user-facing tool call sees a hot pipeline.
+//   2. Cap any individual embed at 8s. Past that, fall back to
+//      saving without a vector — search degrades to LIKE matching
+//      but the memory is still persisted and surfaced in the UI.
+//   3. Surface progress to stderr so the diagnose view shows it.
+let embeddingsReady = false;
+let embeddingsError: string | null = null;
+let embeddingsPromise: Promise<void> | null = null;
+
+function startEmbeddingsWarmup(): void {
+  if (embeddingsPromise) return;
+  log("warming up embeddings in background (first run downloads ~30MB)");
+  const warmupStart = Date.now();
+  embeddingsPromise = (async () => {
+    try {
+      await embedTexts(["warmup"]);
+      embeddingsReady = true;
+      log(`embeddings ready (${Date.now() - warmupStart}ms)`);
+    } catch (err) {
+      embeddingsError = err instanceof Error ? err.message : String(err);
+      log(`embeddings warmup failed — falling back to LIKE search: ${embeddingsError}`);
+    }
+  })();
+}
+
+const EMBED_TIMEOUT_MS = 8000;
+
 async function tryEmbed(text: string): Promise<{
   vector: Float32Array;
   model: string;
   dim: number;
 } | null> {
+  // If warmup is still in flight, give it a brief chance — but never
+  // longer than the tool-level timeout. Idle queues don't help us
+  // here; OpenClaw is waiting on this Promise.
+  if (!embeddingsReady && embeddingsPromise) {
+    try {
+      await Promise.race([
+        embeddingsPromise,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("warmup-timeout")), EMBED_TIMEOUT_MS),
+        ),
+      ]);
+    } catch {
+      return null;
+    }
+  }
+  if (embeddingsError) return null;
+
   try {
-    const { vectors, provider } = await embedTexts([text]);
-    if (vectors.length === 0) return null;
+    const result = await Promise.race([
+      embedTexts([text]),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("embed-timeout")), EMBED_TIMEOUT_MS),
+      ),
+    ]);
+    if (result.vectors.length === 0) return null;
     return {
-      vector: vectors[0],
-      model: `${provider.id}:${provider.modelId}`,
-      dim: provider.dim,
+      vector: result.vectors[0],
+      model: `${result.provider.id}:${result.provider.modelId}`,
+      dim: result.provider.dim,
     };
   } catch (err) {
     // Embeddings are best-effort. The memory is still saved without
@@ -438,6 +494,13 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   log("ready (stdio transport)");
+
+  // Kick off embedding warmup AFTER signaling ready so OpenClaw sees
+  // the MCP child healthy immediately. The download/inference setup
+  // happens in the background — first user-facing tool call will be
+  // hot if it lands after warmup completes, or fall back gracefully
+  // (LIKE search, no-vector save) if it arrives during the download.
+  startEmbeddingsWarmup();
 }
 
 main().catch((err) => {
