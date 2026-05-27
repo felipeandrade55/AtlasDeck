@@ -96,6 +96,7 @@ function colorFor(type: string): string {
   if (type.startsWith("mailbox.")) return "#a855f7";
   if (type.startsWith("agent.")) return "#10b981";
   if (type.startsWith("dispatcher.")) return "#f59e0b";
+  if (type.startsWith("chat.")) return "#ec4899";
   return "#71717a";
 }
 
@@ -125,6 +126,16 @@ function describe(e: LiveEvent): string {
       return `🎭 ${e.agent_id}: ${e.payload.from ?? "—"} → ${e.payload.to}`;
     case "dispatcher.run":
       return `⚙️ dispatcher: ${e.payload.dispatched} disp, ${e.payload.paused} paused`;
+    case "chat.turn_started":
+      return `💬 ${e.agent_id ?? "?"} começou: ${String(e.payload.preview ?? "").slice(0, 60)}`;
+    case "chat.tool_use":
+      return `🔧 ${e.agent_id ?? "?"} → ${e.payload.tool}${e.payload.input_preview ? ` (${String(e.payload.input_preview).slice(0, 40)})` : ""}`;
+    case "chat.turn_completed": {
+      const ok = e.payload.ok;
+      const dur = typeof e.payload.duration_ms === "number" ? `${(e.payload.duration_ms / 1000).toFixed(1)}s` : "";
+      const tokens = (e.payload.tokensIn as number ?? 0) + (e.payload.tokensOut as number ?? 0);
+      return `${ok ? "✅" : "⚠️"} turno ${ok ? "ok" : "vazio"} · ${dur}${tokens ? ` · ${tokens} tok` : ""}`;
+    }
     default:
       return `${e.event_type} ${tail}`;
   }

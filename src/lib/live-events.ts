@@ -31,7 +31,10 @@ export type LiveEventType =
   | "mailbox.message"
   | "agent.heartbeat"
   | "agent.state_changed"
-  | "dispatcher.run";
+  | "dispatcher.run"
+  | "chat.turn_started"
+  | "chat.tool_use"
+  | "chat.turn_completed";
 
 export interface LiveEvent {
   id: string;

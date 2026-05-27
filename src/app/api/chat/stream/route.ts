@@ -29,6 +29,7 @@ import {
 } from "@/lib/chat-db";
 import { runOpenClawChat, type RunnerEvent } from "@/lib/openclaw-runner";
 import { logActivity, updateActivity } from "@/lib/activities-db";
+import { publishEvent } from "@/lib/live-events";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -70,6 +71,20 @@ function deriveTitleFromPrompt(prompt: string): string {
   const collapsed = prompt.replace(/\s+/g, " ").trim();
   if (!collapsed) return "Nova conversa";
   return collapsed.length > 60 ? `${collapsed.slice(0, 57)}…` : collapsed;
+}
+
+function summarizeToolInput(input: unknown): string {
+  if (input == null) return "";
+  if (typeof input === "string") {
+    const s = input.replace(/\s+/g, " ").trim();
+    return s.length > 80 ? `${s.slice(0, 77)}…` : s;
+  }
+  try {
+    const s = JSON.stringify(input).replace(/\s+/g, " ");
+    return s.length > 80 ? `${s.slice(0, 77)}…` : s;
+  } catch {
+    return "";
+  }
 }
 
 function formatMs(ms: number): string {
@@ -179,6 +194,19 @@ export async function POST(req: NextRequest) {
     status: "streaming",
   });
 
+  // Bridge chat lifecycle into the Live Mission event bus so the dashboard
+  // shows activity even when the turn isn't tied to a formal task. Without
+  // this the Live Activity feed stays empty while the agent is working.
+  publishEvent({
+    event_type: "chat.turn_started",
+    agent_id: agentId,
+    payload: {
+      threadId: thread.id,
+      preview,
+      source: "web",
+    },
+  });
+
   const history = listMessages({ threadId: thread.id, limit: 50 })
     .filter((m) => m.id !== assistantMsg.id && (m.role === "user" || m.role === "assistant"))
     .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
@@ -275,6 +303,19 @@ export async function POST(req: NextRequest) {
           }
         }
 
+        publishEvent({
+          event_type: "chat.turn_completed",
+          agent_id: agentId,
+          payload: {
+            threadId: thread!.id,
+            ok: Boolean(assembled),
+            duration_ms: Date.now() - turnStart,
+            tokensIn,
+            tokensOut,
+            cost,
+          },
+        });
+
         // If we learned the OpenClaw session id, attach it to the thread
         if (sessionId && !thread!.source_session_id) {
           updateThread(thread!.id, {
@@ -361,6 +402,15 @@ export async function POST(req: NextRequest) {
               tool_name: evt.name,
               tool_input: evt.input,
               status: "complete",
+            });
+            publishEvent({
+              event_type: "chat.tool_use",
+              agent_id: agentId,
+              payload: {
+                threadId: thread!.id,
+                tool: evt.name,
+                input_preview: summarizeToolInput(evt.input),
+              },
             });
             break;
           case "tool_result":

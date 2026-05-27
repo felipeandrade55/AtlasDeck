@@ -36,6 +36,9 @@ const ALL_EVENT_TYPES: LiveEventType[] = [
   "agent.heartbeat",
   "agent.state_changed",
   "dispatcher.run",
+  "chat.turn_started",
+  "chat.tool_use",
+  "chat.turn_completed",
 ];
 
 function parseEventTypes(raw: string | null): LiveEventType[] | undefined {
