@@ -163,7 +163,9 @@ export default function ChatPage() {
           const restartMsg = data.restart
             ? data.restart.ok
               ? ` · gateway reiniciado (${data.restart.method})`
-              : ` · ⚠ não consegui reiniciar o gateway automaticamente`
+              : ` · ⚠ ${
+                  data.restart.detail
+                }. Reinicie manualmente: systemctl --user restart openclaw-gateway`
             : "";
           setAutoFixResult(`✓ Aplicado: ${parts.join(", ")}${restartMsg}`);
           // Clear the banners that were causing this to be needed —

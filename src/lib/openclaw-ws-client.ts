@@ -131,8 +131,8 @@ interface RunnerState {
   frameLog: string[];
 }
 
-const FRAME_LOG_MAX = 40;
-const FRAME_LOG_TRUNC = 600;
+const FRAME_LOG_MAX = 80;
+const FRAME_LOG_TRUNC = 800;
 
 /**
  * Field names where OpenClaw builds have historically placed the visible
@@ -265,22 +265,75 @@ function isMetaAgentStream(stream: string): boolean {
   return false;
 }
 
+// Within a `stream: "item"` frame, the `data.kind` (or `data.type`)
+// tells us WHAT kind of item this is. The Codex/Responses item types
+// that are NOT visible assistant replies:
+//   - reasoning / analysis / thinking      → the model's internal CoT
+//   - tool_call / tool_result / function_call → tool invocations (handled separately)
+//   - web_search / file_search             → search tool flavors
+//   - userMessage                          → echo of the user's prompt
+// Anything else (message, agent_message, output_text, response, …) IS
+// the assistant's text reply and we extract it.
+const NON_REPLY_ITEM_KINDS = new Set([
+  "reasoning",
+  "analysis",
+  "thinking",
+  "tool_call",
+  "tool_result",
+  "function_call",
+  "function_response",
+  "web_search",
+  "file_search",
+  "code_interpreter",
+  "userMessage",
+  "user_message",
+  "system_message",
+  "developer_message",
+]);
+
+function isNonReplyItemKind(kind: string): boolean {
+  if (!kind) return false;
+  return NON_REPLY_ITEM_KINDS.has(kind);
+}
+
 /**
  * Extracts assistant text from an `event: "agent"` payload. OpenClaw's
  * current gateway wraps the agent's stream into a transport envelope
  * with a `stream` discriminator and a `data` (or similar) sub-object
  * shaped like the underlying model's streaming format (Codex / OpenAI
- * Responses API, with `item.content[].text` chunks). We look in every
- * shape we've seen so far, returning the first non-empty string match.
+ * Responses API, with `item.content[].text` chunks).
+ *
+ * Special case: when `stream === "item"` the `data.kind` (or `data.type`)
+ * field tells us whether this item is the assistant's actual reply or
+ * an internal step (reasoning, tool call, user echo, etc.). We MUST
+ * skip non-reply kinds — otherwise the bubble would fill up with the
+ * model's chain-of-thought, which is meant to stay internal.
  */
-function extractAgentEventText(payload: Record<string, unknown>): string {
+function extractAgentEventText(
+  payload: Record<string, unknown>,
+  stream: string,
+): string {
   // Top-level known fields (deltaText / text / content / etc.)
   const top = extractDeltaText(payload);
   if (top) return top;
 
-  // `data` sub-object — the gateway often nests the model frame in here.
+  // `data` sub-object — the gateway nests the model frame in here.
   const data = isRecord(payload.data) ? (payload.data as Record<string, unknown>) : null;
   if (data) {
+    // Filter by item kind/type when this is a stream:"item" frame —
+    // reasoning / tool / userMessage items don't carry visible reply.
+    if (stream === "item") {
+      const kind =
+        typeof data.kind === "string"
+          ? data.kind
+          : typeof data.type === "string"
+          ? data.type
+          : "";
+      if (isNonReplyItemKind(kind)) {
+        return "";
+      }
+    }
+
     const dataText = extractDeltaText(data);
     if (dataText) return dataText;
 
@@ -516,7 +569,7 @@ function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
         if (!stream || isMetaAgentStream(stream)) {
           return events;
         }
-        const text = extractAgentEventText(payload);
+        const text = extractAgentEventText(payload, stream);
         if (text) {
           events.push({ type: "token", delta: text });
           state.tokensEmitted = true;
