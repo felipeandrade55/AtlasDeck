@@ -765,6 +765,57 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
+# FASE 3.7 — PATCHES DE node_modules (idempotentes, todo deploy)
+# ══════════════════════════════════════════════════════════════════════════════
+# Alguns pacotes (openwakeword-js) precisam de fixes pós-install que o
+# npm normalmente roda via `postinstall`. Mas a FASE 3 acima pula o
+# `npm install` quando package.json não mudou — então scripts/postinstall
+# também são pulados. Resultado: o patch `webpackIgnore` no dist do
+# openwakeword-js nunca era aplicado em deploys subsequentes, o build
+# do Turbopack devolvia o stub "Cannot find module as expression is
+# too dynamic", e o wake-word "ei Jarvis" ficava quebrado em produção.
+#
+# Solução: rodar o setup-openwakeword explicitamente em TODO deploy.
+# Ele é idempotente (`copyIfMissing` + regex que ignora arquivos já
+# patcheados), então custar zero quando não há trabalho a fazer.
+step "Patches de node_modules (openwakeword, etc.)..."
+T=$(now)
+phase_status "node-modules-patches" "running"
+
+cd "$VPS_DIR"
+
+# Snapshot do dist antes do patch — se o patch alterar o arquivo,
+# limpamos o cache do Turbopack para garantir que a build pegue a
+# versão patchada (Turbopack às vezes cacheia o módulo antigo).
+OWW_DIST="node_modules/openwakeword-js/dist/index.js"
+OWW_PREV_HASH=""
+if [ -f "$OWW_DIST" ]; then
+  OWW_PREV_HASH=$(sha256sum "$OWW_DIST" 2>/dev/null | awk '{print $1}' || echo "")
+fi
+
+if node scripts/setup-openwakeword.js 2>&1 | tee -a /tmp/setup-openwakeword.log; then
+  ok "Patches de node_modules aplicados"
+
+  # Se o dist mudou (patch foi aplicado ou re-aplicado), invalidamos
+  # o cache do Turbopack para que o próximo build não devolva o stub
+  # antigo que ficou em .next/cache.
+  if [ -f "$OWW_DIST" ]; then
+    OWW_NEW_HASH=$(sha256sum "$OWW_DIST" 2>/dev/null | awk '{print $1}' || echo "")
+    if [ -n "$OWW_PREV_HASH" ] && [ "$OWW_PREV_HASH" != "$OWW_NEW_HASH" ]; then
+      info "openwakeword-js dist mudou — limpando .next/cache para forçar rebuild dos chunks ORT"
+      rm -rf .next/cache 2>/dev/null || true
+    fi
+  fi
+
+  record "Patches node_modules" "ok" "$(elapsed $T)"
+  phase_status "node-modules-patches" "ok" "$(elapsed $T)"
+else
+  warn "setup-openwakeword falhou (não bloqueia o deploy)"
+  record "Patches node_modules" "fail" "$(elapsed $T)"
+  phase_status "node-modules-patches" "fail" "$(elapsed $T)"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
 # FASE 4 — BUILD
 # ══════════════════════════════════════════════════════════════════════════════
 step "Build..."

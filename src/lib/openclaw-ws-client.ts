@@ -497,31 +497,19 @@ function buildChatSendRequest(input: WsChatInput): Record<string, unknown> {
   //   ATLAS_CHAT_THINKING=off|minimal|low|medium|high|max
   //   ATLAS_CHAT_FAST_MODE=true|false
   //
-  // STREAMING — we send several alternative hints because different
-  // OpenClaw builds expose the streaming toggle under different keys
-  // (gateway 2026.5.x uses `blockStreamingDefault`/`blockStreamingBreak`
-  // at config level; some forks accept per-request `stream`/`streaming`).
-  // Sending every shape together is safe: unknown params are ignored by
-  // the gateway's request validator. The goal is to force the agent to
-  // emit `chat.event state=delta` frames token-by-token instead of
-  // accumulating the whole reply into a single `final` (which is what
-  // produces the empty-bubble bug — the gateway *closes* the run before
-  // delivering the text under any field we can find).
+  // IMPORTANT — gateway has a strict schema for `chat.send` params.
+  // Attempting to send `stream`/`streaming`/`blockStreaming*` etc.
+  // produces an "invalid chat.send params: at root: unexpected
+  // property 'X'" rejection that closes the stream in ~300ms. The
+  // only accepted shape (verified against gateway 2026.5.x) is:
+  // `sessionKey`, `message`, `idempotencyKey`, `sessionId?`,
+  // `thinking?`, `fastMode?`. Streaming is exclusively controlled
+  // server-side via `~/.openclaw/openclaw.json` agents.defaults.
   const params: Record<string, unknown> = {
     sessionKey: input.sessionKey,
     message: input.prompt,
     idempotencyKey: randomUUID(),
     ...(input.sessionId ? { sessionId: input.sessionId } : {}),
-    // Streaming hints (per-request override candidates):
-    stream: true,
-    streaming: true,
-    realtime: true,
-    incremental: true,
-    // Block-streaming hints (mirrors openclaw.json agents.defaults):
-    blockStreaming: "on",
-    blockStreamingDefault: "on",
-    blockStreamingBreak: "text_end",
-    blockStreamingChunk: { minChars: 24, maxChars: 200 },
   };
   const thinking = process.env.ATLAS_CHAT_THINKING?.trim();
   if (thinking) params.thinking = thinking;
