@@ -56,7 +56,7 @@ export function buildExpectedEntry(opts: {
   const script = path.join(
     opts.atlasdeckRoot,
     "scripts",
-    "atlasdeck-memory-mcp.ts",
+    "atlasdeck-memory-mcp.mts",
   );
   return {
     // npx is universally available and finds tsx whether it lives in

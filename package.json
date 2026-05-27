@@ -12,7 +12,7 @@
     "setup:calendar:status": "tsx scripts/setup-calendar.ts --status",
     "setup:memory": "tsx scripts/setup-memory.ts",
     "smoke-test:memory": "tsx scripts/smoke-test-memory.ts",
-    "mcp:memory": "tsx scripts/atlasdeck-memory-mcp.ts",
+    "mcp:memory": "tsx scripts/atlasdeck-memory-mcp.mts",
     "smoke-test:mcp": "tsx scripts/smoke-test-mcp.ts"
   },
   "dependencies": {

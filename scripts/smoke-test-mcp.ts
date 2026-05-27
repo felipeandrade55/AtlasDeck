@@ -15,7 +15,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const atlasdeckRoot = path.resolve(here, "..");
-const serverScript = path.resolve(here, "atlasdeck-memory-mcp.ts");
+const serverScript = path.resolve(here, "atlasdeck-memory-mcp.mts");
 
 interface Step {
   name: string;

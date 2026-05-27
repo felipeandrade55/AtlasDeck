@@ -18,26 +18,12 @@
  *                          where agent "main" → workspace "workspace")
  */
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const atlasdeckRoot = process.env.ATLASDECK_ROOT
-  ? path.resolve(process.env.ATLASDECK_ROOT)
-  : path.resolve(here, "..");
-
-// memory-db, embeddings, etc. all resolve their data dir from
-// process.cwd(). Pin cwd to the AtlasDeck root before any of those
-// modules are imported so the MCP server shares the same SQLite
-// file/model cache as the Next.js server.
-process.chdir(atlasdeckRoot);
-
-const AGENT_ID = process.env.OPENCLAW_AGENT_ID || "main";
-const WORKSPACE =
-  process.env.ATLASDECK_WORKSPACE ||
-  (AGENT_ID === "main" ? "workspace" : `workspace-${AGENT_ID}`);
-
 // Use stderr exclusively for human-readable logs — stdout is the
-// JSON-RPC channel the MCP transport speaks on.
+// JSON-RPC channel the MCP transport speaks on. Defined FIRST so
+// every boot step can log, including pre-chdir failures.
 function log(msg: string, extra?: unknown): void {
   if (extra !== undefined) {
     process.stderr.write(`[atlasdeck-memory] ${msg} ${JSON.stringify(extra)}\n`);
@@ -46,12 +32,100 @@ function log(msg: string, extra?: unknown): void {
   }
 }
 
-log(`booting. root=${atlasdeckRoot} agent=${AGENT_ID} workspace=${WORKSPACE}`);
+// Top-level safety net: an unhandled throw from any sync init code
+// crashes the MCP server with exit code 1, and OpenClaw (depending
+// on version) may then refuse to spawn the agent at all. Catching
+// here lets us log the cause to stderr — which OpenClaw captures —
+// instead of dying silently.
+process.on("uncaughtException", (err) => {
+  log("uncaughtException", err instanceof Error ? err.message : String(err));
+  process.exit(2);
+});
+process.on("unhandledRejection", (err) => {
+  log("unhandledRejection", err instanceof Error ? err.message : String(err));
+  process.exit(3);
+});
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { z } from "zod";
-import {
+const here = path.dirname(fileURLToPath(import.meta.url));
+const envRoot = process.env.ATLASDECK_ROOT
+  ? path.resolve(process.env.ATLASDECK_ROOT)
+  : null;
+const fallbackRoot = path.resolve(here, "..");
+
+log(`boot start. envRoot=${envRoot ?? "<unset>"} fallbackRoot=${fallbackRoot}`);
+
+// Resolve a usable AtlasDeck root: prefer env, but fall back to the
+// script's own parent dir if env points to nowhere. This survives
+// the worst-case scenario of mcp.json being written on host A and
+// the script running on host B with a different checkout location.
+function resolveAtlasdeckRoot(): string {
+  if (envRoot && fs.existsSync(envRoot)) return envRoot;
+  if (envRoot && !fs.existsSync(envRoot)) {
+    log(`ATLASDECK_ROOT=${envRoot} does not exist — falling back to script dir`);
+  }
+  if (fs.existsSync(fallbackRoot)) return fallbackRoot;
+  log("FATAL: neither ATLASDECK_ROOT nor fallback root exists");
+  process.exit(4);
+}
+
+const atlasdeckRoot = resolveAtlasdeckRoot();
+
+// memory-db, embeddings, etc. all resolve their data dir from
+// process.cwd(). Pin cwd to the AtlasDeck root before any of those
+// modules are imported so the MCP server shares the same SQLite
+// file/model cache as the Next.js server.
+try {
+  process.chdir(atlasdeckRoot);
+} catch (err) {
+  log("chdir failed", err instanceof Error ? err.message : String(err));
+  process.exit(5);
+}
+
+// Verify the SQLite file or its parent dir is reachable — better-sqlite3
+// will create the file lazily, but if the data dir is unwritable the
+// first DB call inside a tool handler will throw and confuse the agent
+// far more than failing here would.
+const dataDir = path.join(atlasdeckRoot, "data");
+if (!fs.existsSync(dataDir)) {
+  try {
+    fs.mkdirSync(dataDir, { recursive: true });
+  } catch (err) {
+    log("could not create data dir", err instanceof Error ? err.message : String(err));
+    process.exit(6);
+  }
+}
+
+const AGENT_ID = process.env.OPENCLAW_AGENT_ID || "main";
+const WORKSPACE =
+  process.env.ATLASDECK_WORKSPACE ||
+  (AGENT_ID === "main" ? "workspace" : `workspace-${AGENT_ID}`);
+
+log(`boot ok. root=${atlasdeckRoot} agent=${AGENT_ID} workspace=${WORKSPACE}`);
+
+// Dynamic imports happen AFTER chdir so memory-db.ts and embeddings.ts
+// resolve their data dir from the right process.cwd(). The .mts
+// extension forces tsx into ESM mode, which is what makes top-level
+// await available (CJS transpile rejects it).
+let McpServer: typeof import("@modelcontextprotocol/sdk/server/mcp.js").McpServer;
+let StdioServerTransport: typeof import("@modelcontextprotocol/sdk/server/stdio.js").StdioServerTransport;
+let z: typeof import("zod").z;
+let memoryDb: typeof import("../src/lib/memory-db");
+let embeddings: typeof import("../src/lib/embeddings");
+
+try {
+  ({ McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js"));
+  ({ StdioServerTransport } = await import(
+    "@modelcontextprotocol/sdk/server/stdio.js"
+  ));
+  ({ z } = await import("zod"));
+  memoryDb = await import("../src/lib/memory-db");
+  embeddings = await import("../src/lib/embeddings");
+} catch (err) {
+  log("module load failed", err instanceof Error ? err.message : String(err));
+  process.exit(7);
+}
+
+const {
   upsertMemory,
   setMemoryEmbedding,
   searchSimilar,
@@ -61,9 +135,9 @@ import {
   getMemoryById,
   getStats,
   recordAccess,
-  type MemoryRow,
-} from "../src/lib/memory-db";
-import { embedTexts } from "../src/lib/embeddings";
+} = memoryDb;
+type MemoryRow = import("../src/lib/memory-db").MemoryRow;
+const { embedTexts } = embeddings;
 
 const MemoryTypeSchema = z.enum([
   "episodic",

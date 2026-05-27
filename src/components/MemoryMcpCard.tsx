@@ -16,6 +16,9 @@ import {
   Loader2,
   RefreshCw,
   Zap,
+  Stethoscope,
+  PowerOff,
+  XCircle,
 } from "lucide-react";
 
 interface StatusResponse {
@@ -50,7 +53,29 @@ interface ActivateResponse {
   summary: string;
 }
 
-type Phase = "idle" | "loading" | "activating" | "error";
+interface DiagnoseCheck {
+  id: string;
+  level: "ok" | "warn" | "fail";
+  title: string;
+  detail: string;
+  fix?: string;
+}
+
+interface DiagnoseReport {
+  ok: boolean;
+  generatedAt: string;
+  checks: DiagnoseCheck[];
+  spawnProbe: {
+    attempted: boolean;
+    reachedReady: boolean;
+    exitCode: number | null;
+    stderrTail: string;
+    durationMs: number;
+  };
+  summary: { ok: number; warn: number; fail: number };
+}
+
+type Phase = "idle" | "loading" | "activating" | "diagnosing" | "disabling" | "error";
 
 interface Banner {
   kind: "success" | "warn" | "error" | "info";
@@ -63,6 +88,7 @@ export function MemoryMcpCard() {
   const [phase, setPhase] = useState<Phase>("loading");
   const [banner, setBanner] = useState<Banner | null>(null);
   const [showDetails, setShowDetails] = useState(false);
+  const [diagnose, setDiagnose] = useState<DiagnoseReport | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -142,6 +168,90 @@ export function MemoryMcpCard() {
       });
     }
   }, []);
+
+  const runDiagnose = useCallback(async () => {
+    setPhase("diagnosing");
+    setBanner({ kind: "info", text: "Rodando diagnóstico…" });
+    try {
+      const res = await fetch(
+        "/api/openclaw/memory-mcp/diagnose?agentId=main",
+        { cache: "no-store" },
+      );
+      const json = (await res.json()) as DiagnoseReport;
+      setDiagnose(json);
+      setPhase("idle");
+      if (json.ok) {
+        setBanner({
+          kind: "success",
+          text: "Diagnóstico: tudo passou.",
+          detail: `${json.summary.ok} ok · ${json.summary.warn} alerta · ${json.summary.fail} crítico`,
+        });
+      } else {
+        setBanner({
+          kind: json.summary.fail > 0 ? "error" : "warn",
+          text:
+            json.summary.fail > 0
+              ? "Diagnóstico encontrou falhas críticas — veja abaixo."
+              : "Diagnóstico com avisos — veja abaixo.",
+          detail: `${json.summary.ok} ok · ${json.summary.warn} alerta · ${json.summary.fail} crítico`,
+        });
+      }
+    } catch (err) {
+      setPhase("error");
+      setBanner({
+        kind: "error",
+        text: "Falha ao rodar diagnóstico.",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }, []);
+
+  const disable = useCallback(async () => {
+    if (
+      !window.confirm(
+        "Remover a entrada atlasdeck-memory do OpenClaw? O Jarvis perderá as " +
+          "ferramentas de memória até você reativar. Use isso se ele parou de " +
+          "responder por causa do MCP.",
+      )
+    ) {
+      return;
+    }
+    setPhase("disabling");
+    setBanner({ kind: "info", text: "Desativando memória avançada…" });
+    try {
+      const res = await fetch("/api/openclaw/memory-mcp/install", {
+        method: "DELETE",
+      });
+      const json = (await res.json()) as {
+        ok: boolean;
+        removed: boolean;
+        preservedServers: string[];
+      };
+      if (!res.ok || !json.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      setBanner({
+        kind: "warn",
+        text:
+          "Memória avançada removida do mcp.json. Reinicie o OpenClaw " +
+          "manualmente (botão no Doctor do Telegram → Reiniciar gateway) " +
+          "para o Jarvis voltar ao estado anterior.",
+        detail: json.removed
+          ? `Outros MCPs preservados: ${
+              json.preservedServers.length || "nenhum"
+            }`
+          : "Entrada já não estava registrada.",
+      });
+      await refresh();
+    } catch (err) {
+      setPhase("error");
+      setBanner({
+        kind: "error",
+        text: "Falha ao desativar.",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }, [refresh]);
 
   if (!status && phase === "loading") {
     return (
@@ -268,10 +378,10 @@ export function MemoryMcpCard() {
         </div>
       )}
 
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <button
           onClick={activate}
-          disabled={phase === "activating"}
+          disabled={phase !== "idle" && phase !== "loading"}
           className="flex items-center gap-2 px-4 py-2 rounded-lg transition-colors disabled:opacity-50 text-sm font-medium"
           style={{
             backgroundColor:
@@ -295,8 +405,48 @@ export function MemoryMcpCard() {
         </button>
 
         <button
+          onClick={runDiagnose}
+          disabled={phase !== "idle" && phase !== "loading"}
+          className="flex items-center gap-2 px-3 py-2 rounded-lg transition-colors disabled:opacity-50 text-sm"
+          style={{
+            backgroundColor: "rgba(250,204,21,0.12)",
+            color: "#fde047",
+            border: "1px solid rgba(250,204,21,0.35)",
+          }}
+          title="Verifica config, paths, e tenta subir o servidor MCP"
+        >
+          {phase === "diagnosing" ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <Stethoscope className="w-4 h-4" />
+          )}
+          Diagnosticar
+        </button>
+
+        {status?.installed && (
+          <button
+            onClick={disable}
+            disabled={phase !== "idle" && phase !== "loading"}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg transition-colors disabled:opacity-50 text-sm"
+            style={{
+              color: "#fca5a5",
+              border: "1px solid rgba(248,113,113,0.35)",
+              backgroundColor: "rgba(248,113,113,0.08)",
+            }}
+            title="Remove o entry do mcp.json (use se o Jarvis parou)"
+          >
+            {phase === "disabling" ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <PowerOff className="w-4 h-4" />
+            )}
+            Desativar
+          </button>
+        )}
+
+        <button
           onClick={() => setShowDetails((v) => !v)}
-          className="px-3 py-2 rounded-lg text-xs"
+          className="px-3 py-2 rounded-lg text-xs ml-auto"
           style={{
             color: "var(--text-muted)",
             border: "1px solid var(--border)",
@@ -305,6 +455,81 @@ export function MemoryMcpCard() {
           {showDetails ? "Ocultar detalhes" : "Detalhes técnicos"}
         </button>
       </div>
+
+      {diagnose && (
+        <div className="mt-4 space-y-2">
+          {diagnose.checks.map((c) => {
+            const tone =
+              c.level === "ok"
+                ? { color: "#34d399", Icon: CheckCircle }
+                : c.level === "warn"
+                ? { color: "#facc15", Icon: AlertCircle }
+                : { color: "#fca5a5", Icon: XCircle };
+            const ToneIcon = tone.Icon;
+            return (
+              <div
+                key={c.id}
+                className="rounded-lg p-3 text-sm"
+                style={{
+                  backgroundColor: `${tone.color}10`,
+                  border: `1px solid ${tone.color}33`,
+                }}
+              >
+                <div className="flex items-start gap-2">
+                  <ToneIcon
+                    className="w-4 h-4 mt-0.5 shrink-0"
+                    style={{ color: tone.color }}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div
+                      className="font-medium"
+                      style={{ color: "var(--text-primary)" }}
+                    >
+                      {c.title}
+                    </div>
+                    <div
+                      className="text-xs mt-0.5 whitespace-pre-wrap break-words"
+                      style={{ color: "var(--text-secondary)" }}
+                    >
+                      {c.detail}
+                    </div>
+                    {c.fix && (
+                      <div
+                        className="text-xs mt-1"
+                        style={{ color: "var(--text-muted)" }}
+                      >
+                        → {c.fix}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+          {diagnose.spawnProbe.attempted && diagnose.spawnProbe.stderrTail && (
+            <details
+              className="rounded-lg p-3 text-xs"
+              style={{
+                backgroundColor: "var(--card-elevated, rgba(255,255,255,0.03))",
+                border: "1px solid var(--border)",
+              }}
+            >
+              <summary
+                className="cursor-pointer font-medium"
+                style={{ color: "var(--text-secondary)" }}
+              >
+                stderr do MCP server ({diagnose.spawnProbe.durationMs}ms)
+              </summary>
+              <pre
+                className="mt-2 whitespace-pre-wrap font-mono"
+                style={{ color: "var(--text-muted)" }}
+              >
+                {diagnose.spawnProbe.stderrTail}
+              </pre>
+            </details>
+          )}
+        </div>
+      )}
 
       {showDetails && status && (
         <div
