@@ -22,6 +22,51 @@ import { buildPromptBlock } from "@/lib/memory-extractor";
 const BEGIN_MARK = "<!-- BEGIN ATLASDECK AUTO-RECALL — do not edit; this section regenerates -->";
 const END_MARK = "<!-- END ATLASDECK AUTO-RECALL -->";
 
+/**
+ * Tool-usage guidance for the agent. Without this, the LLM tends to
+ * "remember" things from session context and skip the tool entirely
+ * — which means nothing ever lands in the SQLite store and the UI
+ * counter stays at 0 even though the user feels remembered.
+ *
+ * Injected ABOVE the auto-recall list because reading order matters
+ * for some models — the directive comes before the data it operates on.
+ */
+const TOOL_GUIDANCE = `### Ferramentas de memória persistente — USE ATIVAMENTE
+
+Você tem ferramentas do servidor MCP \`atlasdeck-memory\` que persistem
+informação entre sessões. O conteúdo da sessão atual NÃO é memória — é
+contexto temporário. Para algo durar, **chame as tools**.
+
+- **\`memory_add\`** — SEMPRE chame quando:
+  - O usuário pedir "lembre", "salve", "anote", "guarde", "memorize"
+  - Você notar uma **preferência durável** (idioma, formato de resposta,
+    estilo de comunicação, restrição operacional)
+  - O usuário compartilhar algo **identitário** (nome, papel, localização,
+    horários, projetos em andamento)
+  - Uma **decisão de configuração/projeto** for fechada na conversa
+  - O usuário disser "sempre" ou "nunca" sobre algo
+
+- **\`memory_search\`** — SEMPRE chame ANTES de responder quando:
+  - A pergunta é "você lembra X?", "o que você sabe sobre Y?",
+    "qual minha preferência de Z?"
+  - O contexto pode ter sido falado em uma sessão passada
+  - Você precisa de uma preferência armazenada pra formatar a resposta
+
+- **\`memory_update\`** — quando o usuário **corrigir** algo já salvo
+  ("na verdade não é X, é Y") — não duplique, atualize.
+
+- **\`memory_remove\`** — apenas quando o usuário pedir explicitamente
+  pra esquecer.
+
+**Importance** (parâmetro de \`memory_add\`):
+\`0.85+\` → quando o usuário falou "sempre/nunca/lembre" ou é identidade.
+\`0.70\` → preferência forte mas casual.
+\`0.50\` → informação relevante mas não crítica.
+
+**Não pergunte permissão** pra salvar — só salve. Se quiser confirmar,
+responda naturalmente e a tool já será chamada em paralelo.
+`;
+
 export interface InjectionOptions {
   maxMemories?: number;
   includePinned?: boolean;
@@ -141,7 +186,10 @@ export async function injectIntoWorkspace(
   }
 
   const { block, memories } = await buildRecallBlock(workspace, opts);
-  const payload = block.trim() ? block : "_(sem memórias relevantes ainda)_";
+  const recallPayload = block.trim() ? block : "_(sem memórias relevantes ainda)_";
+  // Tool guidance comes first so the LLM reads "USE the tools" before
+  // it reads the data those tools operate on.
+  const payload = `${TOOL_GUIDANCE}\n${recallPayload}`;
   const next = spliceManagedSection(existing, payload);
 
   if (next === existing) {
@@ -170,14 +218,21 @@ export async function injectIntoWorkspace(
 }
 
 /**
- * Inject across every workspace that has at least one memory.
+ * Inject across every workspace that has at least one memory PLUS
+ * the canonical "workspace" (main agent). We always touch "workspace"
+ * because the injected block also carries the tool-usage guidance —
+ * the agent needs that on first boot even before any memory exists,
+ * otherwise the LLM never calls the MCP tools and the store stays
+ * empty forever.
  */
 export async function injectAllWorkspaces(
   opts: InjectionOptions = {},
 ): Promise<InjectionResult[]> {
   const { byWorkspace } = (await import("@/lib/memory-db")).getStats();
+  const targets = new Set<string>(Object.keys(byWorkspace));
+  targets.add("workspace");
   const results: InjectionResult[] = [];
-  for (const workspace of Object.keys(byWorkspace)) {
+  for (const workspace of targets) {
     try {
       results.push(await injectIntoWorkspace(workspace, opts));
     } catch (err) {

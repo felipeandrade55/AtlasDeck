@@ -23,6 +23,7 @@ import {
 } from "@/lib/openclaw-mcp-config";
 import { restartGateway, type RestartResult } from "@/lib/gateway-control";
 import { waitForGateway, type WaitResult } from "@/lib/openclaw-gateway-wait";
+import { injectIntoWorkspace } from "@/lib/memory-injector";
 
 export interface ActivateOptions {
   agentId?: string;
@@ -65,6 +66,22 @@ export async function activateMemoryMcp(
   const agentId = opts.agentId ?? "main";
 
   const install = installMcpServer({ atlasdeckRoot, agentId });
+
+  // Push the tool-usage guidance into the workspace MEMORY.md before
+  // restarting — the agent reads that file on boot. Without this the
+  // LLM tends to "remember" things from session context and skip the
+  // tool entirely, which leaves the SQLite store empty even though
+  // the user feels remembered.
+  const workspace = agentId === "main" ? "workspace" : `workspace-${agentId}`;
+  try {
+    await injectIntoWorkspace(workspace, { maxMemories: 20 });
+  } catch (err) {
+    // Injection failure shouldn't block activation — the auto-recall
+    // is a nice-to-have, the MCP tools are the load-bearing part.
+    if (process.env.MEMORY_DEBUG === "1") {
+      console.warn("[memory-mcp-orchestrator] inject failed:", err);
+    }
+  }
 
   // If the config file was untouched (already up to date), the
   // restart might still be needed in case the gateway booted before
@@ -130,11 +147,28 @@ export async function activateMemoryMcp(
  * never restarts the gateway. Safe to call from instrumentation.ts.
  * Returns whether the install actually changed anything so callers
  * can decide whether to surface a "needs reload" hint.
+ *
+ * `skipIfOpenClawMissing` (default false) lets the boot hook avoid
+ * writing a stub directory tree on machines where OpenClaw isn't
+ * installed at all — instrumentation.ts uses this so we don't ship
+ * `fs` imports up into the (edge-eligible) `instrumentation.ts`
+ * source itself.
  */
 export function ensureMemoryMcpInstalledQuiet(opts: {
   agentId?: string;
+  skipIfOpenClawMissing?: boolean;
 }): { ok: true; changed: boolean; status: InstallStatus } | { ok: false; error: string } {
   try {
+    if (opts.skipIfOpenClawMissing) {
+      // Lazy require so this file remains import-safe in edge bundles;
+      // the actual fs hit only happens when this function is called
+      // on the Node.js runtime.
+      const fs = require("fs") as typeof import("fs");
+      const { getOpenClawDir } = require("@/lib/openclaw-config") as typeof import("@/lib/openclaw-config");
+      if (!fs.existsSync(getOpenClawDir())) {
+        return { ok: true, changed: false, status: inspectStatus({ atlasdeckRoot: process.cwd(), agentId: opts.agentId ?? "main" }) };
+      }
+    }
     const atlasdeckRoot = process.cwd();
     const agentId = opts.agentId ?? "main";
     const result = installMcpServer({ atlasdeckRoot, agentId });

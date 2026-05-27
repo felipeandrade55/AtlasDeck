@@ -50,24 +50,28 @@ export async function register(): Promise<void> {
   // next boot. We intentionally DO NOT restart the gateway here —
   // that would interrupt any in-flight conversation. The IntegrationStatus
   // card surfaces a "reload now" prompt to the user when needed.
+  //
+  // The fs.existsSync(openclawDir) guard lives INSIDE the orchestrator,
+  // not here, so Turbopack's static analysis doesn't see a Node-only
+  // import in instrumentation.ts (which it tags as edge-eligible even
+  // when our own runtime check at the top would skip it).
   try {
-    const fs = await import("fs");
-    const { getOpenClawDir } = await import("@/lib/openclaw-config");
-    if (fs.existsSync(getOpenClawDir())) {
-      const { ensureMemoryMcpInstalledQuiet } = await import(
-        "@/lib/memory-mcp-orchestrator"
+    const { ensureMemoryMcpInstalledQuiet } = await import(
+      "@/lib/memory-mcp-orchestrator"
+    );
+    const r = ensureMemoryMcpInstalledQuiet({
+      agentId: "main",
+      skipIfOpenClawMissing: true,
+    });
+    if (r.ok && r.changed) {
+      console.log(
+        "[instrumentation] atlasdeck-memory MCP entry written/updated in mcp.json",
       );
-      const r = ensureMemoryMcpInstalledQuiet({ agentId: "main" });
-      if (r.ok && r.changed) {
-        console.log(
-          "[instrumentation] atlasdeck-memory MCP entry written/updated in mcp.json",
-        );
-      } else if (!r.ok) {
-        console.warn(
-          "[instrumentation] failed to ensure memory MCP install:",
-          r.error,
-        );
-      }
+    } else if (!r.ok) {
+      console.warn(
+        "[instrumentation] failed to ensure memory MCP install:",
+        r.error,
+      );
     }
   } catch (err) {
     console.warn("[instrumentation] memory MCP install hook failed:", err);
