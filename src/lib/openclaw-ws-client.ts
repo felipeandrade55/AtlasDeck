@@ -302,7 +302,23 @@ function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
       const msg = err && typeof err.message === "string"
         ? err.message
         : "Gateway returned an error";
-      const code = err && typeof err.code === "string" ? err.code : undefined;
+      let code = err && typeof err.code === "string" ? err.code : undefined;
+      // Re-classify the well-known "device identity required" rejection
+      // so the runner / UI can route it to the dangerouslyDisableDeviceAuth
+      // auto-fix instead of treating it as a generic chat error. The
+      // gateway sometimes returns this as message-only (no code), so we
+      // sniff both fields.
+      const cause =
+        err && typeof err.cause === "string" ? (err.cause as string) : "";
+      if (
+        /device.{0,10}(identity\s+)?required/i.test(msg) ||
+        /device.required/i.test(cause) ||
+        /pairing.required/i.test(msg) ||
+        code === "device-required" ||
+        code === "DEVICE_REQUIRED"
+      ) {
+        code = "WS_DEVICE_REQUIRED";
+      }
       events.push({ type: "error", message: msg, code });
       return events;
     }
@@ -458,28 +474,33 @@ function describe(candidate: WsCandidate): string {
 }
 
 function buildConnectRequest(token: string | null): Record<string, unknown> {
+  // Minimal shape per docs.openclaw.ai/gateway/protocol — "Trusted
+  // same-process backend clients (`client.id: "gateway-client"`,
+  // `client.mode: "backend"`) may omit `device` on direct loopback
+  // connections when they authenticate with the shared gateway token".
+  // The earlier wide shape (platform/scopes/caps/permissions/locale/
+  // userAgent) was making OpenClaw 2026.5+ reject the handshake with
+  // "device identity required" — the strict schema doesn't accept
+  // those fields for the backend trust path. Sending only what the
+  // doc lists keeps the door to the loopback bypass open.
+  const params: Record<string, unknown> = {
+    minProtocol: 4,
+    maxProtocol: 4,
+    client: {
+      id: "gateway-client",
+      version: "1.0.0",
+      mode: "backend",
+    },
+    role: "operator",
+  };
+  if (token) {
+    params.auth = { token };
+  }
   return {
     type: "req",
     id: randomUUID(),
     method: "connect",
-    params: {
-      minProtocol: 3,
-      maxProtocol: 4,
-      client: {
-        id: "gateway-client",
-        version: "1.0.0",
-        platform: process.platform,
-        mode: "backend",
-      },
-      role: "operator",
-      scopes: ["operator.read", "operator.write"],
-      caps: [],
-      commands: [],
-      permissions: {},
-      auth: token ? { token } : {},
-      locale: "pt-BR",
-      userAgent: "atlasdeck-mission-control/1.0",
-    },
+    params,
   };
 }
 

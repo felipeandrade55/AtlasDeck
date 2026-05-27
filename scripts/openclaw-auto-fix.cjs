@@ -158,6 +158,70 @@ function applyStreamingFix() {
   return { changed: true, applied: true, file, fields: changed };
 }
 
+function applyBackendAuthFix() {
+  const openclawDir = getOpenClawDir();
+  const file = path.join(openclawDir, "openclaw.json");
+  if (!fs.existsSync(file)) {
+    console.log("[auto-fix] openclaw.json não encontrado em " + file + " — pulando backend-auth fix");
+    return { changed: false, applied: false, file };
+  }
+
+  let raw, data;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+    data = JSON.parse(raw);
+  } catch (err) {
+    console.warn("[auto-fix] openclaw.json inválido: " + err.message + " — pulando backend-auth fix");
+    return { changed: false, applied: false, file };
+  }
+
+  if (!data.gateway || typeof data.gateway !== "object" || Array.isArray(data.gateway)) {
+    data.gateway = {};
+  }
+  if (
+    !data.gateway.controlUi ||
+    typeof data.gateway.controlUi !== "object" ||
+    Array.isArray(data.gateway.controlUi)
+  ) {
+    data.gateway.controlUi = {};
+  }
+
+  const changed = [];
+  if (data.gateway.controlUi.dangerouslyDisableDeviceAuth !== true) {
+    changed.push("dangerouslyDisableDeviceAuth");
+    data.gateway.controlUi.dangerouslyDisableDeviceAuth = true;
+  }
+  if (data.gateway.controlUi.allowInsecureAuth !== true) {
+    changed.push("allowInsecureAuth");
+    data.gateway.controlUi.allowInsecureAuth = true;
+  }
+
+  if (changed.length === 0) {
+    console.log("[auto-fix] backend-auth: já estava correto (" + file + ")");
+    return { changed: false, applied: false, file };
+  }
+
+  const backup = file + ".bak." + timestamp();
+  try {
+    fs.copyFileSync(file, backup);
+  } catch (err) {
+    console.warn("[auto-fix] não consegui criar backup de " + file + ": " + err.message);
+  }
+
+  const indent = detectIndent(raw);
+  const next = JSON.stringify(data, null, indent) + "\n";
+  try {
+    JSON.parse(next);
+  } catch (err) {
+    console.error("[auto-fix] backend-auth patch gerou JSON inválido: " + err.message);
+    return { changed: false, applied: false, file, error: err.message };
+  }
+
+  atomicWrite(file, next);
+  console.log("[auto-fix] backend-auth aplicado em " + file + ". Campos: " + changed.join(", "));
+  return { changed: true, applied: true, file, fields: changed };
+}
+
 const HEARTBEAT_MARKER = "<!-- atlas:heartbeat-guard:v1 -->";
 
 function applyHeartbeatFix() {
@@ -247,12 +311,17 @@ function tryRestartGateway() {
 function main() {
   const args = new Set(process.argv.slice(2));
   const wantStreaming = args.size === 0 || args.has("--streaming") || args.has("--all");
+  const wantAuth = args.size === 0 || args.has("--auth") || args.has("--all");
   const wantHeartbeat = args.size === 0 || args.has("--heartbeat") || args.has("--all");
   const wantRestart = !args.has("--no-restart");
 
   let anyChanged = false;
   if (wantStreaming) {
     const r = applyStreamingFix();
+    anyChanged = anyChanged || r.applied;
+  }
+  if (wantAuth) {
+    const r = applyBackendAuthFix();
     anyChanged = anyChanged || r.applied;
   }
   if (wantHeartbeat) {

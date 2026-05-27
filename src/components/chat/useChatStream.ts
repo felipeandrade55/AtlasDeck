@@ -27,7 +27,7 @@ export interface SendOptions {
   onToolUse?: (payload: { id?: string; name: string; input: unknown }) => void;
   onToolResult?: (payload: { id?: string; output: string }) => void;
   onUsage?: (payload: { tokensIn: number; tokensOut: number; cost?: number; model?: string }) => void;
-  onError?: (message: string) => void;
+  onError?: (message: string, code?: string) => void;
   onDone?: (payload: { assistantMessageId: string; content: string; tokensIn: number; tokensOut: number; cost: number; provider?: string; providerDetail?: string; buffered?: boolean; stubReply?: boolean; heartbeatLeak?: boolean }) => void;
 }
 
@@ -164,7 +164,10 @@ function parseEvent(raw: string, opts: SendOptions) {
       });
       break;
     case "error":
-      opts.onError?.(String(data.message ?? "Erro desconhecido"));
+      opts.onError?.(
+        String(data.message ?? "Erro desconhecido"),
+        data.code != null ? String(data.code) : undefined,
+      );
       break;
     case "done":
       opts.onDone?.({

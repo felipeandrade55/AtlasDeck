@@ -95,13 +95,14 @@ export default function ChatPage() {
     buffered: boolean;
     stubReply: boolean;
     heartbeatLeak: boolean;
-  }>({ buffered: false, stubReply: false, heartbeatLeak: false });
+    deviceRequired: boolean;
+  }>({ buffered: false, stubReply: false, heartbeatLeak: false, deviceRequired: false });
   // Tracks an in-flight "Corrigir automaticamente" call so the buttons
   // disable themselves and show progress while the server applies the
   // fix. Distinct keys so streaming + heartbeat fixes can run
   // independently without each other's spinners getting confused.
   const [autoFixBusy, setAutoFixBusy] = useState<
-    null | "streaming" | "heartbeat" | "all"
+    null | "streaming" | "heartbeat" | "auth" | "all"
   >(null);
   const [autoFixResult, setAutoFixResult] = useState<string | null>(null);
   // Pre-emptive health check: when the chat page loads we ping the
@@ -112,10 +113,11 @@ export default function ChatPage() {
   const [healthCheck, setHealthCheck] = useState<{
     streamingOk: boolean;
     heartbeatGuardOk: boolean;
+    backendAuthOk: boolean;
   } | null>(null);
 
   const runAutoFix = useCallback(
-    async (which: "streaming" | "heartbeat" | "all") => {
+    async (which: "streaming" | "heartbeat" | "auth" | "all") => {
       if (autoFixBusy) return;
       setAutoFixBusy(which);
       setAutoFixResult(null);
@@ -130,26 +132,33 @@ export default function ChatPage() {
           applied: string[];
           streaming?: { alreadyCorrect: boolean; error?: string };
           heartbeat?: { alreadyCorrect: boolean; error?: string };
+          auth?: { alreadyCorrect: boolean; error?: string };
           restart?: { ok: boolean; method: string; detail: string; error?: string };
         };
         if (!data.ok) {
           const err =
             data.streaming?.error ||
+            data.auth?.error ||
             data.heartbeat?.error ||
             data.restart?.error ||
             "falha desconhecida";
           setAutoFixResult(`⚠ Auto-fix falhou: ${err}`);
         } else if (data.applied.length === 0) {
           setAutoFixResult("✓ Config já estava correta — nada a fazer.");
-          // Dismiss the relevant banner since it's actually clean now.
+          // Dismiss the relevant banners since they're actually clean now.
           setAgentDiagnostics((d) => ({
             ...d,
             buffered: which === "streaming" || which === "all" ? false : d.buffered,
             heartbeatLeak: which === "heartbeat" || which === "all" ? false : d.heartbeatLeak,
+            deviceRequired: which === "auth" || which === "all" ? false : d.deviceRequired,
           }));
         } else {
           const parts = data.applied.map((a) =>
-            a === "streaming" ? "streaming" : "heartbeat guard",
+            a === "streaming"
+              ? "streaming"
+              : a === "auth"
+              ? "auth (device bypass)"
+              : "heartbeat guard",
           );
           const restartMsg = data.restart
             ? data.restart.ok
@@ -163,6 +172,7 @@ export default function ChatPage() {
             ...d,
             buffered: which === "streaming" || which === "all" ? false : d.buffered,
             heartbeatLeak: which === "heartbeat" || which === "all" ? false : d.heartbeatLeak,
+            deviceRequired: which === "auth" || which === "all" ? false : d.deviceRequired,
           }));
           // Refresh health snapshot so the proactive banners disappear.
           try {
@@ -171,10 +181,12 @@ export default function ChatPage() {
               const j = (await hc.json()) as {
                 streamingOk: boolean;
                 heartbeatGuardOk: boolean;
+                backendAuthOk: boolean;
               };
               setHealthCheck({
                 streamingOk: j.streamingOk,
                 heartbeatGuardOk: j.heartbeatGuardOk,
+                backendAuthOk: j.backendAuthOk,
               });
             }
           } catch {
@@ -204,11 +216,13 @@ export default function ChatPage() {
         const j = (await res.json()) as {
           streamingOk: boolean;
           heartbeatGuardOk: boolean;
+          backendAuthOk: boolean;
         };
         if (!cancelled) {
           setHealthCheck({
             streamingOk: j.streamingOk,
             heartbeatGuardOk: j.heartbeatGuardOk,
+            backendAuthOk: j.backendAuthOk,
           });
         }
       } catch {
@@ -541,7 +555,14 @@ export default function ChatPage() {
             ),
           );
         },
-        onError: (message) => {
+        onError: (message, code) => {
+          // Map the well-known WS_DEVICE_REQUIRED into a diagnostic
+          // banner instead of a generic red error — the user can then
+          // click "Corrigir automaticamente" to apply the
+          // dangerouslyDisableDeviceAuth flag.
+          if (code === "WS_DEVICE_REQUIRED") {
+            setAgentDiagnostics((d) => ({ ...d, deviceRequired: true }));
+          }
           setStatusBanner(`⚠ ${message}`);
           setMessages((prev) =>
             prev.map((m) =>
@@ -571,6 +592,7 @@ export default function ChatPage() {
           );
           if (buffered || stubReply || heartbeatLeak) {
             setAgentDiagnostics((d) => ({
+              ...d,
               buffered: d.buffered || !!buffered,
               stubReply: d.stubReply || !!stubReply,
               heartbeatLeak: d.heartbeatLeak || !!heartbeatLeak,
@@ -1038,6 +1060,85 @@ export default function ChatPage() {
             {autoFixResult}
           </div>
         )}
+        {agentDiagnostics.deviceRequired && (
+          <div style={diagnosticBannerStyle}>
+            <span style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+              <span>
+                <strong>🔒 Gateway exige device identity</strong>
+                <br />
+                O OpenClaw rejeitou o handshake do AtlasDeck com{" "}
+                <code style={inlineCodeStyle}>device identity required</code> — bug
+                conhecido (openclaw/openclaw#40812). Para instalações pessoais é
+                seguro habilitar{" "}
+                <code style={inlineCodeStyle}>dangerouslyDisableDeviceAuth</code> no{" "}
+                <code style={inlineCodeStyle}>openclaw.json</code>, e o AtlasDeck
+                pode fazer isso pra você + reiniciar o gateway.
+              </span>
+              <span style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
+                <button
+                  type="button"
+                  disabled={autoFixBusy !== null}
+                  onClick={() => runAutoFix("auth")}
+                  style={{
+                    ...primaryBtnStyle,
+                    opacity: autoFixBusy !== null ? 0.5 : 1,
+                    cursor: autoFixBusy !== null ? "wait" : "pointer",
+                  }}
+                  title="Adiciona dangerouslyDisableDeviceAuth ao openclaw.json + reinicia o gateway"
+                >
+                  {autoFixBusy === "auth" ? "Aplicando..." : "Corrigir automaticamente"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAgentDiagnostics((d) => ({ ...d, deviceRequired: false }))}
+                  style={dismissBtnStyle}
+                >
+                  Dispensar
+                </button>
+              </span>
+            </span>
+          </div>
+        )}
+        {healthCheck &&
+          !healthCheck.backendAuthOk &&
+          !agentDiagnostics.deviceRequired && (
+            <div style={diagnosticBannerStyle}>
+              <span style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+                <span>
+                  <strong>ℹ Bypass de device-auth não está ligado no gateway</strong>
+                  <br />
+                  Sem essa flag o gateway pode rejeitar o WS do AtlasDeck com{" "}
+                  <code style={inlineCodeStyle}>device identity required</code>{" "}
+                  (depende da versão do OpenClaw). Quer ligar agora?
+                </span>
+                <span style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
+                  <button
+                    type="button"
+                    disabled={autoFixBusy !== null}
+                    onClick={() => runAutoFix("auth")}
+                    style={{
+                      ...primaryBtnStyle,
+                      opacity: autoFixBusy !== null ? 0.5 : 1,
+                      cursor: autoFixBusy !== null ? "wait" : "pointer",
+                    }}
+                  >
+                    {autoFixBusy === "auth" ? "Aplicando..." : "Ligar bypass"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setHealthCheck((h) =>
+                        h ? { ...h, backendAuthOk: true } : h,
+                      )
+                    }
+                    style={dismissBtnStyle}
+                  >
+                    Dispensar
+                  </button>
+                </span>
+              </span>
+            </div>
+          )}
         {healthCheck &&
           !healthCheck.streamingOk &&
           !agentDiagnostics.buffered && (

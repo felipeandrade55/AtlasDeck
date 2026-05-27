@@ -213,6 +213,135 @@ export function ensureStreamingConfig(): StreamingFixReport {
   return { ok: true, alreadyCorrect: false, changed, file, backup };
 }
 
+// ─── 1b. backend-auth-bypass fix (device identity required) ─────────────
+
+export interface BackendAuthFixReport {
+  ok: boolean;
+  alreadyCorrect: boolean;
+  changed: string[];
+  file: string;
+  backup: string | null;
+  error?: string;
+}
+
+/**
+ * Sets `gateway.controlUi.dangerouslyDisableDeviceAuth: true` in the
+ * OpenClaw config so backend clients (mode: "backend") on the loopback
+ * can connect without device pairing.
+ *
+ * Background: starting around OpenClaw 2026.3.x the gateway started
+ * rejecting WS handshakes from backend clients with "device identity
+ * required" — see openclaw/openclaw#40812. The documented break-glass
+ * is `dangerouslyDisableDeviceAuth: true` inside `gateway.controlUi`.
+ * For a single-user / personal AtlasDeck install this is the right
+ * trade-off (you already trust everything on localhost); for multi-
+ * tenant setups operators should configure trusted-proxy auth instead.
+ *
+ * Idempotent like the other fixes.
+ */
+export function ensureBackendAuthBypass(): BackendAuthFixReport {
+  const openclawDir = getOpenClawDir();
+  const file = path.join(openclawDir, "openclaw.json");
+
+  if (!fs.existsSync(file)) {
+    return {
+      ok: false,
+      alreadyCorrect: false,
+      changed: [],
+      file,
+      backup: null,
+      error: `openclaw.json não encontrado em ${file}.`,
+    };
+  }
+
+  let raw: string;
+  let data: Record<string, unknown>;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+    data = JSON.parse(raw) as Record<string, unknown>;
+  } catch (err) {
+    return {
+      ok: false,
+      alreadyCorrect: false,
+      changed: [],
+      file,
+      backup: null,
+      error: `openclaw.json inválido: ${(err as Error).message}`,
+    };
+  }
+
+  // Walk → gateway.controlUi, creating intermediates.
+  if (
+    !data.gateway ||
+    typeof data.gateway !== "object" ||
+    Array.isArray(data.gateway)
+  ) {
+    data.gateway = {};
+  }
+  const gateway = data.gateway as Record<string, unknown>;
+  if (
+    !gateway.controlUi ||
+    typeof gateway.controlUi !== "object" ||
+    Array.isArray(gateway.controlUi)
+  ) {
+    gateway.controlUi = {};
+  }
+  const controlUi = gateway.controlUi as Record<string, unknown>;
+
+  const changed: string[] = [];
+  if (controlUi.dangerouslyDisableDeviceAuth !== true) {
+    changed.push("dangerouslyDisableDeviceAuth");
+    controlUi.dangerouslyDisableDeviceAuth = true;
+  }
+  // allowInsecureAuth lets the Control UI load over plain HTTP on the
+  // same host — common with reverse proxies that terminate TLS. Without
+  // this the WS upgrade behind nginx/cloudflared can also trip the
+  // device check.
+  if (controlUi.allowInsecureAuth !== true) {
+    changed.push("allowInsecureAuth");
+    controlUi.allowInsecureAuth = true;
+  }
+
+  if (changed.length === 0) {
+    return {
+      ok: true,
+      alreadyCorrect: true,
+      changed: [],
+      file,
+      backup: null,
+    };
+  }
+
+  const backup = backupCopy(file);
+  const indent = detectIndent(raw);
+  const next = JSON.stringify(data, null, indent) + "\n";
+  try {
+    JSON.parse(next);
+  } catch (err) {
+    return {
+      ok: false,
+      alreadyCorrect: false,
+      changed,
+      file,
+      backup,
+      error: `Patch gerou JSON inválido: ${(err as Error).message}`,
+    };
+  }
+  try {
+    atomicWrite(file, next);
+  } catch (err) {
+    return {
+      ok: false,
+      alreadyCorrect: false,
+      changed,
+      file,
+      backup,
+      error: `Falha ao escrever ${file}: ${(err as Error).message}`,
+    };
+  }
+  return { ok: true, alreadyCorrect: false, changed, file, backup };
+}
+
 // ─── 2. heartbeat-template-leak fix ──────────────────────────────────────
 
 export interface HeartbeatFixReport {
@@ -419,6 +548,7 @@ export async function restartGateway(): Promise<RestartReport> {
 export interface HealthCheckReport {
   streamingOk: boolean;
   heartbeatGuardOk: boolean;
+  backendAuthOk: boolean;
   openclawJsonPath: string;
   agentsMdPath: string;
   openclawJsonExists: boolean;
@@ -437,21 +567,26 @@ export function checkOpenClawHealth(): HealthCheckReport {
   const agentsMdPath = path.join(workspace, "AGENTS.md");
 
   let streamingOk = false;
+  let backendAuthOk = false;
   let openclawJsonExists = false;
   try {
     if (fs.existsSync(openclawJsonPath)) {
       openclawJsonExists = true;
       const parsed = JSON.parse(fs.readFileSync(openclawJsonPath, "utf8")) as {
         agents?: { defaults?: Record<string, unknown> };
+        gateway?: { controlUi?: Record<string, unknown> };
       };
       const d = parsed.agents?.defaults ?? {};
       streamingOk =
         d.blockStreamingDefault === "on" &&
         d.blockStreamingBreak === "text_end" &&
         typeof d.blockStreamingChunk === "object";
+      const cui = parsed.gateway?.controlUi ?? {};
+      backendAuthOk = cui.dangerouslyDisableDeviceAuth === true;
     }
   } catch {
     streamingOk = false;
+    backendAuthOk = false;
   }
 
   let heartbeatGuardOk = false;
@@ -472,6 +607,7 @@ export function checkOpenClawHealth(): HealthCheckReport {
   return {
     streamingOk,
     heartbeatGuardOk,
+    backendAuthOk,
     openclawJsonPath,
     agentsMdPath,
     openclawJsonExists,

@@ -17,9 +17,11 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import {
+  ensureBackendAuthBypass,
   ensureHeartbeatRule,
   ensureStreamingConfig,
   restartGateway,
+  type BackendAuthFixReport,
   type HeartbeatFixReport,
   type RestartReport,
   type StreamingFixReport,
@@ -30,15 +32,16 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 interface AutoFixBody {
-  fix?: "streaming" | "heartbeat" | "all";
+  fix?: "streaming" | "heartbeat" | "auth" | "all";
   restart?: boolean;
 }
 
 interface AutoFixResponse {
   ok: boolean;
-  applied: ("streaming" | "heartbeat")[];
+  applied: ("streaming" | "heartbeat" | "auth")[];
   streaming?: StreamingFixReport;
   heartbeat?: HeartbeatFixReport;
+  auth?: BackendAuthFixReport;
   restart?: RestartReport;
 }
 
@@ -53,7 +56,7 @@ export async function POST(req: NextRequest) {
 
   const fix = body.fix ?? "all";
   const wantRestart = body.restart !== false; // default: restart
-  const applied: ("streaming" | "heartbeat")[] = [];
+  const applied: ("streaming" | "heartbeat" | "auth")[] = [];
 
   const result: AutoFixResponse = { ok: true, applied };
 
@@ -63,6 +66,14 @@ export async function POST(req: NextRequest) {
     result.streaming = r;
     if (!r.ok) result.ok = false;
     if (r.ok && !r.alreadyCorrect) applied.push("streaming");
+  }
+
+  // 1b. Backend auth bypass (fixes "device identity required" handshake)
+  if (fix === "auth" || fix === "all") {
+    const r = ensureBackendAuthBypass();
+    result.auth = r;
+    if (!r.ok) result.ok = false;
+    if (r.ok && !r.alreadyCorrect) applied.push("auth");
   }
 
   // 2. Heartbeat guard
