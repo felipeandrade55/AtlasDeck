@@ -391,23 +391,42 @@ function scrapeRoutingItemText(
   if (data) {
     const direct = extractToolReplyText(data);
     if (direct) return direct;
-    // Codex arguments_delta: incremental piece of the tool args string
+    // Codex-style: arguments_delta = incremental piece of args string
     if (typeof data.arguments_delta === "string" && data.arguments_delta) {
       return data.arguments_delta;
     }
+    if (typeof data.delta_text === "string" && data.delta_text) {
+      return data.delta_text;
+    }
+    if (typeof data.partial === "string" && data.partial) {
+      return data.partial;
+    }
+    if (typeof data.chunk === "string" && data.chunk) {
+      return data.chunk;
+    }
+    // Full `arguments` blob — try to parse, fallback to raw if it looks
+    // like already-complete JSON (well-balanced braces).
     if (typeof data.arguments === "string" && data.arguments) {
-      // `arguments` here is usually a JSON-encoded blob. Try to parse it
-      // and pull a known text field out; if parsing fails, fall back to
-      // the raw string (better than nothing).
       try {
         const parsed = JSON.parse(data.arguments);
         if (isRecord(parsed)) {
           const inner = extractToolReplyText(parsed as Record<string, unknown>);
           if (inner) return inner;
+        } else if (typeof parsed === "string") {
+          return parsed;
         }
       } catch {
-        // not JSON yet — partial args during streaming. Skip the raw
-        // blob to avoid showing the user JSON noise.
+        // partial args during streaming — skip raw to avoid JSON noise
+      }
+    }
+    // Nested sub-objects that historically carried text in some builds
+    for (const key of ["payload", "result", "value", "output"]) {
+      const sub = data[key];
+      if (isRecord(sub)) {
+        const subText = extractToolReplyText(sub as Record<string, unknown>);
+        if (subText) return subText;
+      } else if (typeof sub === "string" && sub.trim().length > 0) {
+        return sub;
       }
     }
     // Item.content[] (Codex output_text style) under data
@@ -415,6 +434,12 @@ function scrapeRoutingItemText(
     if (item) {
       const itemText = extractItemText(item);
       if (itemText) return itemText;
+      // Sometimes the content is on data.message instead of data.item
+      const msg = isRecord(data.message) ? (data.message as Record<string, unknown>) : null;
+      if (msg) {
+        const msgText = extractItemText(msg);
+        if (msgText) return msgText;
+      }
     }
   }
   // 2) Top-level on payload
@@ -422,8 +447,12 @@ function scrapeRoutingItemText(
   if (topDirect) return topDirect;
   // 3) Recursive longest-string fallback as last resort — same logic the
   // `final` handler uses. We know the frame is *supposed* to carry
-  // reply text so even a long blob with some noise is a net win.
-  const deep = findLongestStringDeep(data ?? payload, 12, 5);
+  // reply text so even a long blob with some noise is a net win. Lower
+  // the minLength from 12 to 4 so short conversational replies ("oi",
+  // "ok") also land.
+  const deep = findLongestStringDeep(data ?? payload, 4, 6);
+  // Filter out strings that are clearly IDs (UUID-shaped, exec-XXX, etc.)
+  if (deep && /^(?:exec-)?[0-9a-f-]{12,}$/i.test(deep.trim())) return "";
   return deep;
 }
 
@@ -748,6 +777,14 @@ function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
         // content array, …) and only emit the NEW portion of the text
         // — Codex frames re-send the full args-so-far each time.
         if (itemId && state.routingItemIds.has(itemId)) {
+          // Server-side trace so the operator can read the actual frame
+          // shape in `pm2 logs` when extraction still fails. Truncated
+          // to keep the log readable.
+          console.warn(
+            `[ws] routing-tool follow-up itemId=${itemId} payload=${safeStringify(
+              payload,
+            ).slice(0, 1500)}`,
+          );
           const text = scrapeRoutingItemText(payload, data);
           if (text) {
             const prev = state.routingItemText.get(itemId) ?? "";
@@ -843,13 +880,19 @@ function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
                 type: "token",
                 delta:
                   `⚠ **Gateway respondeu, mas não entregou texto.**\n\n` +
-                  `Isso normalmente indica um dos seguintes:\n` +
-                  `  1. O agente roteou a resposta real para outro canal (Telegram, etc.) — confira ` +
-                  `\`~/.openclaw/workspace/AGENTS.md\`/\`TOOLS.md\` e remova rotas condicionais por \`sessionKey\`.\n` +
-                  `  2. \`blockStreamingDefault\` está OFF no \`~/.openclaw/openclaw.json\` — adicione ` +
-                  `os campos sugeridos no banner amarelo e \`systemctl --user restart openclaw-gateway\`.\n` +
-                  `  3. Bug do gateway na versão atual — me cole o trace abaixo e mapeio o campo.\n\n` +
-                  `**Trace dos frames recebidos via WS nesta sessão:**\n` +
+                  `Isso normalmente indica um dos seguintes:\n\n` +
+                  `1. **Agente está chamando uma tool de envio** (\`message\`, \`telegram_send\`, etc.) ` +
+                  `em vez de retornar texto direto. Clique em **Corrigir automaticamente** ` +
+                  `no banner amarelo — o AtlasDeck adiciona um guard no \`AGENTS.md\` proibindo ` +
+                  `essas tools para a sessão \`web:atlasdeck\`.\n\n` +
+                  `2. \`blockStreamingDefault\` está OFF — o mesmo botão **Corrigir automaticamente** ` +
+                  `aplica isso. Se já clicou e o badge ainda mostra \`buffered\`, o gateway pode ` +
+                  `não ter reiniciado — confira \`systemctl --user status openclaw-gateway\`.\n\n` +
+                  `3. **Bug do gateway** — o trace completo dos frames recebidos está salvo no ` +
+                  `log do servidor. Rode \`pm2 logs mission-control --lines 200\` (ou o equivalente ` +
+                  `pro seu setup) e procure por \`[ws] routing-tool follow-up\` e ` +
+                  `\`[ws] state=final without any text\`. Cole esse output e eu adiciono o campo certo.\n\n` +
+                  `**Trace truncado dos frames desta sessão (primeiros 4KB):**\n` +
                   "```json\n" +
                   inlineTrace +
                   "\n```",
