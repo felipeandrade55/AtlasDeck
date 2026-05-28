@@ -116,11 +116,13 @@ export default function ChatPage() {
     backendAuthOk: boolean;
   } | null>(null);
 
-  const [thinkingMode, setThinkingMode] = useState<"reasoning" | "instant">("reasoning");
+  const [thinkingMode, setThinkingMode] = useState<"reasoning" | "instant">("instant");
 
   useEffect(() => {
     const saved = localStorage.getItem("atlas_chat_thinking_mode");
-    if (saved === "instant") {
+    if (saved === "reasoning") {
+      setThinkingMode("reasoning");
+    } else if (saved === "instant") {
       setThinkingMode("instant");
     }
   }, []);
@@ -1416,15 +1418,24 @@ export default function ChatPage() {
             {messages.length === 0 && !stream.isStreaming && (
               <EmptyState />
             )}
-            {messages.map((m) => (
-              <MessageBubble
-                key={m.id}
-                message={m}
-                agent={agentById.get(m.role === "user" ? "" : (activeThread?.agent_id ?? selectedAgent))}
-                onSpeak={(text) => speak(text, m.id)}
-                isSpeaking={speakingId === m.id}
-              />
-            ))}
+            {messages
+              .filter((m) => {
+                if (m.role === "tool_use" || m.role === "tool_result") {
+                  const name = m.tool_name?.toLowerCase() || "";
+                  const hiddenTools = ["message", "telegram_send", "whatsapp_send", "reply", "send"];
+                  if (hiddenTools.includes(name)) return false;
+                }
+                return true;
+              })
+              .map((m) => (
+                <MessageBubble
+                  key={m.id}
+                  message={m}
+                  agent={agentById.get(m.role === "user" ? "" : (activeThread?.agent_id ?? selectedAgent))}
+                  onSpeak={(text) => speak(text, m.id)}
+                  isSpeaking={speakingId === m.id}
+                />
+              ))}
             <div ref={messagesEndRef} />
           </div>
         </div>
