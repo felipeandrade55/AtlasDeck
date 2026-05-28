@@ -2,8 +2,8 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
-import { Search, MapPin, Crosshair, Save, Trash2, X, Sun, Send } from "lucide-react";
-import { cityFromAddress, shortCityName, NominatimAddress } from "@/lib/location-display";
+import { Search, MapPin, Crosshair, Save, Trash2, X, Sun, Send, Package, ChevronDown, ChevronRight } from "lucide-react";
+import { cityFromAddress, shortCityName, stateAbbrFromName, NominatimAddress } from "@/lib/location-display";
 
 const MapView = dynamic(() => import("./LocationPickerMap"), {
   ssr: false,
@@ -21,12 +21,70 @@ interface NominatimResult {
   address?: NominatimAddress;
 }
 
+interface DeliveryAddress {
+  street: string | null;
+  number: string | null;
+  complement: string | null;
+  neighborhood: string | null;
+  city: string | null;
+  state: string | null;
+  postal_code: string | null;
+  reference: string | null;
+}
+
+const EMPTY_ADDRESS: DeliveryAddress = {
+  street: null,
+  number: null,
+  complement: null,
+  neighborhood: null,
+  city: null,
+  state: null,
+  postal_code: null,
+  reference: null,
+};
+
 interface SavedLocation {
   lat: number | null;
   lon: number | null;
   label: string | null;
   timezone: string | null;
   updated_at: string | null;
+  address?: DeliveryAddress | null;
+}
+
+function addressFromNominatim(addr: NominatimAddress | undefined): DeliveryAddress {
+  if (!addr) return { ...EMPTY_ADDRESS };
+  const city =
+    addr.city ||
+    addr.town ||
+    addr.village ||
+    addr.municipality ||
+    addr.hamlet ||
+    null;
+  return {
+    street: addr.road || addr.pedestrian || addr.residential || null,
+    number: addr.house_number || null,
+    complement: null,
+    neighborhood: addr.neighbourhood || addr.suburb || addr.quarter || null,
+    city,
+    state: stateAbbrFromName(addr.state) || addr.state || null,
+    postal_code: addr.postcode || null,
+    reference: null,
+  };
+}
+
+function mergeAddress(prev: DeliveryAddress, next: DeliveryAddress): DeliveryAddress {
+  // Auto-fill never overrides user input — only fills empty fields.
+  return {
+    street: prev.street ?? next.street,
+    number: prev.number ?? next.number,
+    complement: prev.complement ?? next.complement,
+    neighborhood: prev.neighborhood ?? next.neighborhood,
+    city: prev.city ?? next.city,
+    state: prev.state ?? next.state,
+    postal_code: prev.postal_code ?? next.postal_code,
+    reference: prev.reference ?? next.reference,
+  };
 }
 
 interface Props {
@@ -39,6 +97,8 @@ export function LocationPicker({ open, onClose, onSaved }: Props) {
   const [lat, setLat] = useState<number | null>(null);
   const [lon, setLon] = useState<number | null>(null);
   const [label, setLabel] = useState<string>("");
+  const [address, setAddress] = useState<DeliveryAddress>({ ...EMPTY_ADDRESS });
+  const [showAddress, setShowAddress] = useState<boolean>(false);
   const [query, setQuery] = useState<string>("");
   const [results, setResults] = useState<NominatimResult[]>([]);
   const [searching, setSearching] = useState(false);
@@ -59,6 +119,13 @@ export function LocationPicker({ open, onClose, onSaved }: Props) {
         if (typeof loc.lat === "number") setLat(loc.lat);
         if (typeof loc.lon === "number") setLon(loc.lon);
         if (loc.label) setLabel(loc.label);
+        if (loc.address) {
+          setAddress({ ...EMPTY_ADDRESS, ...loc.address });
+          const hasAnyField = Object.values(loc.address).some(
+            (v) => typeof v === "string" && v.trim().length > 0,
+          );
+          if (hasAnyField) setShowAddress(true);
+        }
       })
       .catch(() => {});
 
@@ -139,6 +206,12 @@ export function LocationPicker({ open, onClose, onSaved }: Props) {
     };
   }, [query]);
 
+  const autofillFromNominatim = useCallback((addr: NominatimAddress | undefined) => {
+    if (!addr) return;
+    const filled = addressFromNominatim(addr);
+    setAddress((prev) => mergeAddress(prev, filled));
+  }, []);
+
   const useCurrentLocation = useCallback(() => {
     if (!navigator.geolocation) {
       setError("Geolocalização indisponível neste navegador");
@@ -149,7 +222,7 @@ export function LocationPicker({ open, onClose, onSaved }: Props) {
         setLat(pos.coords.latitude);
         setLon(pos.coords.longitude);
         setError(null);
-        // Reverse-geocode for a friendly label (apenas nome da cidade)
+        // Reverse-geocode for a friendly label + address auto-fill
         fetch(`https://nominatim.openstreetmap.org/reverse?format=json&addressdetails=1&lat=${pos.coords.latitude}&lon=${pos.coords.longitude}`, {
           headers: { "Accept-Language": "pt-BR" },
         })
@@ -157,18 +230,20 @@ export function LocationPicker({ open, onClose, onSaved }: Props) {
           .then((d: { display_name?: string; address?: NominatimAddress }) => {
             const friendly = cityFromAddress(d.address) || shortCityName(d.display_name);
             if (friendly) setLabel(friendly);
+            autofillFromNominatim(d.address);
           })
           .catch(() => {});
       },
       (err) => setError(err.code === 1 ? "Permissão de localização negada" : "Não foi possível obter a localização"),
       { timeout: 8000 }
     );
-  }, []);
+  }, [autofillFromNominatim]);
 
   const pickResult = (r: NominatimResult) => {
     setLat(parseFloat(r.lat));
     setLon(parseFloat(r.lon));
     setLabel(cityFromAddress(r.address) || shortCityName(r.display_name));
+    autofillFromNominatim(r.address);
     setResults([]);
     setQuery("");
   };
@@ -176,7 +251,7 @@ export function LocationPicker({ open, onClose, onSaved }: Props) {
   const handleMapClick = useCallback((nextLat: number, nextLon: number) => {
     setLat(nextLat);
     setLon(nextLon);
-    // Reverse geocode for label (apenas nome da cidade)
+    // Reverse geocode for label + address auto-fill
     fetch(`https://nominatim.openstreetmap.org/reverse?format=json&addressdetails=1&lat=${nextLat}&lon=${nextLon}`, {
       headers: { "Accept-Language": "pt-BR" },
     })
@@ -184,9 +259,10 @@ export function LocationPicker({ open, onClose, onSaved }: Props) {
       .then((d: { display_name?: string; address?: NominatimAddress }) => {
         const friendly = cityFromAddress(d.address) || shortCityName(d.display_name);
         if (friendly) setLabel(friendly);
+        autofillFromNominatim(d.address);
       })
       .catch(() => {});
-  }, []);
+  }, [autofillFromNominatim]);
 
   const handleSave = async () => {
     if (lat === null || lon === null) {
@@ -200,7 +276,13 @@ export function LocationPicker({ open, onClose, onSaved }: Props) {
       const res = await fetch("/api/user/location", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lat, lon, label: label.trim() || null, timezone: tz }),
+        body: JSON.stringify({
+          lat,
+          lon,
+          label: label.trim() || null,
+          timezone: tz,
+          address,
+        }),
       });
       const saved = await res.json();
       if (!res.ok) {
@@ -222,8 +304,25 @@ export function LocationPicker({ open, onClose, onSaved }: Props) {
     setLat(null);
     setLon(null);
     setLabel("");
-    onSaved?.({ lat: null, lon: null, label: null, timezone: null, updated_at: null });
+    setAddress({ ...EMPTY_ADDRESS });
+    setShowAddress(false);
+    onSaved?.({ lat: null, lon: null, label: null, timezone: null, updated_at: null, address: null });
     onClose();
+  };
+
+  const addressFieldStyle = {
+    width: "100%",
+    padding: "0.4rem 0.5rem",
+    backgroundColor: "var(--card)",
+    border: "1px solid var(--border)",
+    borderRadius: "0.375rem",
+    color: "var(--text-primary)",
+    fontSize: "0.8rem",
+  } as const;
+
+  const updateAddrField = (key: keyof DeliveryAddress) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setAddress((prev) => ({ ...prev, [key]: value.length ? value : null }));
   };
 
   if (!open) return null;
@@ -375,17 +474,111 @@ export function LocationPicker({ open, onClose, onSaved }: Props) {
               type="text"
               value={label}
               onChange={(e) => setLabel(e.target.value)}
-              placeholder="Nome da cidade (ex: Goiânia, GO)"
-              style={{
-                width: "100%",
-                padding: "0.4rem 0.5rem",
-                backgroundColor: "var(--card)",
-                border: "1px solid var(--border)",
-                borderRadius: "0.375rem",
-                color: "var(--text-primary)",
-                fontSize: "0.8rem",
-              }}
+              placeholder="Nome da cidade (ex: São Luís, MA)"
+              style={addressFieldStyle}
             />
+          </div>
+        )}
+
+        {/* Delivery address — optional, collapsible. When filled, the chat
+            preamble injects this so Jarvis can place real orders. */}
+        {lat !== null && lon !== null && (
+          <div
+            style={{
+              marginTop: "0.625rem",
+              padding: "0.625rem 0.75rem",
+              backgroundColor: "var(--card-elevated)",
+              border: "1px solid var(--border)",
+              borderRadius: "0.5rem",
+            }}
+          >
+            <button
+              onClick={() => setShowAddress((v) => !v)}
+              style={{
+                display: "flex",
+                width: "100%",
+                alignItems: "center",
+                justifyContent: "space-between",
+                background: "none",
+                border: "none",
+                padding: 0,
+                color: "var(--text-primary)",
+                fontSize: "0.825rem",
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              <span style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem" }}>
+                <Package className="w-4 h-4" style={{ color: "#22c55e" }} />
+                Endereço completo (para entregas e pedidos)
+              </span>
+              {showAddress ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+            </button>
+            {showAddress && (
+              <div style={{ marginTop: "0.625rem", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
+                <div style={{ gridColumn: "1 / -1" }}>
+                  <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: "0.2rem" }}>
+                    Preenchemos automaticamente pelo pin do mapa. Edite à vontade — Jarvis usa estes dados ao pedir entregas (pizza, mercado, encomendas).
+                  </div>
+                </div>
+                <input
+                  type="text"
+                  value={address.street ?? ""}
+                  onChange={updateAddrField("street")}
+                  placeholder="Rua / Avenida"
+                  style={{ ...addressFieldStyle, gridColumn: "1 / span 2" }}
+                />
+                <input
+                  type="text"
+                  value={address.number ?? ""}
+                  onChange={updateAddrField("number")}
+                  placeholder="Número"
+                  style={addressFieldStyle}
+                />
+                <input
+                  type="text"
+                  value={address.complement ?? ""}
+                  onChange={updateAddrField("complement")}
+                  placeholder="Complemento (apto, bloco)"
+                  style={addressFieldStyle}
+                />
+                <input
+                  type="text"
+                  value={address.neighborhood ?? ""}
+                  onChange={updateAddrField("neighborhood")}
+                  placeholder="Bairro"
+                  style={{ ...addressFieldStyle, gridColumn: "1 / span 2" }}
+                />
+                <input
+                  type="text"
+                  value={address.city ?? ""}
+                  onChange={updateAddrField("city")}
+                  placeholder="Cidade"
+                  style={addressFieldStyle}
+                />
+                <input
+                  type="text"
+                  value={address.state ?? ""}
+                  onChange={updateAddrField("state")}
+                  placeholder="UF (ex: MA)"
+                  style={addressFieldStyle}
+                />
+                <input
+                  type="text"
+                  value={address.postal_code ?? ""}
+                  onChange={updateAddrField("postal_code")}
+                  placeholder="CEP"
+                  style={addressFieldStyle}
+                />
+                <input
+                  type="text"
+                  value={address.reference ?? ""}
+                  onChange={updateAddrField("reference")}
+                  placeholder="Ponto de referência (opcional)"
+                  style={addressFieldStyle}
+                />
+              </div>
+            )}
           </div>
         )}
 

@@ -31,6 +31,7 @@ import { runOpenClawChat, type RunnerEvent } from "@/lib/openclaw-runner";
 import { logActivity, updateActivity } from "@/lib/activities-db";
 import { publishEvent } from "@/lib/live-events";
 import { createTask, updateTask } from "@/lib/tasks-db";
+import { getSettings } from "@/lib/memory-db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -43,6 +44,98 @@ interface ChatStreamBody {
   forceInline?: boolean;
   thinking?: string;
   fastMode?: boolean;
+}
+
+// Web chat turns were missing the user's actual location, so the LLM
+// would default to "SP" / "São Paulo" no matter where the user lived.
+// Inject the real coordinates + label + timezone + local datetime so
+// the agent grounds its small-talk ("bom dia, hoje em X o clima...")
+// in reality instead of hallucinating. Empty string when location is
+// not configured yet — better silence than a wrong fallback.
+//
+// When the turn looks like a delivery/order task AND the user has saved
+// a full street address, also append a [atlas:delivery_address] block so
+// Jarvis can place real orders without having to ask "qual seu endereço?"
+// every time. The trigger is intentionally narrow so daily small-talk
+// doesn't leak the street address into prompts.
+const DELIVERY_INTENT_RE =
+  /\b(peça|peca|pedir|peço|peco|pede|encomende|encomenda|encomendar|comprar|compra|compre|compra(r)?\s+(online|pela\s+internet)|entrega(r|m)?|entregue|delivery|pizza|hamb[uú]rguer|hamburguer|lanche|jantar|almo[çc]o|caf[eé]\s+da\s+manh[ãa]|mercado|supermercado|farm[áa]cia|rem[eé]dio|uber\s*eats|ifood|i-?food|rappi|99food|aliexpress|amazon|mercado\s+livre|magalu|magazine\s+luiza|americanas|shopee|shein|correios|enviar?\s+(um\s+)?pacote|encomenda)\b/i;
+
+function hasDeliveryIntent(prompt: string): boolean {
+  if (!prompt) return false;
+  return DELIVERY_INTENT_RE.test(prompt);
+}
+
+function formatDeliveryAddress(s: ReturnType<typeof getSettings>): string | null {
+  const segments: string[] = [];
+  if (s.home_address_street) {
+    segments.push(
+      s.home_address_number
+        ? `${s.home_address_street}, ${s.home_address_number}`
+        : s.home_address_street,
+    );
+  }
+  if (s.home_address_complement) segments.push(s.home_address_complement);
+  if (s.home_address_neighborhood) segments.push(s.home_address_neighborhood);
+  if (s.home_address_city) {
+    segments.push(
+      s.home_address_state
+        ? `${s.home_address_city} - ${s.home_address_state}`
+        : s.home_address_city,
+    );
+  } else if (s.home_address_state) {
+    segments.push(s.home_address_state);
+  }
+  if (s.home_address_postal_code) segments.push(`CEP ${s.home_address_postal_code}`);
+  return segments.length ? segments.join(", ") : null;
+}
+
+function buildUserContextPreamble(rawPrompt: string): string {
+  try {
+    const s = getSettings();
+    if (s.home_lat == null || s.home_lon == null) return "";
+    const tz =
+      s.home_timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const place =
+      s.home_label?.trim() ||
+      `${s.home_lat.toFixed(4)}, ${s.home_lon.toFixed(4)}`;
+    const nowLocal = new Date().toLocaleString("pt-BR", {
+      timeZone: tz,
+      dateStyle: "full",
+      timeStyle: "short",
+    });
+    const blocks: string[] = [
+      `[atlas:context] Localização atual do usuário: ${place} ` +
+        `(lat ${s.home_lat.toFixed(4)}, lon ${s.home_lon.toFixed(4)}). ` +
+        `Fuso horário: ${tz}. Agora local: ${nowLocal}. ` +
+        `Use ESTA localização ao mencionar cidade, clima, hora ou contexto regional — ` +
+        `NÃO assuma São Paulo / SP nem qualquer outra cidade.`,
+    ];
+
+    if (hasDeliveryIntent(rawPrompt)) {
+      const fullAddress = formatDeliveryAddress(s);
+      if (fullAddress) {
+        const reference = s.home_address_reference
+          ? ` Ponto de referência: ${s.home_address_reference}.`
+          : "";
+        blocks.push(
+          `[atlas:delivery_address] Endereço de entrega do usuário: ${fullAddress}.${reference} ` +
+            `Use estes dados para preencher formulários de pedido, calcular taxa de entrega, ` +
+            `confirmar o endereço com o usuário antes de finalizar.`,
+        );
+      } else {
+        blocks.push(
+          `[atlas:delivery_address] O usuário ainda NÃO cadastrou endereço completo para entregas. ` +
+            `Antes de finalizar qualquer pedido, peça gentilmente os dados (rua, número, complemento, bairro, CEP) ` +
+            `ou oriente a abrir o LocationPicker no dashboard (ícone de engrenagem do WeatherWidget) para salvá-los.`,
+        );
+      }
+    }
+
+    return blocks.join("\n") + "\n\n";
+  } catch {
+    return "";
+  }
 }
 
 const FORCE_INLINE_HINT =
@@ -201,8 +294,11 @@ export async function POST(req: NextRequest) {
 
   // Always append the inline hint for web sessions to prevent the agent
   // from routing the response via tools like 'message' or 'telegram_send'
-  // and causing buffering/stubs.
-  const effectivePrompt = `${prompt}${FORCE_INLINE_HINT}`;
+  // and causing buffering/stubs. Prepend the location/datetime context so
+  // the agent grounds its replies in the user's real city instead of
+  // hallucinating São Paulo.
+  const userContext = buildUserContextPreamble(prompt);
+  const effectivePrompt = `${userContext}${prompt}${FORCE_INLINE_HINT}`;
 
   // Pre-create assistant message in streaming state so the UI gets an ID up front.
   const assistantMsg = appendMessage({

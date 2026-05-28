@@ -744,6 +744,18 @@ export interface MemorySettings {
   home_label: string | null;
   home_timezone: string | null;
   home_updated_at: string | null;
+  // Structured delivery address. Optional — only filled when the user
+  // wants Jarvis to be able to order things for them (pizza, market,
+  // packages). Auto-populated from Nominatim reverse on pin drop and
+  // editable in the LocationPicker.
+  home_address_street: string | null;
+  home_address_number: string | null;
+  home_address_complement: string | null;
+  home_address_neighborhood: string | null;
+  home_address_city: string | null;
+  home_address_state: string | null;
+  home_address_postal_code: string | null;
+  home_address_reference: string | null;
   morning_briefing_enabled: boolean;
   elevenlabs_api_key: string | null;
   elevenlabs_voice_id: string | null;
@@ -782,6 +794,14 @@ const DEFAULT_SETTINGS: MemorySettings = {
   home_label: null,
   home_timezone: null,
   home_updated_at: null,
+  home_address_street: null,
+  home_address_number: null,
+  home_address_complement: null,
+  home_address_neighborhood: null,
+  home_address_city: null,
+  home_address_state: null,
+  home_address_postal_code: null,
+  home_address_reference: null,
   morning_briefing_enabled: false,
   elevenlabs_api_key: null,
   elevenlabs_voice_id: null,
@@ -866,6 +886,14 @@ export function getSettings(): MemorySettings {
     home_label: parseNullableString(map.get("home_label")),
     home_timezone: parseNullableString(map.get("home_timezone")),
     home_updated_at: parseNullableString(map.get("home_updated_at")),
+    home_address_street: parseNullableString(map.get("home_address_street")),
+    home_address_number: parseNullableString(map.get("home_address_number")),
+    home_address_complement: parseNullableString(map.get("home_address_complement")),
+    home_address_neighborhood: parseNullableString(map.get("home_address_neighborhood")),
+    home_address_city: parseNullableString(map.get("home_address_city")),
+    home_address_state: parseNullableString(map.get("home_address_state")),
+    home_address_postal_code: parseNullableString(map.get("home_address_postal_code")),
+    home_address_reference: parseNullableString(map.get("home_address_reference")),
     morning_briefing_enabled: (map.get("morning_briefing_enabled") ?? "false") === "true",
     elevenlabs_api_key: parseNullableString(map.get("elevenlabs_api_key")),
     elevenlabs_voice_id: parseNullableString(map.get("elevenlabs_voice_id")),

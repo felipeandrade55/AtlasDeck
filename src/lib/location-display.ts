@@ -15,6 +15,20 @@ export interface NominatimAddress {
   state_district?: string;
   country?: string;
   country_code?: string;
+  // Street-level fields used by the delivery address auto-fill
+  road?: string;
+  pedestrian?: string;
+  residential?: string;
+  house_number?: string;
+  neighbourhood?: string;
+  quarter?: string;
+  postcode?: string;
+}
+
+export function stateAbbrFromName(state?: string | null): string | null {
+  if (!state) return null;
+  const k = state.trim().toLowerCase();
+  return BR_STATE_ABBR[k] ?? null;
 }
 
 const BR_STATE_ABBR: Record<string, string> = {
