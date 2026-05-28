@@ -23,6 +23,7 @@ import {
   Server,
   Terminal,
   Clock,
+  Bell,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -323,6 +324,7 @@ export default function DashboardPage() {
               { href: "/logs", icon: Terminal, label: "Logs ao Vivo", color: "#60a5fa" },
               { href: "/memory", icon: Brain, label: "Memória", color: "#f59e0b" },
               { href: "/skills", icon: Puzzle, label: "Habilidades", color: "#4ade80" },
+              { href: "/reminders", icon: Bell, label: "Lembretes", color: "#f472b6" },
             ].map(({ href, icon: Icon, label, color }) => (
               <Link
                 key={href}

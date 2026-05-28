@@ -111,6 +111,7 @@ let StdioServerTransport: typeof import("@modelcontextprotocol/sdk/server/stdio.
 let z: typeof import("zod").z;
 let memoryDb: typeof import("../src/lib/memory-db");
 let embeddings: typeof import("../src/lib/embeddings");
+let remindersDb: typeof import("../src/lib/reminders-db");
 
 try {
   ({ McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js"));
@@ -120,6 +121,7 @@ try {
   ({ z } = await import("zod"));
   memoryDb = await import("../src/lib/memory-db");
   embeddings = await import("../src/lib/embeddings");
+  remindersDb = await import("../src/lib/reminders-db");
 } catch (err) {
   log("module load failed", err instanceof Error ? err.message : String(err));
   process.exit(7);
@@ -487,6 +489,90 @@ server.registerTool(
   },
   async () => {
     return asJson(getStats());
+  },
+);
+
+server.registerTool(
+  "reminder_add",
+  {
+    title: "Add a reminder",
+    description: "Create a new quick reminder or task on the user's dashboard. Use when the user asks to remember something, remind them, or write down a quick note/task.",
+    inputSchema: {
+      text: z.string().min(1).describe("The content of the reminder (e.g., 'Pagar a conta X', 'Corrigir bug no sistema')."),
+      due_at: z.string().optional().describe("Optional ISO datetime string for when this is due or when to be reminded (e.g., '2026-05-29T14:00:00Z')."),
+    },
+  },
+  async (args) => {
+    try {
+      const row = remindersDb.createReminder({
+        text: args.text.trim(),
+        due_at: args.due_at || null,
+      });
+      return asJson({ ok: true, reminder: row });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
+server.registerTool(
+  "reminder_list",
+  {
+    title: "List reminders",
+    description: "Retrieve all quick reminders from the database, both pending and completed.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      const rows = remindersDb.listAllReminders();
+      return asJson({ ok: true, reminders: rows });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
+server.registerTool(
+  "reminder_update",
+  {
+    title: "Update a reminder",
+    description: "Modify an existing reminder, such as marking it completed/pending, updating its text, or changing its due date.",
+    inputSchema: {
+      id: z.string().min(1).describe("The unique ID of the reminder to update."),
+      text: z.string().optional().describe("New text of the reminder."),
+      completed: z.boolean().optional().describe("Set to true to complete the reminder, or false to mark it pending."),
+      due_at: z.string().nullable().optional().describe("ISO datetime string, or null to clear the due date."),
+    },
+  },
+  async (args) => {
+    try {
+      const { id, ...patch } = args;
+      const row = remindersDb.updateReminder(id, patch);
+      if (!row) return asError(`reminder ${id} not found`);
+      return asJson({ ok: true, reminder: row });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
+server.registerTool(
+  "reminder_remove",
+  {
+    title: "Delete a reminder",
+    description: "Permanently delete/remove a quick reminder by its ID.",
+    inputSchema: {
+      id: z.string().min(1).describe("The unique ID of the reminder to delete."),
+    },
+  },
+  async (args) => {
+    try {
+      const ok = remindersDb.deleteReminder(args.id);
+      if (!ok) return asError(`reminder ${args.id} not found`);
+      return asJson({ ok: true, deleted: args.id });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
   },
 );
 
