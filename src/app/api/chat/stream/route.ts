@@ -210,6 +210,34 @@ export async function POST(req: NextRequest) {
     status: "streaming",
   });
 
+  // Auto-promote substantial chat turns into kanban cards so the user
+  // can watch Jarvis's real work move through the Live Mission board.
+  // Trivial Q&A (short prompts without work verbs) stays out by design
+  // — see shouldCreateKanbanTask. The card lives at status "inbox" here
+  // and transitions to "in_progress" once the LLM emits its first token
+  // (in the runner loop), then "done"/"failed" in the finally block.
+  let kanbanTaskId: string | null = null;
+  let kanbanTaskStarted = false;
+  if (shouldCreateKanbanTask(prompt)) {
+    try {
+      const task = createTask({
+        assigned_to: agentId,
+        status: "inbox",
+        title: preview,
+        prompt,
+        metadata: {
+          origin: "chat-stream",
+          threadId: thread.id,
+          source: "web",
+          assistantMessageId: assistantMsg.id,
+        },
+      });
+      kanbanTaskId = task.id;
+    } catch (err) {
+      console.warn("[chat/stream] auto-task creation failed:", err);
+    }
+  }
+
   // Bridge chat lifecycle into the Live Mission event bus so the dashboard
   // shows activity even when the turn isn't tied to a formal task. Without
   // this the Live Activity feed stays empty while the agent is working.
@@ -220,6 +248,7 @@ export async function POST(req: NextRequest) {
       threadId: thread.id,
       preview,
       source: "web",
+      taskId: kanbanTaskId,
     },
   });
 
@@ -331,8 +360,32 @@ export async function POST(req: NextRequest) {
             tokensIn,
             tokensOut,
             cost,
+            taskId: kanbanTaskId,
           },
         });
+
+        // Close out the kanban card. Success → "done" with a result
+        // preview (full content lives in chat-db). Empty/error → "failed"
+        // so the card surfaces in the failed lane instead of vanishing.
+        if (kanbanTaskId) {
+          try {
+            const ok = Boolean(assembled);
+            const resultPreview = ok
+              ? assembled.length > 2000
+                ? `${assembled.slice(0, 1997)}…`
+                : assembled
+              : null;
+            updateTask(kanbanTaskId, {
+              status: ok ? "done" : "failed",
+              result: resultPreview,
+              tokens_in: tokensIn,
+              tokens_out: tokensOut,
+              cost_cents: Math.round((cost ?? 0) * 100),
+            });
+          } catch (err) {
+            console.warn("[chat/stream] auto-task close failed:", err);
+          }
+        }
 
         // If we learned the OpenClaw session id, attach it to the thread
         if (sessionId && !thread!.source_session_id) {
@@ -371,6 +424,17 @@ export async function POST(req: NextRequest) {
             break;
           case "token":
             assembled += evt.delta;
+            // First real token from the LLM → flip the kanban card from
+            // "inbox" to "in_progress" so the user sees motion. Guarded by
+            // a flag because we only want this to happen once per turn.
+            if (kanbanTaskId && !kanbanTaskStarted) {
+              kanbanTaskStarted = true;
+              try {
+                updateTask(kanbanTaskId, { status: "in_progress" });
+              } catch (err) {
+                console.warn("[chat/stream] auto-task start failed:", err);
+              }
+            }
             // Detect "stub reply" pattern: the agent acknowledges that
             // it routed the real answer elsewhere instead of replying
             // in the chat. Common phrases observed:
