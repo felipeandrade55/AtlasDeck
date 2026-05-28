@@ -23,6 +23,16 @@ export async function register(): Promise<void> {
     console.warn("[instrumentation] failed to start metrics scheduler:", err);
   }
 
+  // Telegram + OpenClaw watchdog. Boots here so auto-restart kicks in even
+  // when the dashboard tab is closed (the bell GET would otherwise be the
+  // only thing booting it).
+  try {
+    const { startHealthMonitor } = await import("@/lib/health-monitor");
+    startHealthMonitor();
+  } catch (err) {
+    console.warn("[instrumentation] failed to start health monitor:", err);
+  }
+
   // Auto-install the nightly backup cron on a fresh install. Idempotent:
   // no-ops if a cron line already exists or if config.enabled is false.
   try {

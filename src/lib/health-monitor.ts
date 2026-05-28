@@ -18,10 +18,20 @@
  */
 import { addNotification } from "./notifications";
 import { runDiagnose, type DiagnosticCheck, type DiagnoseResponse } from "./telegram-diagnostic";
+import { startGateway } from "./gateway-control";
 
 const TICK_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
 const MIN_TICK_GAP_MS = 30_000;          // refuse to re-run within 30s of a manual call
 const THROTTLE_MS = 30 * 60 * 1000;      // 30 min per check_id
+
+// ─── Auto-restart watchdog ──────────────────────────────────────────────
+// When the gateway check transitions to "fail" the monitor tries to bring
+// it back without user intervention. Bounded attempts + cooldown so we
+// don't thrash if the daemon is fundamentally broken (the user still gets
+// the bell notification and can investigate manually).
+const AUTO_RESTART_WINDOW_MS = 30 * 60 * 1000; // attempts only count inside a rolling 30-min window
+const AUTO_RESTART_MAX_ATTEMPTS = 3;
+const AUTO_RESTART_COOLDOWN_MS = 5 * 60 * 1000; // wait 5 min between attempts; tick is 2 min
 
 interface CheckMemory {
   /** Last known status for this check id. */
@@ -39,6 +49,12 @@ interface MonitorState {
   checkMem: Map<string, CheckMemory>;
   /** Did we already notify about the global degraded state? Resets on recovery. */
   degradedNotifiedAt: number;
+  /** Timestamps of recent auto-restart attempts; pruned to AUTO_RESTART_WINDOW_MS. */
+  restartAttempts: number[];
+  /** Did we tell the user the circuit broke (gave up auto-restart)? Reset on success. */
+  circuitOpenNotifiedAt: number;
+  /** True while an auto-restart is in flight; prevents concurrent attempts across ticks. */
+  restartInFlight: boolean;
 }
 
 const state: MonitorState = {
@@ -48,6 +64,9 @@ const state: MonitorState = {
   lastDiagnose: null,
   checkMem: new Map(),
   degradedNotifiedAt: 0,
+  restartAttempts: [],
+  circuitOpenNotifiedAt: 0,
+  restartInFlight: false,
 };
 
 function isProblem(s: DiagnosticCheck["status"]): boolean {
@@ -124,6 +143,23 @@ async function tick(reason: "scheduled" | "manual" = "scheduled"): Promise<Diagn
     }
   }
 
+  // ─── Auto-restart watchdog ──────────────────────────────────────────────
+  // Skip on the very first tick — give the gateway a full cycle to settle
+  // before assuming it's broken (avoids racing a still-booting daemon).
+  if (prev !== null) {
+    const gatewayCheck = report.checks.find((c) => c.id === "gateway");
+    if (gatewayCheck?.status === "fail") {
+      await maybeAutoRestartGateway(now);
+    } else if (gatewayCheck?.status === "pass") {
+      // Gateway healthy → forget any "circuit open" notification state so the
+      // next outage gets a fresh budget.
+      if (state.restartAttempts.length > 0 || state.circuitOpenNotifiedAt > 0) {
+        state.restartAttempts = [];
+        state.circuitOpenNotifiedAt = 0;
+      }
+    }
+  }
+
   // ─── Global headline transition ─────────────────────────────────────────
   // Single "global" notification when overall health crosses thresholds, so
   // the user sees a single summary instead of just a flood of per-check
@@ -151,6 +187,58 @@ async function tick(reason: "scheduled" | "manual" = "scheduled"): Promise<Diagn
   }
 
   return report;
+}
+
+async function maybeAutoRestartGateway(now: number): Promise<void> {
+  if (state.restartInFlight) return;
+
+  // Prune attempts outside the rolling window
+  state.restartAttempts = state.restartAttempts.filter(
+    (t) => now - t < AUTO_RESTART_WINDOW_MS,
+  );
+
+  // Circuit breaker — too many recent attempts. Notify once and give up
+  // until the window slides forward.
+  if (state.restartAttempts.length >= AUTO_RESTART_MAX_ATTEMPTS) {
+    if (now - state.circuitOpenNotifiedAt > AUTO_RESTART_WINDOW_MS) {
+      state.circuitOpenNotifiedAt = now;
+      await safeAddNotification(
+        "🛑 Auto-recuperação do gateway pausada",
+        `Tentei reiniciar ${AUTO_RESTART_MAX_ATTEMPTS}x em 30min e o gateway continua caindo. Abre o Doctor e investiga (provavelmente erro de config ou crash recorrente).`,
+        "error",
+        "/settings?openDoctor=1",
+        { attempts: state.restartAttempts.length },
+      );
+    }
+    return;
+  }
+
+  // Cooldown between attempts so we don't hammer the daemon while it boots
+  const lastAttempt = state.restartAttempts[state.restartAttempts.length - 1] ?? 0;
+  if (lastAttempt > 0 && now - lastAttempt < AUTO_RESTART_COOLDOWN_MS) return;
+
+  state.restartAttempts.push(now);
+  state.restartInFlight = true;
+  try {
+    const r = await startGateway();
+    if (r.success) {
+      await safeAddNotification(
+        "🤖 Gateway reanimado automaticamente",
+        `Detectei que o gateway do OpenClaw tinha caído e iniciei ele de novo (via ${r.runtime}). O bot do Telegram deve voltar a responder em alguns segundos.`,
+        "success",
+        "/settings?openDoctor=1",
+        { runtime: r.runtime, attempt: state.restartAttempts.length },
+      );
+    } else {
+      console.warn(
+        `[health-monitor] auto-restart tentativa ${state.restartAttempts.length}/${AUTO_RESTART_MAX_ATTEMPTS} falhou (${r.runtime}):\n${r.output}`,
+      );
+    }
+  } catch (err) {
+    console.warn("[health-monitor] auto-restart threw:", err);
+  } finally {
+    state.restartInFlight = false;
+  }
 }
 
 function worstSeverity(checks: DiagnosticCheck[]): number {
