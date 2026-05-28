@@ -34,6 +34,37 @@ export interface SendOptions {
 }
 
 /**
+ * Best-effort live geolocation read. Uses a 5-minute browser-side cache
+ * so we don't replay the permission prompt or hit the GPS on every turn,
+ * and times out fast so chat latency isn't held hostage by GPS warm-up.
+ * Returns null if unavailable / denied — the server preamble falls back
+ * to the saved home in that case.
+ */
+async function readLiveGeolocation(): Promise<{ lat: number; lon: number } | null> {
+  if (typeof navigator === "undefined" || !navigator.geolocation) return null;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: { lat: number; lon: number } | null) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const watchdog = setTimeout(() => finish(null), 3500);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        clearTimeout(watchdog);
+        finish({ lat: pos.coords.latitude, lon: pos.coords.longitude });
+      },
+      () => {
+        clearTimeout(watchdog);
+        finish(null);
+      },
+      { maximumAge: 5 * 60 * 1000, timeout: 3000, enableHighAccuracy: false },
+    );
+  });
+}
+
+/**
  * SSE consumer for /api/chat/stream. Parses each event by name and
  * dispatches to the provided callbacks. Aborts the request when the
  * caller invokes stop().
@@ -55,6 +86,7 @@ export function useChatStream() {
     setIsStreaming(true);
 
     try {
+      const live = await readLiveGeolocation();
       const res = await fetch("/api/chat/stream", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -66,6 +98,8 @@ export function useChatStream() {
           forceInline: opts.forceInline === true ? true : undefined,
           thinking: opts.thinking ?? undefined,
           fastMode: opts.fastMode !== undefined ? opts.fastMode : undefined,
+          liveLat: live?.lat,
+          liveLon: live?.lon,
         }),
         signal: ac.signal,
       });

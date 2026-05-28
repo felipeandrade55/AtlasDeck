@@ -32,6 +32,7 @@ import { logActivity, updateActivity } from "@/lib/activities-db";
 import { publishEvent } from "@/lib/live-events";
 import { createTask, updateTask } from "@/lib/tasks-db";
 import { getSettings } from "@/lib/memory-db";
+import { cityFromAddress, shortCityName, type NominatimAddress } from "@/lib/location-display";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -44,6 +45,12 @@ interface ChatStreamBody {
   forceInline?: boolean;
   thinking?: string;
   fastMode?: boolean;
+  // Browser geolocation snapshot for this turn — sent by useChatStream
+  // when the user has granted permission. Used to override the saved
+  // home location while traveling so Jarvis says "São Luís" instead of
+  // the stale "Santa Helena de Goiás" home label.
+  liveLat?: number;
+  liveLon?: number;
 }
 
 // Web chat turns were missing the user's actual location, so the LLM
@@ -90,27 +97,140 @@ function formatDeliveryAddress(s: ReturnType<typeof getSettings>): string | null
   return segments.length ? segments.join(", ") : null;
 }
 
-function buildUserContextPreamble(rawPrompt: string): string {
+// In-memory reverse-geocode cache. Nominatim rate-limits ~1 req/s/IP and
+// charging that per chat turn would also add 500ms+ of latency before
+// the first token. Key is lat/lon rounded to 3 decimals (~100m), which
+// is more than enough for city-level grounding. TTL 12h.
+const REVERSE_GEO_CACHE = new Map<string, { label: string; expiresAt: number }>();
+
+async function reverseGeocodeCity(lat: number, lon: number): Promise<string | null> {
+  const key = `${lat.toFixed(3)},${lon.toFixed(3)}`;
+  const cached = REVERSE_GEO_CACHE.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.label;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1500);
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?format=json&addressdetails=1&lat=${lat}&lon=${lon}`,
+      {
+        headers: {
+          "Accept-Language": "pt-BR",
+          "User-Agent": "AtlasDeck/1.0 (https://atlasdeck.egis.app.br)",
+        },
+        signal: controller.signal,
+      },
+    );
+    clearTimeout(timeout);
+    if (!res.ok) return null;
+    const data = (await res.json()) as { display_name?: string; address?: NominatimAddress };
+    const label = cityFromAddress(data.address) || shortCityName(data.display_name) || null;
+    if (label) {
+      REVERSE_GEO_CACHE.set(key, {
+        label,
+        expiresAt: Date.now() + 12 * 60 * 60 * 1000,
+      });
+    }
+    return label;
+  } catch {
+    return null;
+  }
+}
+
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+// Threshold for "you're not at home anymore". 2km handles dense-urban
+// GPS noise (multi-block error in tall-building areas) without flagging
+// the user as traveling when they're really at the kitchen table.
+const TRAVELING_DISTANCE_KM = 2;
+
+async function buildUserContextPreamble(
+  rawPrompt: string,
+  live?: { lat: number; lon: number } | null,
+): Promise<string> {
   try {
     const s = getSettings();
-    if (s.home_lat == null || s.home_lon == null) return "";
-    const tz =
-      s.home_timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const place =
-      s.home_label?.trim() ||
-      `${s.home_lat.toFixed(4)}, ${s.home_lon.toFixed(4)}`;
+    const hasHome = s.home_lat != null && s.home_lon != null;
+    if (!hasHome && !live) return "";
+
+    const homeTz = s.home_timezone || null;
+    const deviceTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+    let nowPlace: string;
+    let nowLat: number;
+    let nowLon: number;
+    let traveling = false;
+    let homePlace: string | null = null;
+
+    if (live && hasHome) {
+      const distance = haversineKm(live.lat, live.lon, s.home_lat!, s.home_lon!);
+      if (distance > TRAVELING_DISTANCE_KM) {
+        traveling = true;
+        const liveLabel = await reverseGeocodeCity(live.lat, live.lon);
+        nowPlace = liveLabel || `${live.lat.toFixed(4)}, ${live.lon.toFixed(4)}`;
+        nowLat = live.lat;
+        nowLon = live.lon;
+        homePlace =
+          s.home_label?.trim() ||
+          `${s.home_lat!.toFixed(4)}, ${s.home_lon!.toFixed(4)}`;
+      } else {
+        // Live confirms the user is at home — use the human-friendly
+        // home label instead of the noisy live coords.
+        nowPlace =
+          s.home_label?.trim() ||
+          `${s.home_lat!.toFixed(4)}, ${s.home_lon!.toFixed(4)}`;
+        nowLat = s.home_lat!;
+        nowLon = s.home_lon!;
+      }
+    } else if (live) {
+      const liveLabel = await reverseGeocodeCity(live.lat, live.lon);
+      nowPlace = liveLabel || `${live.lat.toFixed(4)}, ${live.lon.toFixed(4)}`;
+      nowLat = live.lat;
+      nowLon = live.lon;
+    } else {
+      // hasHome === true (early-return otherwise)
+      nowPlace =
+        s.home_label?.trim() ||
+        `${s.home_lat!.toFixed(4)}, ${s.home_lon!.toFixed(4)}`;
+      nowLat = s.home_lat!;
+      nowLon = s.home_lon!;
+    }
+
+    // When traveling, the saved home timezone is wrong — use the device
+    // tz so "agora local" reflects where the user actually is.
+    const tz = traveling ? deviceTz : homeTz || deviceTz;
     const nowLocal = new Date().toLocaleString("pt-BR", {
       timeZone: tz,
       dateStyle: "full",
       timeStyle: "short",
     });
-    const blocks: string[] = [
-      `[atlas:context] Localização atual do usuário: ${place} ` +
-        `(lat ${s.home_lat.toFixed(4)}, lon ${s.home_lon.toFixed(4)}). ` +
-        `Fuso horário: ${tz}. Agora local: ${nowLocal}. ` +
+
+    const lines: string[] = [];
+    lines.push(
+      `[atlas:context] Você está AGORA em: ${nowPlace} ` +
+        `(lat ${nowLat.toFixed(4)}, lon ${nowLon.toFixed(4)}). ` +
+        `Fuso horário: ${tz}. Agora local: ${nowLocal}.`,
+    );
+    if (traveling && homePlace) {
+      lines.push(
+        `Seu endereço fixo (casa) está em ${homePlace} — use o "agora" para clima/hora/contexto local ` +
+          `e o "casa" apenas como referência ao endereço fixo ou entregas para a residência.`,
+      );
+    } else {
+      lines.push(
         `Use ESTA localização ao mencionar cidade, clima, hora ou contexto regional — ` +
-        `NÃO assuma São Paulo / SP nem qualquer outra cidade.`,
-    ];
+          `NÃO assuma São Paulo / SP nem qualquer outra cidade.`,
+      );
+    }
+    const blocks: string[] = [lines.join(" ")];
 
     if (hasDeliveryIntent(rawPrompt)) {
       const fullAddress = formatDeliveryAddress(s);
@@ -118,10 +238,13 @@ function buildUserContextPreamble(rawPrompt: string): string {
         const reference = s.home_address_reference
           ? ` Ponto de referência: ${s.home_address_reference}.`
           : "";
+        const travelHint = traveling
+          ? ` ATENÇÃO: o usuário está viajando agora (${nowPlace}); confirme se a entrega é para a casa ou para a localização atual antes de finalizar.`
+          : "";
         blocks.push(
-          `[atlas:delivery_address] Endereço de entrega do usuário: ${fullAddress}.${reference} ` +
+          `[atlas:delivery_address] Endereço de entrega cadastrado (residência): ${fullAddress}.${reference} ` +
             `Use estes dados para preencher formulários de pedido, calcular taxa de entrega, ` +
-            `confirmar o endereço com o usuário antes de finalizar.`,
+            `confirmar o endereço com o usuário antes de finalizar.${travelHint}`,
         );
       } else {
         blocks.push(
@@ -297,7 +420,16 @@ export async function POST(req: NextRequest) {
   // and causing buffering/stubs. Prepend the location/datetime context so
   // the agent grounds its replies in the user's real city instead of
   // hallucinating São Paulo.
-  const userContext = buildUserContextPreamble(prompt);
+  const live =
+    typeof body.liveLat === "number" &&
+    typeof body.liveLon === "number" &&
+    body.liveLat >= -90 &&
+    body.liveLat <= 90 &&
+    body.liveLon >= -180 &&
+    body.liveLon <= 180
+      ? { lat: body.liveLat, lon: body.liveLon }
+      : null;
+  const userContext = await buildUserContextPreamble(prompt, live);
   const effectivePrompt = `${userContext}${prompt}${FORCE_INLINE_HINT}`;
 
   // Pre-create assistant message in streaming state so the UI gets an ID up front.
