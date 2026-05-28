@@ -54,6 +54,17 @@ export interface DiagnoseResponse {
     skip: number;
     headline: string;
   };
+  /**
+   * Per-account routing telemetry — consumed by the background health
+   * monitor to detect a stuck Telegram poller in the OpenClaw gateway
+   * without touching getUpdates (which would compete with the gateway).
+   */
+  routing: Array<{
+    accountId: string;
+    pendingUpdates: number;
+    lastTelegramError?: { message: string; at: number };
+    webhookSet: boolean;
+  }>;
 }
 
 interface OpenClawJson {
@@ -125,6 +136,8 @@ export async function runDiagnose(opts: RunDiagnoseOptions): Promise<DiagnoseRes
     sent: false,
   };
 
+  const routing: DiagnoseResponse["routing"] = [];
+
   for (const id of accountIds) {
     const acct = accountsRaw[id] || {};
     const token = (acct.botToken ?? "").trim();
@@ -145,10 +158,13 @@ export async function runDiagnose(opts: RunDiagnoseOptions): Promise<DiagnoseRes
       continue;
     }
 
-    const [bot, webhook, updates] = await Promise.all([
+    // NEVER call getUpdates here: Telegram allows only one getUpdates per bot,
+    // so probing competes with the gateway's long-polling and kicks it with 409
+    // Conflict, leaving the poller stuck. pending_update_count from
+    // getWebhookInfo is the same signal, non-destructive.
+    const [bot, webhook] = await Promise.all([
       tgCall<TgBotInfo>(token, "getMe"),
       tgCall<TgWebhookInfo>(token, "getWebhookInfo"),
-      tgCall(token, "getUpdates", { limit: 1, timeout: 0 }),
     ]);
 
     checks.push({
@@ -227,13 +243,20 @@ export async function runDiagnose(opts: RunDiagnoseOptions): Promise<DiagnoseRes
       });
     }
 
-    if (!wh?.url && !updates.ok) {
-      checks.push({
-        id: `polling-${id}`,
-        category: "telegram",
-        label: `Conta "${id}": getUpdates`,
-        status: "warn",
-        detail: `getUpdates falhou: ${updates.description || updates.networkError || `HTTP ${updates.httpStatus ?? "?"}`}.`,
+    // Emit routing telemetry for the health monitor's stuck-poller detection.
+    // pending_update_count growing across ticks while gateway is alive means
+    // the Telegram adapter inside the gateway is hung — restart needed.
+    if (hasToken && bot.ok) {
+      routing.push({
+        accountId: id,
+        pendingUpdates: pending,
+        webhookSet: !!wh?.url,
+        lastTelegramError: wh?.last_error_message
+          ? {
+              message: wh.last_error_message,
+              at: (wh.last_error_date ?? 0) * 1000,
+            }
+          : undefined,
       });
     }
 
@@ -329,5 +352,6 @@ export async function runDiagnose(opts: RunDiagnoseOptions): Promise<DiagnoseRes
     checks,
     testMessage,
     summary: { ...counts, headline },
+    routing,
   };
 }

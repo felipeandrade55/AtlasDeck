@@ -21,6 +21,16 @@ export async function register(): Promise<void> {
   } catch (err) {
     console.warn("[instrumentation] metrics scheduler bootstrap failed:", err);
   }
+  // Telegram + gateway watchdog. Idempotent; was previously triggered only
+  // when the dashboard hit /api/notifications — meaning a closed dashboard
+  // left the bot unwatched. Starting at boot makes auto-recovery work
+  // regardless of whether a browser is open.
+  try {
+    const { startHealthMonitor } = await import("./lib/health-monitor");
+    startHealthMonitor();
+  } catch (err) {
+    console.warn("[instrumentation] health monitor bootstrap failed:", err);
+  }
   // Make sure the nightly backup cron is registered on a fresh install —
   // idempotent, so existing crontabs are left alone.
   try {

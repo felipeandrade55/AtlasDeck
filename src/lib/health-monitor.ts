@@ -16,9 +16,13 @@
  *   4. Best-effort persistence — the in-memory state is good enough; a
  *      process restart re-baselines on the first tick.
  */
+import { mkdir, writeFile } from "fs/promises";
+import path from "path";
 import { addNotification } from "./notifications";
 import { runDiagnose, type DiagnosticCheck, type DiagnoseResponse } from "./telegram-diagnostic";
-import { startGateway } from "./gateway-control";
+import { startGateway, restartGateway, gatewayLogs } from "./gateway-control";
+
+const INCIDENTS_DIR = path.join(process.cwd(), "data", "incidents");
 
 const TICK_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
 const MIN_TICK_GAP_MS = 30_000;          // refuse to re-run within 30s of a manual call
@@ -33,11 +37,30 @@ const AUTO_RESTART_WINDOW_MS = 30 * 60 * 1000; // attempts only count inside a r
 const AUTO_RESTART_MAX_ATTEMPTS = 3;
 const AUTO_RESTART_COOLDOWN_MS = 5 * 60 * 1000; // wait 5 min between attempts; tick is 2 min
 
+// ─── Stuck-poller detection ─────────────────────────────────────────────
+// pending_update_count growing across consecutive ticks while the gateway
+// process is alive means the Telegram adapter inside the gateway has hung
+// (typical cause: 409 Conflict recovery loop, NAT/socket timeout on the
+// long-poll). Require N consecutive non-draining ticks before firing so
+// transient spikes don't trigger restarts.
+const STUCK_POLLER_MIN_PENDING = 1;       // ignore zero-traffic ticks
+const STUCK_POLLER_CONSECUTIVE = 2;       // 2 ticks = 4 minutes of non-draining
+const STUCK_POLLER_QUIET_MS = 10 * 60 * 1000; // re-arm: wait 10 min after a stuck-restart before re-flagging
+
 interface CheckMemory {
   /** Last known status for this check id. */
   status: DiagnosticCheck["status"];
   /** Last time we notified the bell about this check breaking. */
   lastNotifiedAt: number;
+}
+
+interface PollerMemory {
+  /** pending_update_count last seen for this account. */
+  lastPending: number;
+  /** Consecutive ticks where pending stayed non-zero AND did not shrink. */
+  consecutiveNonDraining: number;
+  /** Timestamp of the last stuck-poller restart, to debounce re-arm. */
+  lastStuckRestartAt: number;
 }
 
 interface MonitorState {
@@ -47,6 +70,8 @@ interface MonitorState {
   lastDiagnose: DiagnoseResponse | null;
   /** Per-check memory keyed by check.id. */
   checkMem: Map<string, CheckMemory>;
+  /** Per-account memory keyed by accountId, for stuck-poller detection. */
+  pollerMem: Map<string, PollerMemory>;
   /** Did we already notify about the global degraded state? Resets on recovery. */
   degradedNotifiedAt: number;
   /** Timestamps of recent auto-restart attempts; pruned to AUTO_RESTART_WINDOW_MS. */
@@ -63,6 +88,7 @@ const state: MonitorState = {
   lastTickAt: 0,
   lastDiagnose: null,
   checkMem: new Map(),
+  pollerMem: new Map(),
   degradedNotifiedAt: 0,
   restartAttempts: [],
   circuitOpenNotifiedAt: 0,
@@ -157,6 +183,16 @@ async function tick(reason: "scheduled" | "manual" = "scheduled"): Promise<Diagn
         state.restartAttempts = [];
         state.circuitOpenNotifiedAt = 0;
       }
+      // Gateway alive AND poller drained? Reset stuck-poller memory so a
+      // healthy stretch clears the bad streak.
+      for (const r of report.routing) {
+        const mem = state.pollerMem.get(r.accountId);
+        if (mem && r.pendingUpdates === 0) {
+          mem.consecutiveNonDraining = 0;
+          mem.lastPending = 0;
+        }
+      }
+      await maybeAutoRestartStuckPoller(now, report);
     }
   }
 
@@ -189,6 +225,120 @@ async function tick(reason: "scheduled" | "manual" = "scheduled"): Promise<Diagn
   return report;
 }
 
+/**
+ * Detects "gateway alive but Telegram poller hung" via pending_update_count
+ * that fails to drain across N consecutive ticks, then triggers a gateway
+ * restart. Different code path from maybeAutoRestartGateway (which handles
+ * "gateway process dead") because the symptom and the restart strategy
+ * differ — here we know the process is alive, so we restart it instead of
+ * trying to bootstrap from nothing.
+ */
+async function maybeAutoRestartStuckPoller(
+  now: number,
+  report: DiagnoseResponse,
+): Promise<void> {
+  if (state.restartInFlight) return;
+  if (report.routing.length === 0) return;
+
+  const stuck: string[] = [];
+
+  for (const r of report.routing) {
+    // Webhook is set? Polling isn't even running — skip. Diagnose already
+    // raised a check for it.
+    if (r.webhookSet) continue;
+
+    const mem = state.pollerMem.get(r.accountId) ?? {
+      lastPending: 0,
+      consecutiveNonDraining: 0,
+      lastStuckRestartAt: 0,
+    };
+
+    if (r.pendingUpdates >= STUCK_POLLER_MIN_PENDING && r.pendingUpdates >= mem.lastPending) {
+      mem.consecutiveNonDraining++;
+    } else {
+      mem.consecutiveNonDraining = 0;
+    }
+    mem.lastPending = r.pendingUpdates;
+    state.pollerMem.set(r.accountId, mem);
+
+    // Debounce: if we restarted recently for this account, wait the
+    // re-arm window before treating it as stuck again.
+    const recentlyRestarted = now - mem.lastStuckRestartAt < STUCK_POLLER_QUIET_MS;
+    if (mem.consecutiveNonDraining >= STUCK_POLLER_CONSECUTIVE && !recentlyRestarted) {
+      stuck.push(r.accountId);
+    }
+  }
+
+  if (stuck.length === 0) return;
+
+  // Reuse the same circuit-breaker as the gateway-dead watchdog so total
+  // restart attempts stay bounded regardless of the trigger reason.
+  state.restartAttempts = state.restartAttempts.filter(
+    (t) => now - t < AUTO_RESTART_WINDOW_MS,
+  );
+  if (state.restartAttempts.length >= AUTO_RESTART_MAX_ATTEMPTS) {
+    if (now - state.circuitOpenNotifiedAt > AUTO_RESTART_WINDOW_MS) {
+      state.circuitOpenNotifiedAt = now;
+      await safeAddNotification(
+        "🛑 Auto-recuperação do Telegram pausada",
+        `Tentei reiniciar o gateway ${AUTO_RESTART_MAX_ATTEMPTS}x em 30min e o polling do Telegram continua travando. Abre o Doctor pra investigar.`,
+        "error",
+        "/settings?openDoctor=1",
+        { attempts: state.restartAttempts.length, reason: "stuck-poller" },
+      );
+    }
+    return;
+  }
+  const lastAttempt = state.restartAttempts[state.restartAttempts.length - 1] ?? 0;
+  if (lastAttempt > 0 && now - lastAttempt < AUTO_RESTART_COOLDOWN_MS) return;
+
+  state.restartAttempts.push(now);
+  state.restartInFlight = true;
+
+  // Snapshot logs BEFORE restart so we capture the broken state for forensics.
+  const accountsLabel = stuck.join(", ");
+  await captureIncidentSnapshot(`stuck-poller-${stuck[0]}`, {
+    accounts: stuck,
+    routing: report.routing,
+  });
+
+  try {
+    const r = await restartGateway();
+    for (const accountId of stuck) {
+      const mem = state.pollerMem.get(accountId);
+      if (mem) {
+        mem.lastStuckRestartAt = now;
+        mem.consecutiveNonDraining = 0;
+        mem.lastPending = 0;
+      }
+    }
+    if (r.success) {
+      await safeAddNotification(
+        "🔄 Telegram reanimado automaticamente",
+        `Detectei polling travado (mensagens acumulando sem o gateway processar) na(s) conta(s) ${accountsLabel}. Reiniciei o gateway via ${r.runtime}. O bot deve voltar em alguns segundos.`,
+        "success",
+        "/settings?openDoctor=1",
+        { runtime: r.runtime, attempt: state.restartAttempts.length, reason: "stuck-poller", accounts: stuck },
+      );
+    } else {
+      await safeAddNotification(
+        "⚠️ Falha ao reanimar Telegram",
+        `Detectei polling travado mas o restart automático falhou (${r.runtime}). Abre o Doctor pra reiniciar manualmente.`,
+        "error",
+        "/settings?openDoctor=1",
+        { runtime: r.runtime, output: r.output.slice(0, 500), reason: "stuck-poller" },
+      );
+      console.warn(
+        `[health-monitor] stuck-poller restart falhou (${r.runtime}):\n${r.output}`,
+      );
+    }
+  } catch (err) {
+    console.warn("[health-monitor] stuck-poller restart threw:", err);
+  } finally {
+    state.restartInFlight = false;
+  }
+}
+
 async function maybeAutoRestartGateway(now: number): Promise<void> {
   if (state.restartInFlight) return;
 
@@ -219,6 +369,9 @@ async function maybeAutoRestartGateway(now: number): Promise<void> {
 
   state.restartAttempts.push(now);
   state.restartInFlight = true;
+  await captureIncidentSnapshot("gateway-dead", {
+    restartAttempts: state.restartAttempts.length,
+  });
   try {
     const r = await startGateway();
     if (r.success) {
@@ -248,6 +401,35 @@ function worstSeverity(checks: DiagnosticCheck[]): number {
     if (cs > s) s = cs;
   }
   return s;
+}
+
+/**
+ * Best-effort log capture before an auto-restart. Writes a single file under
+ * data/incidents/ so post-mortem can find the gateway state at the moment
+ * the watchdog decided something was wrong. Never throws — if disk/perms
+ * fail we just move on; the restart itself is the user-visible action.
+ */
+async function captureIncidentSnapshot(
+  reason: string,
+  context: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await mkdir(INCIDENTS_DIR, { recursive: true });
+    const logs = await gatewayLogs({ lines: 300 }).catch(() => null);
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const file = path.join(INCIDENTS_DIR, `${ts}-${reason}.log`);
+    const header = [
+      `# Incident: ${reason}`,
+      `# At: ${new Date().toISOString()}`,
+      `# Context: ${JSON.stringify(context)}`,
+      `# Gateway logs source: ${logs?.source ?? "n/d"}`,
+      "",
+      "",
+    ].join("\n");
+    await writeFile(file, header + (logs?.output ?? "(sem logs disponíveis)\n"));
+  } catch (err) {
+    console.warn("[health-monitor] incident snapshot failed:", err);
+  }
 }
 
 async function safeAddNotification(
