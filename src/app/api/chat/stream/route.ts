@@ -290,21 +290,11 @@ function deriveTitleFromPrompt(prompt: string): string {
   return collapsed.length > 60 ? `${collapsed.slice(0, 57)}…` : collapsed;
 }
 
-// Heuristic: only promote a chat turn into a kanban card when it looks
-// like real work. Trivia like "me explique BGP em 3 linhas" should NOT
-// pollute the Live Mission board — only substantial requests or those
-// with explicit "do X" verbs should. Threshold + verb list chosen so
-// short Q&A pings stay out while page/product/build/publish requests
-// always trigger.
-const KANBAN_LENGTH_THRESHOLD = 120;
-const KANBAN_WORK_VERBS_RE =
-  /\b(crie|criar|cria|criem|fa[çc]a|fa[çc]am|fazer|construa|construir|constr[oó]i|implemente|implementar|publique|publicar|publica|desenvolva|desenvolver|monte|montar|gere|gerar|projete|projetar|configure|configurar|build|create|implement|make|develop|deploy|publish|launch|generate|design)\b/i;
-
-function shouldCreateKanbanTask(prompt: string): boolean {
-  if (!prompt) return false;
-  if (prompt.length >= KANBAN_LENGTH_THRESHOLD) return true;
-  return KANBAN_WORK_VERBS_RE.test(prompt);
-}
+// Every chat turn becomes a Live Mission kanban card. The earlier
+// "substantial-only" heuristic kept the board clean but also made the
+// user feel that Jarvis wasn't working — they want to SEE every turn
+// move from inbox → in_progress → done in real time. The empty-prompt
+// guard above already filters truly degenerate calls.
 
 function summarizeToolInput(input: unknown): string {
   if (input == null) return "";
@@ -448,24 +438,22 @@ export async function POST(req: NextRequest) {
   // (in the runner loop), then "done"/"failed" in the finally block.
   let kanbanTaskId: string | null = null;
   let kanbanTaskStarted = false;
-  if (shouldCreateKanbanTask(prompt)) {
-    try {
-      const task = createTask({
-        assigned_to: agentId,
-        status: "inbox",
-        title: preview,
-        prompt,
-        metadata: {
-          origin: "chat-stream",
-          threadId: thread.id,
-          source: "web",
-          assistantMessageId: assistantMsg.id,
-        },
-      });
-      kanbanTaskId = task.id;
-    } catch (err) {
-      console.warn("[chat/stream] auto-task creation failed:", err);
-    }
+  try {
+    const task = createTask({
+      assigned_to: agentId,
+      status: "inbox",
+      title: preview,
+      prompt,
+      metadata: {
+        origin: "chat-stream",
+        threadId: thread.id,
+        source: "web",
+        assistantMessageId: assistantMsg.id,
+      },
+    });
+    kanbanTaskId = task.id;
+  } catch (err) {
+    console.warn("[chat/stream] auto-task creation failed:", err);
   }
 
   // Bridge chat lifecycle into the Live Mission event bus so the dashboard
