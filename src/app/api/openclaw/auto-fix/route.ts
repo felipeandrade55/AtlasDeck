@@ -88,7 +88,7 @@ export async function POST(req: NextRequest) {
   // Skipping restart on no-op keeps the gateway state stable for the
   // common case where the user clicks the button after the issue has
   // already been auto-fixed during deploy.
-  if (wantRestart && applied.length > 0) {
+  if (wantRestart && (applied.length > 0 || body.fix !== undefined)) {
     result.restart = await restartGateway();
     if (!result.restart.ok) {
       // We don't flip result.ok to false because the patch succeeded —
