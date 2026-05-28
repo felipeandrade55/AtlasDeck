@@ -16,6 +16,7 @@ import {
   type MemoryRow,
 } from "@/lib/memory-db";
 import { resolveWorkspacePath } from "@/lib/workspace-resolver";
+import { getOpenClawWorkspace } from "@/lib/openclaw-config";
 import { indexFile } from "@/lib/memory-fts";
 import { buildPromptBlock } from "@/lib/memory-extractor";
 
@@ -164,7 +165,19 @@ export async function injectIntoWorkspace(
     };
   }
 
-  const wsPath = resolveWorkspacePath(workspace);
+  // Resolve the on-disk workspace path. The "workspace" id is the
+  // convention memory-extractor uses for the main agent, but the
+  // real on-disk path for that agent is whatever's configured in
+  // openclawWorkspace (typically <OPENCLAW_DIR>/workspace/mission-control,
+  // NOT <OPENCLAW_DIR>/workspace). resolveWorkspacePath("workspace")
+  // returns the wrong path here — writing MEMORY.md there is silently
+  // a no-op because the agent reads from getOpenClawWorkspace(). For
+  // every other workspace id (e.g. "workspace-devops") we fall back
+  // to the generic resolver.
+  const wsPath =
+    workspace === "workspace"
+      ? getOpenClawWorkspace()
+      : resolveWorkspacePath(workspace);
   if (!wsPath) {
     return {
       workspace,

@@ -73,6 +73,18 @@ interface DiagnoseReport {
     durationMs: number;
   };
   summary: { ok: number; warn: number; fail: number };
+  memoryMd?: {
+    path: string;
+    exists: boolean;
+    hasGuidance: boolean;
+    sizeBytes: number;
+  };
+  toolUseScan?: {
+    sessionsScanned: number;
+    memoryToolCalls: number;
+    perTool: Record<string, number>;
+    lastSeenAt: string | null;
+  };
 }
 
 type Phase = "idle" | "loading" | "activating" | "diagnosing" | "disabling" | "error";
@@ -506,6 +518,73 @@ export function MemoryMcpCard() {
               </div>
             );
           })}
+          {diagnose.toolUseScan && (
+            <div
+              className="rounded-lg p-3 text-xs"
+              style={{
+                backgroundColor: "var(--card-elevated, rgba(255,255,255,0.03))",
+                border: "1px solid var(--border)",
+                color: "var(--text-secondary)",
+              }}
+            >
+              <div className="font-medium mb-1" style={{ color: "var(--text-primary)" }}>
+                Uso real (últimas 24h)
+              </div>
+              <div>
+                Sessões varridas:{" "}
+                <strong>{diagnose.toolUseScan.sessionsScanned}</strong>{" "}
+                · Chamadas a memory_*:{" "}
+                <strong
+                  style={{
+                    color:
+                      diagnose.toolUseScan.memoryToolCalls > 0
+                        ? "#34d399"
+                        : "#fca5a5",
+                  }}
+                >
+                  {diagnose.toolUseScan.memoryToolCalls}
+                </strong>
+              </div>
+              {diagnose.toolUseScan.lastSeenAt && (
+                <div>
+                  Última chamada: {diagnose.toolUseScan.lastSeenAt}
+                </div>
+              )}
+              {Object.keys(diagnose.toolUseScan.perTool).length > 0 && (
+                <div>
+                  Por tool: {JSON.stringify(diagnose.toolUseScan.perTool)}
+                </div>
+              )}
+            </div>
+          )}
+          {diagnose.memoryMd && (
+            <div
+              className="rounded-lg p-3 text-xs"
+              style={{
+                backgroundColor: "var(--card-elevated, rgba(255,255,255,0.03))",
+                border: "1px solid var(--border)",
+                color: "var(--text-secondary)",
+              }}
+            >
+              <div className="font-medium mb-1" style={{ color: "var(--text-primary)" }}>
+                MEMORY.md do agente principal
+              </div>
+              <div className="font-mono break-all">{diagnose.memoryMd.path}</div>
+              <div>
+                {diagnose.memoryMd.exists
+                  ? `${diagnose.memoryMd.sizeBytes} bytes · `
+                  : "ausente · "}
+                guidance de tools:{" "}
+                <strong
+                  style={{
+                    color: diagnose.memoryMd.hasGuidance ? "#34d399" : "#fca5a5",
+                  }}
+                >
+                  {diagnose.memoryMd.hasGuidance ? "presente" : "AUSENTE"}
+                </strong>
+              </div>
+            </div>
+          )}
           {diagnose.spawnProbe.attempted && diagnose.spawnProbe.stderrTail && (
             <details
               className="rounded-lg p-3 text-xs"

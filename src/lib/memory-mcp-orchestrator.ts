@@ -23,7 +23,10 @@ import {
 } from "@/lib/openclaw-mcp-config";
 import { restartGateway, type RestartResult } from "@/lib/gateway-control";
 import { waitForGateway, type WaitResult } from "@/lib/openclaw-gateway-wait";
-import { injectIntoWorkspace } from "@/lib/memory-injector";
+import {
+  injectIntoWorkspace,
+  type InjectionResult,
+} from "@/lib/memory-injector";
 
 export interface ActivateOptions {
   agentId?: string;
@@ -41,6 +44,7 @@ export interface ActivateResult {
   ok: boolean;
   status: InstallStatus;
   install: InstallResult;
+  inject: InjectionResult | { skipped: true; error?: string };
   restart: RestartResult | { skipped: true };
   wait: WaitResult | { skipped: true };
   agentSavedCount: number;
@@ -73,22 +77,28 @@ export async function activateMemoryMcp(
   // tool entirely, which leaves the SQLite store empty even though
   // the user feels remembered.
   const workspace = agentId === "main" ? "workspace" : `workspace-${agentId}`;
+  let inject: InjectionResult | { skipped: true; error?: string };
   try {
-    await injectIntoWorkspace(workspace, { maxMemories: 20 });
+    inject = await injectIntoWorkspace(workspace, { maxMemories: 20 });
   } catch (err) {
     // Injection failure shouldn't block activation — the auto-recall
     // is a nice-to-have, the MCP tools are the load-bearing part.
+    inject = { skipped: true, error: err instanceof Error ? err.message : String(err) };
     if (process.env.MEMORY_DEBUG === "1") {
       console.warn("[memory-mcp-orchestrator] inject failed:", err);
     }
   }
 
-  // If the config file was untouched (already up to date), the
-  // restart might still be needed in case the gateway booted before
-  // mcp.json was written. We restart anyway when written=true; when
-  // written=false we assume the gateway has already seen it.
+  // Restart if EITHER the mcp.json changed OR the MEMORY.md changed.
+  // Previously we only checked install.written — that left a hole:
+  // when the user clicked Reverificar after we'd shipped a new
+  // TOOL_GUIDANCE block, the config was already up to date but the
+  // freshly-rewritten MEMORY.md was never reread by the running
+  // gateway, so the agent kept ignoring the memory tools.
+  const injectionChanged = "changed" in inject && inject.changed;
+  const needsRestart = install.written || injectionChanged;
   let restart: RestartResult | { skipped: true };
-  if (opts.skipRestart || !install.written) {
+  if (opts.skipRestart || !needsRestart) {
     restart = { skipped: true };
   } else {
     restart = await restartGateway();
@@ -126,6 +136,11 @@ export async function activateMemoryMcp(
         ? "config atualizada"
         : "config criada"
       : "config já estava certa",
+    injectionChanged
+      ? "MEMORY.md atualizado"
+      : "skipped" in inject
+      ? "inject pulado"
+      : "MEMORY.md já estava certo",
     describeRestart(restart),
     describeWait(wait),
   ].join(" · ");
@@ -134,6 +149,7 @@ export async function activateMemoryMcp(
     ok: reloadedToolsLikelyVisible,
     status,
     install,
+    inject,
     restart,
     wait,
     agentSavedCount,
@@ -163,7 +179,9 @@ export function ensureMemoryMcpInstalledQuiet(opts: {
       // Lazy require so this file remains import-safe in edge bundles;
       // the actual fs hit only happens when this function is called
       // on the Node.js runtime.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const fs = require("fs") as typeof import("fs");
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { getOpenClawDir } = require("@/lib/openclaw-config") as typeof import("@/lib/openclaw-config");
       if (!fs.existsSync(getOpenClawDir())) {
         return { ok: true, changed: false, status: inspectStatus({ atlasdeckRoot: process.cwd(), agentId: opts.agentId ?? "main" }) };

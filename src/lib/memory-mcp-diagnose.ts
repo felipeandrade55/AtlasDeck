@@ -18,7 +18,13 @@ import {
   inspectStatus,
   type InstallStatus,
 } from "@/lib/openclaw-mcp-config";
-import { getOpenClawDir } from "@/lib/openclaw-config";
+import { getOpenClawDir, getOpenClawWorkspace } from "@/lib/openclaw-config";
+
+// Substring used by the memory-injector to mark its TOOL_GUIDANCE
+// block. If this string isn't present in the agent's MEMORY.md, the
+// LLM has no instruction to call the memory tools — the most common
+// reason the SQLite counter stays at 0.
+const GUIDANCE_MARKER = "Ferramentas de memória persistente — USE ATIVAMENTE";
 
 export type DiagnoseLevel = "ok" | "warn" | "fail";
 
@@ -37,6 +43,18 @@ export interface DiagnoseReport {
   checks: DiagnoseCheck[];
   spawnProbe: SpawnProbeResult;
   summary: { ok: number; warn: number; fail: number };
+  memoryMd: {
+    path: string;
+    exists: boolean;
+    hasGuidance: boolean;
+    sizeBytes: number;
+  };
+  toolUseScan: {
+    sessionsScanned: number;
+    memoryToolCalls: number;
+    perTool: Record<string, number>;
+    lastSeenAt: string | null;
+  };
 }
 
 export interface SpawnProbeResult {
@@ -48,6 +66,99 @@ export interface SpawnProbeResult {
   stderrTail: string;
   stdoutTail: string;
   startError: string | null;
+}
+
+/**
+ * Walk recent session JSONL files for the "main" agent and count how
+ * many times the LLM invoked any memory_* MCP tool. The single most
+ * useful signal for "is the wiring actually working?": even one hit
+ * proves the path is intact; zero hits across N recent sessions is
+ * the canonical symptom of a guidance / restart problem.
+ */
+async function scanRecentMemoryToolCalls(): Promise<{
+  sessionsScanned: number;
+  memoryToolCalls: number;
+  perTool: Record<string, number>;
+  lastSeenAt: string | null;
+}> {
+  const sessionsDir = path.join(getOpenClawDir(), "agents", "main", "sessions");
+  const cutoffMs = Date.now() - 24 * 60 * 60 * 1000;
+  const result = {
+    sessionsScanned: 0,
+    memoryToolCalls: 0,
+    perTool: {} as Record<string, number>,
+    lastSeenAt: null as string | null,
+  };
+
+  let entries: string[];
+  try {
+    entries = await fsAsync.readdir(sessionsDir);
+  } catch {
+    return result;
+  }
+
+  for (const name of entries) {
+    if (!name.endsWith(".jsonl")) continue;
+    const full = path.join(sessionsDir, name);
+    let stat: import("fs").Stats;
+    try {
+      stat = await fsAsync.stat(full);
+    } catch {
+      continue;
+    }
+    if (stat.mtimeMs < cutoffMs) continue;
+    result.sessionsScanned++;
+
+    let raw: string;
+    try {
+      raw = await fsAsync.readFile(full, "utf-8");
+    } catch {
+      continue;
+    }
+
+    for (const line of raw.split("\n")) {
+      if (!line.trim()) continue;
+      if (!line.includes("memory_")) continue;
+      // Fast string filter passed — try to parse for the tool name.
+      let obj: unknown;
+      try {
+        obj = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      // Recursively walk for a tool_use block whose name starts with
+      // memory_. JSONL shapes vary across OpenClaw versions; this is
+      // resilient to that.
+      const walk = (v: unknown): void => {
+        if (!v || typeof v !== "object") return;
+        if (Array.isArray(v)) {
+          v.forEach(walk);
+          return;
+        }
+        const obj = v as Record<string, unknown>;
+        const type = obj.type;
+        const name = obj.name;
+        if (
+          type === "tool_use" &&
+          typeof name === "string" &&
+          name.startsWith("memory_")
+        ) {
+          result.memoryToolCalls++;
+          result.perTool[name] = (result.perTool[name] ?? 0) + 1;
+          const ts =
+            (typeof obj.timestamp === "string" && obj.timestamp) ||
+            new Date(stat.mtimeMs).toISOString();
+          if (!result.lastSeenAt || ts > result.lastSeenAt) {
+            result.lastSeenAt = ts;
+          }
+        }
+        for (const key of Object.keys(obj)) walk(obj[key]);
+      };
+      walk(obj);
+    }
+  }
+
+  return result;
 }
 
 async function exists(p: string): Promise<boolean> {
@@ -178,16 +289,27 @@ export async function diagnoseMemoryMcp(opts: {
       detail: `Esperado em ${openclawDir}. Memória não terá onde se registrar.`,
       fix: "Instale o OpenClaw ou ajuste OPENCLAW_DIR.",
     });
-    return finalize(checks, status, {
-      attempted: false,
-      reachedReady: false,
-      exitCode: null,
-      exitSignal: null,
-      durationMs: 0,
-      stderrTail: "",
-      stdoutTail: "",
-      startError: "openclaw dir missing",
-    });
+    return finalize(
+      checks,
+      status,
+      {
+        attempted: false,
+        reachedReady: false,
+        exitCode: null,
+        exitSignal: null,
+        durationMs: 0,
+        stderrTail: "",
+        stdoutTail: "",
+        startError: "openclaw dir missing",
+      },
+      { path: "", exists: false, hasGuidance: false, sizeBytes: 0 },
+      {
+        sessionsScanned: 0,
+        memoryToolCalls: 0,
+        perTool: {},
+        lastSeenAt: null,
+      },
+    );
   }
 
   // ─── 2. mcp.json present ────────────────────────────────────────
@@ -298,7 +420,75 @@ export async function diagnoseMemoryMcp(opts: {
     });
   }
 
-  // ─── 7. Spawn probe — boots the MCP child for real ─────────────
+  // ─── 7. MEMORY.md tool guidance present ─────────────────────────
+  const memoryMdPath = path.join(getOpenClawWorkspace(), "MEMORY.md");
+  let memoryMdInfo = {
+    path: memoryMdPath,
+    exists: false,
+    hasGuidance: false,
+    sizeBytes: 0,
+  };
+  try {
+    const content = await fsAsync.readFile(memoryMdPath, "utf-8");
+    memoryMdInfo = {
+      path: memoryMdPath,
+      exists: true,
+      hasGuidance: content.includes(GUIDANCE_MARKER),
+      sizeBytes: Buffer.byteLength(content, "utf-8"),
+    };
+    if (memoryMdInfo.hasGuidance) {
+      checks.push({
+        id: "memory-md-guidance",
+        level: "ok",
+        title: "Guidance de tools presente no MEMORY.md",
+        detail: `${memoryMdPath} (${memoryMdInfo.sizeBytes} bytes) — o agente recebe as instruções pra chamar memory_add / memory_search.`,
+      });
+    } else {
+      checks.push({
+        id: "memory-md-guidance",
+        level: "fail",
+        title: "MEMORY.md existe mas SEM guidance de tools",
+        detail: `${memoryMdPath} foi lido mas não contém o marcador "${GUIDANCE_MARKER}". O agente não sabe que deve usar as ferramentas — vai responder do contexto da sessão e ignorar o MCP.`,
+        fix: 'Clique em "Reverificar" — vai reinjetar o MEMORY.md e reiniciar o gateway.',
+      });
+    }
+  } catch {
+    checks.push({
+      id: "memory-md-guidance",
+      level: "fail",
+      title: "MEMORY.md do agente principal não encontrado",
+      detail: `Esperado em ${memoryMdPath} — sem ele, o agente nunca recebe a guidance e ignora as tools de memória.`,
+      fix: 'Clique em "Reverificar" para criar o MEMORY.md com a guidance.',
+    });
+  }
+
+  // ─── 8. Recent memory_* tool calls in sessions ──────────────────
+  const toolUseScan = await scanRecentMemoryToolCalls();
+  if (toolUseScan.memoryToolCalls > 0) {
+    checks.push({
+      id: "tool-use-scan",
+      level: "ok",
+      title: `Jarvis chamou tools de memória ${toolUseScan.memoryToolCalls}x recentemente`,
+      detail: `${toolUseScan.sessionsScanned} sessões varridas (24h). Última chamada: ${toolUseScan.lastSeenAt ?? "?"}.\nPor tool: ${JSON.stringify(toolUseScan.perTool)}`,
+    });
+  } else if (toolUseScan.sessionsScanned === 0) {
+    checks.push({
+      id: "tool-use-scan",
+      level: "warn",
+      title: "Nenhuma sessão recente para analisar",
+      detail: "Sem JSONLs nas últimas 24h em agents/main/sessions/ — converse com o Jarvis pra gerar dados.",
+    });
+  } else {
+    checks.push({
+      id: "tool-use-scan",
+      level: "fail",
+      title: "Jarvis NÃO está chamando as tools de memória",
+      detail: `${toolUseScan.sessionsScanned} sessões verificadas, zero chamadas a memory_*. Causas comuns:\n  • MEMORY.md sem guidance (veja check acima)\n  • gateway não foi reiniciado após a injection\n  • OpenClaw com tools cachadas de sessão anterior — abra uma conversa nova no Telegram`,
+      fix: 'Clique em "Reverificar" + comece um diálogo NOVO no Telegram pedindo "Lembre que X" explicitamente.',
+    });
+  }
+
+  // ─── 9. Spawn probe — boots the MCP child for real ─────────────
   let probe: SpawnProbeResult;
   if (status.installed && entryRoot && (await exists(entryRoot))) {
     probe = await spawnProbe(status.expected);
@@ -347,13 +537,15 @@ export async function diagnoseMemoryMcp(opts: {
     });
   }
 
-  return finalize(checks, status, probe);
+  return finalize(checks, status, probe, memoryMdInfo, toolUseScan);
 }
 
 function finalize(
   checks: DiagnoseCheck[],
   status: InstallStatus,
   spawnResult: SpawnProbeResult,
+  memoryMd: DiagnoseReport["memoryMd"],
+  toolUseScan: DiagnoseReport["toolUseScan"],
 ): DiagnoseReport {
   const summary = {
     ok: checks.filter((c) => c.level === "ok").length,
@@ -367,5 +559,7 @@ function finalize(
     checks,
     spawnProbe: spawnResult,
     summary,
+    memoryMd,
+    toolUseScan,
   };
 }
