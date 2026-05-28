@@ -61,6 +61,16 @@ export interface DiagnoseReport {
     perTool: Record<string, number>;
     allTools: Record<string, number>;
     lastSeenAt: string | null;
+    sessionsWithToolListing: number;
+    sessions: Array<{
+      sessionId: string;
+      mtime: string;
+      sizeBytes: number;
+      userMessageCount: number;
+      lastUserText: string | null;
+      hasAnyToolUse: boolean;
+      mentionsMemoryTools: boolean;
+    }>;
   };
 }
 
@@ -89,6 +99,16 @@ async function scanRecentMemoryToolCalls(): Promise<{
   perTool: Record<string, number>;
   allTools: Record<string, number>;
   lastSeenAt: string | null;
+  sessionsWithToolListing: number;
+  sessions: Array<{
+    sessionId: string;
+    mtime: string;
+    sizeBytes: number;
+    userMessageCount: number;
+    lastUserText: string | null;
+    hasAnyToolUse: boolean;
+    mentionsMemoryTools: boolean;
+  }>;
 }> {
   const sessionsDir = path.join(getOpenClawDir(), "agents", "main", "sessions");
   const cutoffMs = Date.now() - 24 * 60 * 60 * 1000;
@@ -99,6 +119,16 @@ async function scanRecentMemoryToolCalls(): Promise<{
     perTool: {} as Record<string, number>,
     allTools: {} as Record<string, number>,
     lastSeenAt: null as string | null,
+    sessionsWithToolListing: 0,
+    sessions: [] as Array<{
+      sessionId: string;
+      mtime: string;
+      sizeBytes: number;
+      userMessageCount: number;
+      lastUserText: string | null;
+      hasAnyToolUse: boolean;
+      mentionsMemoryTools: boolean;
+    }>,
   };
 
   let entries: string[];
@@ -127,19 +157,28 @@ async function scanRecentMemoryToolCalls(): Promise<{
       continue;
     }
 
+    // Per-session summary — knowing whether the session had real user
+    // messages and whether memory_* tools were even surfaced to the
+    // LLM is way more useful than the bulk count alone. Distinguishes
+    // "user never asked anything that needs tools" from "tools never
+    // reached the LLM".
+    let userMessageCount = 0;
+    let lastUserText: string | null = null;
+    let hasAnyToolUse = false;
+    const mentionsMemoryTools = raw.includes("memory_add") || raw.includes("memory_search");
+
     for (const line of raw.split("\n")) {
       if (!line.trim()) continue;
-      if (!line.includes("tool_use")) continue;
+      const lineHasToolUse = line.includes("tool_use");
+      const lineHasUserMsg = line.includes('"role":"user"') || line.includes('"role": "user"');
+      if (!lineHasToolUse && !lineHasUserMsg) continue;
       let obj: unknown;
       try {
         obj = JSON.parse(line);
       } catch {
         continue;
       }
-      // Walk recursively for any tool_use block. We track ALL tools so
-      // the diagnose can distinguish "LLM doesn't see memory_* tools"
-      // (no MCP-style tool calls at all) from "LLM sees but ignores
-      // them" (calls other tools but not memory_*).
+      // Walk recursively for tool_use blocks AND user messages.
       const walk = (v: unknown): void => {
         if (!v || typeof v !== "object") return;
         if (Array.isArray(v)) {
@@ -149,7 +188,9 @@ async function scanRecentMemoryToolCalls(): Promise<{
         const obj = v as Record<string, unknown>;
         const type = obj.type;
         const name = obj.name;
+        const role = obj.role;
         if (type === "tool_use" && typeof name === "string") {
+          hasAnyToolUse = true;
           result.totalToolCalls++;
           result.allTools[name] = (result.allTools[name] ?? 0) + 1;
           if (name.startsWith("memory_")) {
@@ -163,11 +204,49 @@ async function scanRecentMemoryToolCalls(): Promise<{
             }
           }
         }
+        if (role === "user") {
+          userMessageCount++;
+          const content = obj.content;
+          let text: string | null = null;
+          if (typeof content === "string") text = content;
+          else if (Array.isArray(content)) {
+            for (const part of content) {
+              if (typeof part === "string") {
+                text = part;
+                break;
+              }
+              if (
+                part &&
+                typeof part === "object" &&
+                typeof (part as Record<string, unknown>).text === "string"
+              ) {
+                text = (part as { text: string }).text;
+                break;
+              }
+            }
+          }
+          if (text) lastUserText = text.trim().slice(0, 120);
+        }
         for (const key of Object.keys(obj)) walk(obj[key]);
       };
       walk(obj);
     }
+
+    if (mentionsMemoryTools) result.sessionsWithToolListing++;
+    result.sessions.push({
+      sessionId: name.replace(/\.jsonl$/, "").slice(0, 8),
+      mtime: new Date(stat.mtimeMs).toISOString(),
+      sizeBytes: stat.size,
+      userMessageCount,
+      lastUserText,
+      hasAnyToolUse,
+      mentionsMemoryTools,
+    });
   }
+
+  // Show newest sessions first — that's almost always what you want
+  // when debugging "what did Jarvis do in the last conversation?".
+  result.sessions.sort((a, b) => b.mtime.localeCompare(a.mtime));
 
   return result;
 }
@@ -327,6 +406,8 @@ export async function diagnoseMemoryMcp(opts: {
         perTool: {},
         allTools: {},
         lastSeenAt: null,
+        sessionsWithToolListing: 0,
+        sessions: [],
       },
     );
   }
@@ -507,12 +588,32 @@ export async function diagnoseMemoryMcp(opts: {
       detail: "Sem JSONLs nas últimas 24h em agents/main/sessions/ — converse com o Jarvis pra gerar dados.",
     });
   } else if (toolUseScan.totalToolCalls === 0) {
+    const realConversations = toolUseScan.sessions.filter(
+      (s) => s.userMessageCount > 0,
+    ).length;
+    const withListing = toolUseScan.sessionsWithToolListing;
+    let cause: string;
+    let fix: string;
+    if (realConversations === 0) {
+      cause =
+        "Nenhuma das sessões tinha mensagem de usuário real — todas eram heartbeat/cron/sistema. Sem interação humana, não há por que chamar tool. Isso NÃO prova problema na memória, só falta de dados.";
+      fix =
+        "Mande UMA mensagem real no Telegram (qualquer coisa que peça resposta) e rode Diagnosticar de novo.";
+    } else if (withListing === 0) {
+      cause = `${realConversations} sessão(ões) com user message real, mas em NENHUMA o nome "memory_add" / "memory_search" apareceu — sugere que o gateway NÃO está expondo as tools do MCP server pro LLM. O MCP server está vivo (spawn-probe ok), mas o gateway ignora ele.`;
+      fix =
+        "Reinicie o gateway pelo doctor do Telegram. Se persistir, é bug de carregamento de MCP no OpenClaw — talvez o mcp.json precise de outro formato, ou o agente \"main\" tem uma allowlist que exclui MCPs.";
+    } else {
+      cause = `${realConversations} sessão(ões) real(is), ${withListing} com tools listadas pro LLM, mas o LLM decidiu não chamar nenhuma. Geralmente isso é: contexto curto não exige tool, OU modo Rápido/fastMode desliga decisão de tool, OU o modelo (gpt-5.5) tem viés de responder direto.`;
+      fix =
+        "Tente uma pergunta que CLARAMENTE exija busca: 'Busque na minha memória qual minha cidade'. Se nem isso chama, abra issue contra o modelo ou ajuste o agent.system prompt do OpenClaw.";
+    }
     checks.push({
       id: "tool-use-scan",
       level: "fail",
       title: "Jarvis NÃO está chamando NENHUMA tool",
-      detail: `${toolUseScan.sessionsScanned} sessões varridas. Zero tool calls de qualquer tipo. Isso é mais grave que "ignora memory_*" — sugere que o agente nunca está em modo que chama tools, OU as conversas avaliadas não chegaram a um ponto de decisão. Possivelmente:\n  • Toda interação foi via "Rápido mode" sem tools\n  • Toda sessão foi acknowledge curto sem necessidade de tools\n  • Algum filtro está removendo tools antes do LLM ver`,
-      fix: "Mande no Telegram uma pergunta que EXIJA tool (ex: 'busque na minha memória X', 'crie um lembrete pra amanhã'). Se ainda assim zero, é problema de OpenClaw config.",
+      detail: cause,
+      fix,
     });
   } else {
     const top = Object.entries(toolUseScan.allTools)

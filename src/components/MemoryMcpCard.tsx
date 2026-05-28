@@ -87,6 +87,16 @@ interface DiagnoseReport {
     perTool: Record<string, number>;
     allTools: Record<string, number>;
     lastSeenAt: string | null;
+    sessionsWithToolListing: number;
+    sessions: Array<{
+      sessionId: string;
+      mtime: string;
+      sizeBytes: number;
+      userMessageCount: number;
+      lastUserText: string | null;
+      hasAnyToolUse: boolean;
+      mentionsMemoryTools: boolean;
+    }>;
   };
 }
 
@@ -553,6 +563,72 @@ export function MemoryMcpCard() {
               {diagnose.toolUseScan.lastSeenAt && (
                 <div>
                   Última chamada a memory_*: {diagnose.toolUseScan.lastSeenAt}
+                </div>
+              )}
+              {diagnose.toolUseScan.sessions.length > 0 && (
+                <div className="mt-2">
+                  <span style={{ color: "var(--text-muted)" }}>
+                    Sessões (mais novas primeiro · tools listadas:{" "}
+                    {diagnose.toolUseScan.sessionsWithToolListing}/
+                    {diagnose.toolUseScan.sessions.length}):
+                  </span>
+                  <ul className="mt-1 space-y-1">
+                    {diagnose.toolUseScan.sessions.slice(0, 8).map((s) => (
+                      <li
+                        key={s.sessionId + s.mtime}
+                        className="rounded p-1.5"
+                        style={{
+                          backgroundColor: s.userMessageCount > 0
+                            ? "rgba(255,255,255,0.03)"
+                            : "transparent",
+                        }}
+                      >
+                        <div className="flex flex-wrap items-center gap-x-2">
+                          <span className="font-mono" style={{ color: "var(--text-primary)" }}>
+                            {s.sessionId}
+                          </span>
+                          <span style={{ color: "var(--text-muted)" }}>
+                            user msgs:{" "}
+                            <strong
+                              style={{
+                                color: s.userMessageCount > 0 ? "#34d399" : "#94a3b8",
+                              }}
+                            >
+                              {s.userMessageCount}
+                            </strong>
+                          </span>
+                          <span style={{ color: "var(--text-muted)" }}>
+                            tools listadas:{" "}
+                            <strong
+                              style={{
+                                color: s.mentionsMemoryTools ? "#34d399" : "#fca5a5",
+                              }}
+                            >
+                              {s.mentionsMemoryTools ? "sim" : "não"}
+                            </strong>
+                          </span>
+                          <span style={{ color: "var(--text-muted)" }}>
+                            chamou tool:{" "}
+                            <strong
+                              style={{
+                                color: s.hasAnyToolUse ? "#34d399" : "#94a3b8",
+                              }}
+                            >
+                              {s.hasAnyToolUse ? "sim" : "não"}
+                            </strong>
+                          </span>
+                        </div>
+                        {s.lastUserText && (
+                          <div
+                            className="text-xs italic mt-0.5"
+                            style={{ color: "var(--text-secondary)" }}
+                          >
+                            “{s.lastUserText}”
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               )}
               {Object.keys(diagnose.toolUseScan.allTools).length > 0 && (
