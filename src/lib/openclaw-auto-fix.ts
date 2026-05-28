@@ -39,6 +39,7 @@ import path from "path";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { getOpenClawDir, getOpenClawWorkspace } from "@/lib/openclaw-config";
+import { restartGateway as robustRestart } from "./gateway-control";
 
 const execFileAsync = promisify(execFile);
 
@@ -503,92 +504,33 @@ export function ensureHeartbeatRule(): HeartbeatFixReport {
 
 export interface RestartReport {
   ok: boolean;
-  method: "systemctl-user" | "systemctl-system" | "pm2" | "none";
+  method: "systemctl-user" | "systemctl-system" | "pm2" | "process" | "none";
   detail: string;
   error?: string;
 }
 
-async function tryExec(
-  bin: string,
-  args: string[],
-  timeoutMs = 8000,
-): Promise<{ ok: boolean; stdout: string; stderr: string }> {
-  try {
-    const { stdout, stderr } = await execFileAsync(bin, args, {
-      timeout: timeoutMs,
-      windowsHide: true,
-      encoding: "utf8",
-      maxBuffer: 1024 * 1024,
-    });
-    return { ok: true, stdout, stderr };
-  } catch (err) {
-    const e = err as NodeJS.ErrnoException & { stdout?: string; stderr?: string };
-    return {
-      ok: false,
-      stdout: e.stdout ?? "",
-      stderr: e.stderr ?? e.message ?? "",
-    };
-  }
-}
-
 /**
  * Tries every common way of restarting the gateway, returning at the
- * first one that succeeds. Soft-fails — caller can decide whether to
- * surface the error or just remind the user to do it manually.
+ * first one that succeeds. Delegates to the robust restart implementation
+ * which supports systemd, PM2, and bare process respawning.
  */
 export async function restartGateway(): Promise<RestartReport> {
-  // 1) systemd --user — typical install
-  const userCheck = await tryExec("systemctl", ["--user", "is-active", "openclaw-gateway"]);
-  if (userCheck.ok || /inactive|failed/.test(userCheck.stdout)) {
-    const result = await tryExec("systemctl", ["--user", "restart", "openclaw-gateway"]);
-    if (result.ok) {
-      return {
-        ok: true,
-        method: "systemctl-user",
-        detail: "Reiniciado via systemctl --user restart openclaw-gateway",
-      };
-    }
-    if (!/not-found|No such file/i.test(`${result.stdout}\n${result.stderr}`)) {
-      // unit exists but restart failed — return error
-      return {
-        ok: false,
-        method: "systemctl-user",
-        detail: "systemctl --user restart falhou",
-        error: result.stderr.slice(0, 400),
-      };
-    }
+  const result = await robustRestart();
+  
+  let method: RestartReport["method"] = "none";
+  if (result.runtime === "systemd") {
+    method = result.output.includes("--user") ? "systemctl-user" : "systemctl-system";
+  } else if (result.runtime === "pm2") {
+    method = "pm2";
+  } else if (result.runtime === "process") {
+    method = "process";
   }
-
-  // 2) systemd system-wide — needs sudo, typically not present in dev
-  const sysCheck = await tryExec("systemctl", ["is-active", "openclaw-gateway"]);
-  if (sysCheck.ok || /inactive|failed/.test(sysCheck.stdout)) {
-    const result = await tryExec("sudo", ["-n", "systemctl", "restart", "openclaw-gateway"]);
-    if (result.ok) {
-      return {
-        ok: true,
-        method: "systemctl-system",
-        detail: "Reiniciado via sudo systemctl restart openclaw-gateway",
-      };
-    }
-  }
-
-  // 3) PM2 — if user runs OpenClaw under PM2 instead of systemd
-  const pm2Result = await tryExec("pm2", ["restart", "openclaw-gateway"]);
-  if (pm2Result.ok) {
-    return {
-      ok: true,
-      method: "pm2",
-      detail: "Reiniciado via pm2 restart openclaw-gateway",
-    };
-  }
-
+  
   return {
-    ok: false,
-    method: "none",
-    detail:
-      "Não consegui reiniciar automaticamente — nenhum método disponível (systemctl --user, sudo systemctl, pm2).",
-    error:
-      "Reinicie manualmente: systemctl --user restart openclaw-gateway (ou como você gerencia o gateway).",
+    ok: result.success,
+    method,
+    detail: result.output,
+    error: result.success ? undefined : "Falha ao reiniciar o gateway de forma robusta.",
   };
 }
 
