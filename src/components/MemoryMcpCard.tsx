@@ -32,6 +32,7 @@ interface StatusResponse {
   otherServers: string[];
   expected: { command: string; args: string[]; env?: Record<string, string> };
   current: { command: string; args: string[]; env?: Record<string, string> } | null;
+  legacyMcpJsonExists?: boolean;
 }
 
 interface ActivateResponse {

@@ -1,25 +1,44 @@
 /**
  * Manages the atlasdeck-memory MCP server registration in OpenClaw.
  *
- * OpenClaw reads MCP server definitions from `<openclawDir>/mcp.json`
- * (separate from the strict-schema `openclaw.json`, so adding entries
- * here cannot trigger `openclaw doctor` rollbacks).
+ * Authoritative source — `openclaw` npm package docs/cli/mcp.md +
+ * docs/gateway/configuration-reference.md:
  *
- * File shape (claude-desktop / MCP standard convention):
+ *   OpenClaw reads MCP server definitions from the `mcp.servers`
+ *   object INSIDE `<openclawDir>/openclaw.json`. The previously-used
+ *   `~/.openclaw/mcp.json` file with the `mcpServers` key is NOT read
+ *   at runtime — it was a misread of the claude-desktop convention.
+ *   Writing there silently does nothing.
+ *
+ * File shape (inside openclaw.json):
  *   {
- *     "mcpServers": {
- *       "<name>": { "command": "...", "args": [...], "env": { ... } }
+ *     ...other openclaw config...,
+ *     "mcp": {
+ *       "servers": {
+ *         "atlasdeck-memory": {
+ *           "command": "npx",
+ *           "args": ["tsx", "/path/.../atlasdeck-memory-mcp.mts"],
+ *           "env": { "ATLASDECK_ROOT": "/...", "OPENCLAW_AGENT_ID": "main" }
+ *         }
+ *       }
  *     }
  *   }
  *
+ * Tools registered by this MCP server are exposed to the LLM with the
+ * provider-safe prefix `atlasdeck-memory__` (double underscore), so
+ * `memory_add` reaches the agent as `atlasdeck-memory__memory_add`.
+ *
  * We never overwrite servers we don't own — only the "atlasdeck-memory"
- * key is touched. Everything else in the file is preserved.
+ * key under mcp.servers is touched. Everything else in openclaw.json
+ * is preserved verbatim (gateway settings, agents.list, channels, etc).
  */
 import fs from "fs";
 import path from "path";
 import { getOpenClawDir } from "@/lib/openclaw-config";
 
 export const SERVER_NAME = "atlasdeck-memory";
+export const CONFIG_FILE_NAME = "openclaw.json";
+export const LEGACY_MCP_JSON_NAME = "mcp.json";
 
 export interface McpServerEntry {
   command: string;
@@ -27,8 +46,9 @@ export interface McpServerEntry {
   env?: Record<string, string>;
 }
 
-export interface McpConfigFile {
-  mcpServers?: Record<string, McpServerEntry>;
+export interface OpenClawConfigShape {
+  mcp?: { servers?: Record<string, McpServerEntry> };
+  // Anything else in openclaw.json is preserved untouched.
   [k: string]: unknown;
 }
 
@@ -38,14 +58,18 @@ export interface ExpectedConfig {
   entry: McpServerEntry;
 }
 
-export function getMcpConfigPath(override?: string): string {
+export function getOpenClawConfigPath(override?: string): string {
   if (override) return override;
-  return path.join(getOpenClawDir(), "mcp.json");
+  return path.join(getOpenClawDir(), CONFIG_FILE_NAME);
+}
+
+export function getLegacyMcpJsonPath(): string {
+  return path.join(getOpenClawDir(), LEGACY_MCP_JSON_NAME);
 }
 
 /**
  * Build the entry we want OpenClaw to spawn. atlasdeckRoot must be
- * absolute — it's read at runtime by atlasdeck-memory-mcp.ts to
+ * absolute — it's read at runtime by atlasdeck-memory-mcp.mts to
  * locate data/memories.db and the embedding model cache.
  */
 export function buildExpectedEntry(opts: {
@@ -59,9 +83,6 @@ export function buildExpectedEntry(opts: {
     "atlasdeck-memory-mcp.mts",
   );
   return {
-    // npx is universally available and finds tsx whether it lives in
-    // node_modules/.bin or globally. Avoids hard-coding a path that
-    // would break across dev (mac) and prod (vps) checkouts.
     command: opts.tsxPath ?? "npx",
     args: opts.tsxPath ? [script] : ["tsx", script],
     env: {
@@ -76,29 +97,28 @@ export function buildExpectedConfig(opts: {
   agentId?: string;
 }): ExpectedConfig {
   return {
-    path: getMcpConfigPath(),
+    path: getOpenClawConfigPath(),
     serverName: SERVER_NAME,
     entry: buildExpectedEntry(opts),
   };
 }
 
-export function readMcpConfig(pathOverride?: string): {
+export function readOpenClawJson(pathOverride?: string): {
   exists: boolean;
-  config: McpConfigFile;
+  config: OpenClawConfigShape;
   raw: string | null;
 } {
-  const filePath = getMcpConfigPath(pathOverride);
+  const filePath = getOpenClawConfigPath(pathOverride);
   if (!fs.existsSync(filePath)) {
     return { exists: false, config: {}, raw: null };
   }
   const raw = fs.readFileSync(filePath, "utf8");
   try {
-    const parsed = JSON.parse(raw) as McpConfigFile;
+    const parsed = JSON.parse(raw) as OpenClawConfigShape;
     return { exists: true, config: parsed, raw };
   } catch {
-    // File exists but isn't parseable — treat as empty so we don't
-    // destroy whatever's there. The caller can decide whether to
-    // overwrite.
+    // File exists but isn't parseable — DON'T overwrite. Caller can
+    // decide; install() will refuse to touch it in this state.
     return { exists: true, config: {}, raw };
   }
 }
@@ -130,6 +150,10 @@ export interface InstallStatus {
   expected: McpServerEntry;
   current: McpServerEntry | null;
   otherServers: string[];
+  /** Legacy ~/.openclaw/mcp.json that we used to write but OpenClaw
+   *  never read. If present, it's stale and the cleanup hook will
+   *  delete it on the next install — we never delete blindly here. */
+  legacyMcpJsonExists: boolean;
 }
 
 export function inspectStatus(opts: {
@@ -137,14 +161,13 @@ export function inspectStatus(opts: {
   agentId?: string;
   configPathOverride?: string;
 }): InstallStatus {
-  const { config, exists } = readMcpConfig(opts.configPathOverride);
+  const { config, exists } = readOpenClawJson(opts.configPathOverride);
   const expected = buildExpectedEntry(opts);
-  const current = config.mcpServers?.[SERVER_NAME] ?? null;
-  const otherServers = Object.keys(config.mcpServers ?? {}).filter(
-    (n) => n !== SERVER_NAME,
-  );
+  const servers = config.mcp?.servers ?? {};
+  const current = servers[SERVER_NAME] ?? null;
+  const otherServers = Object.keys(servers).filter((n) => n !== SERVER_NAME);
   return {
-    configPath: getMcpConfigPath(opts.configPathOverride),
+    configPath: getOpenClawConfigPath(opts.configPathOverride),
     configExists: exists,
     serverName: SERVER_NAME,
     installed: !!current,
@@ -152,6 +175,7 @@ export function inspectStatus(opts: {
     expected,
     current,
     otherServers,
+    legacyMcpJsonExists: fs.existsSync(getLegacyMcpJsonPath()),
   };
 }
 
@@ -162,26 +186,40 @@ export interface InstallResult {
   before: McpServerEntry | null;
   after: McpServerEntry;
   preservedServers: string[];
+  legacyMcpJsonRemoved: boolean;
 }
 
 /**
- * Idempotent install: writes / refreshes only the atlasdeck-memory
- * entry, preserves every other server, atomically replaces the file.
- * Creates a one-shot `mcp.json.bak` if the file already existed and
- * the content actually changed.
+ * Idempotent install: merges `mcp.servers.atlasdeck-memory` into
+ * `openclaw.json`, preserves every other top-level key and every
+ * other entry under `mcp.servers`, and atomically replaces the file.
+ * Creates a `.bak` next to the original if content actually changed.
+ *
+ * Also cleans up `~/.openclaw/mcp.json` — the previous (wrong) target,
+ * which OpenClaw never read. Keeping that file around just confuses
+ * future debugging.
  */
 export function installMcpServer(opts: {
   atlasdeckRoot: string;
   agentId?: string;
   configPathOverride?: string;
+  /** Default true. Set false to keep the legacy mcp.json untouched. */
+  cleanupLegacyMcpJson?: boolean;
 }): InstallResult {
-  const filePath = getMcpConfigPath(opts.configPathOverride);
-  const { config, exists } = readMcpConfig(opts.configPathOverride);
+  const filePath = getOpenClawConfigPath(opts.configPathOverride);
+  const { config, exists } = readOpenClawJson(opts.configPathOverride);
   const expected = buildExpectedEntry(opts);
-  const before = config.mcpServers?.[SERVER_NAME] ?? null;
-  const preserved = Object.keys(config.mcpServers ?? {}).filter(
+  const currentServers = config.mcp?.servers ?? {};
+  const before = currentServers[SERVER_NAME] ?? null;
+  const preserved = Object.keys(currentServers).filter(
     (n) => n !== SERVER_NAME,
   );
+
+  const cleanupLegacy = opts.cleanupLegacyMcpJson !== false;
+  let legacyRemoved = false;
+  if (cleanupLegacy && !opts.configPathOverride) {
+    legacyRemoved = tryRemoveLegacyMcpJson();
+  }
 
   if (before && entriesEqual(before, expected)) {
     return {
@@ -191,14 +229,18 @@ export function installMcpServer(opts: {
       before,
       after: expected,
       preservedServers: preserved,
+      legacyMcpJsonRemoved: legacyRemoved,
     };
   }
 
-  const next: McpConfigFile = {
+  const next: OpenClawConfigShape = {
     ...config,
-    mcpServers: {
-      ...(config.mcpServers ?? {}),
-      [SERVER_NAME]: expected,
+    mcp: {
+      ...(config.mcp ?? {}),
+      servers: {
+        ...currentServers,
+        [SERVER_NAME]: expected,
+      },
     },
   };
 
@@ -228,6 +270,7 @@ export function installMcpServer(opts: {
     before,
     after: expected,
     preservedServers: preserved,
+    legacyMcpJsonRemoved: legacyRemoved,
   };
 }
 
@@ -236,18 +279,21 @@ export function uninstallMcpServer(opts: { configPathOverride?: string } = {}): 
   removed: boolean;
   preservedServers: string[];
 } {
-  const filePath = getMcpConfigPath(opts.configPathOverride);
-  const { config, exists } = readMcpConfig(opts.configPathOverride);
-  if (!exists || !config.mcpServers?.[SERVER_NAME]) {
+  const filePath = getOpenClawConfigPath(opts.configPathOverride);
+  const { config, exists } = readOpenClawJson(opts.configPathOverride);
+  if (!exists || !config.mcp?.servers?.[SERVER_NAME]) {
     return {
       configPath: filePath,
       removed: false,
-      preservedServers: Object.keys(config.mcpServers ?? {}),
+      preservedServers: Object.keys(config.mcp?.servers ?? {}),
     };
   }
-  const { [SERVER_NAME]: _removed, ...rest } = config.mcpServers;
+  const { [SERVER_NAME]: _removed, ...rest } = config.mcp.servers;
   void _removed;
-  const next: McpConfigFile = { ...config, mcpServers: rest };
+  const next: OpenClawConfigShape = {
+    ...config,
+    mcp: { ...config.mcp, servers: rest },
+  };
   const tmpPath = `${filePath}.tmp-${process.pid}`;
   fs.writeFileSync(tmpPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
   fs.renameSync(tmpPath, filePath);
@@ -257,3 +303,29 @@ export function uninstallMcpServer(opts: { configPathOverride?: string } = {}): 
     preservedServers: Object.keys(rest),
   };
 }
+
+/**
+ * Best-effort delete of the legacy ~/.openclaw/mcp.json that earlier
+ * versions of this code wrote. OpenClaw never read it, but its
+ * presence makes future debugging confusing. We rename to `.bak`
+ * instead of deleting outright, so any manual additions a user might
+ * have made there aren't lost — they just stop being interpreted as
+ * live config (because nothing reads them anyway).
+ */
+function tryRemoveLegacyMcpJson(): boolean {
+  const legacy = getLegacyMcpJsonPath();
+  if (!fs.existsSync(legacy)) return false;
+  try {
+    fs.renameSync(legacy, `${legacy}.bak`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ─── Back-compat shims ─────────────────────────────────────────────
+// Renamed types/functions still imported by older callers; remove
+// once all import sites land on the new names.
+export type McpConfigFile = OpenClawConfigShape;
+export const getMcpConfigPath = getOpenClawConfigPath;
+export const readMcpConfig = readOpenClawJson;

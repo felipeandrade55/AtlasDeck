@@ -165,7 +165,16 @@ async function scanRecentMemoryToolCalls(): Promise<{
     let userMessageCount = 0;
     let lastUserText: string | null = null;
     let hasAnyToolUse = false;
-    const mentionsMemoryTools = raw.includes("memory_add") || raw.includes("memory_search");
+    // OpenClaw exposes MCP tools to the agent with the provider-safe
+    // prefix `<server-name>__` (double underscore). So `memory_add` from
+    // the atlasdeck-memory server lands as `atlasdeck-memory__memory_add`.
+    // Match the prefix to confirm the gateway actually surfaced the
+    // tools — and also raw names for forward/back compat.
+    const mentionsMemoryTools =
+      raw.includes("atlasdeck-memory__") ||
+      raw.includes("atlasdeck_memory__") ||
+      raw.includes("memory_add") ||
+      raw.includes("memory_search");
 
     for (const line of raw.split("\n")) {
       if (!line.trim()) continue;
@@ -193,7 +202,14 @@ async function scanRecentMemoryToolCalls(): Promise<{
           hasAnyToolUse = true;
           result.totalToolCalls++;
           result.allTools[name] = (result.allTools[name] ?? 0) + 1;
-          if (name.startsWith("memory_")) {
+          // Count namespaced (atlasdeck-memory__memory_add) AND raw
+          // (memory_add) variants — different OpenClaw runtimes/agent
+          // backends may use different conventions.
+          if (
+            name.startsWith("memory_") ||
+            name.startsWith("atlasdeck-memory__") ||
+            name.startsWith("atlasdeck_memory__")
+          ) {
             result.memoryToolCalls++;
             result.perTool[name] = (result.perTool[name] ?? 0) + 1;
             const ts =
@@ -412,21 +428,32 @@ export async function diagnoseMemoryMcp(opts: {
     );
   }
 
-  // ─── 2. mcp.json present ────────────────────────────────────────
+  // ─── 2. openclaw.json present ───────────────────────────────────
   if (status.configExists) {
     checks.push({
-      id: "mcp-json",
+      id: "openclaw-json",
       level: "ok",
-      title: "mcp.json presente",
+      title: "openclaw.json presente",
       detail: status.configPath,
     });
   } else {
     checks.push({
-      id: "mcp-json",
+      id: "openclaw-json",
+      level: "fail",
+      title: "openclaw.json não encontrado",
+      detail: `Esperado em ${status.configPath}. Sem ele a registração de MCP server não pode ser feita.`,
+      fix: "OpenClaw precisa estar instalado e ter rodado pelo menos uma vez.",
+    });
+  }
+
+  // ─── 2b. legacy mcp.json (never read by OpenClaw) ───────────────
+  if (status.legacyMcpJsonExists) {
+    checks.push({
+      id: "legacy-mcp-json",
       level: "warn",
-      title: "mcp.json ainda não criado",
-      detail: `Será criado em ${status.configPath} ao ativar.`,
-      fix: 'Clique em "Ativar memória avançada".',
+      title: "Legacy ~/.openclaw/mcp.json detectado",
+      detail:
+        "Esse arquivo era escrito por versões anteriores deste card mas OpenClaw nunca o leu. O install vai renomear pra .bak na próxima execução, sem perder conteúdo.",
     });
   }
 
