@@ -112,6 +112,7 @@ function formatMs(ms: number): string {
 function formatTimings(
   timings: Record<string, number>,
   baseDetail: string | null,
+  providerForTurn?: string | null,
 ): string {
   const parts: string[] = [];
   if (timings["handshake"] != null) parts.push(`handshake=${formatMs(timings["handshake"])}`);
@@ -126,6 +127,7 @@ function formatTimings(
   // matches the OpenClaw default `agents.defaults.blockStreamingDefault: "off"`.
   // Surface an actionable hint instead of leaving the operator guessing.
   if (
+    providerForTurn !== "ws" &&
     timings["first-delta"] != null &&
     timings["final"] != null &&
     Math.abs(timings["final"] - timings["first-delta"]) < 100
@@ -527,7 +529,7 @@ export async function POST(req: NextRequest) {
             // and re-emit the provider event so the badge refreshes
             // live as each phase reports.
             timings[evt.phase] = evt.ms;
-            providerDetailForTurn = formatTimings(timings, providerDetailForTurn);
+            providerDetailForTurn = formatTimings(timings, providerDetailForTurn, providerForTurn);
              // Heuristic: gateway buffered the reply if first-delta and
              // final arrived within 100ms of each other. Skip for WS which has exact tracking.
              if (

@@ -148,6 +148,7 @@ interface RunnerState {
    * delta), preventing the UI from showing duplicated chunks.
    */
   routingItemText: Map<string, string>;
+  emittedText?: string;
 }
 
 const FRAME_LOG_MAX = 80;
@@ -630,6 +631,44 @@ function extractPayloadText(payload: Record<string, unknown>): string {
 }
 
 function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
+  const events = translateMessageRaw(raw, state);
+  const filteredEvents: WsChatEvent[] = [];
+  for (const evt of events) {
+    if (evt.type === "token") {
+      const text = evt.delta;
+      if (!text) continue;
+
+      const current = state.emittedText || "";
+      
+      const isDuplicate = 
+        (text === current && current.length > 12) || 
+        (current.length > 15 && current.includes(text));
+
+      if (isDuplicate) {
+        continue;
+      }
+
+      if (current && text.startsWith(current) && text.length > current.length) {
+        const suffix = text.slice(current.length);
+        if (suffix) {
+          filteredEvents.push({ type: "token", delta: suffix });
+          state.emittedText = text;
+          state.tokensEmitted = true;
+        }
+        continue;
+      }
+
+      filteredEvents.push({ type: "token", delta: text });
+      state.emittedText = current + text;
+      state.tokensEmitted = true;
+    } else {
+      filteredEvents.push(evt);
+    }
+  }
+  return filteredEvents;
+}
+
+function translateMessageRaw(raw: unknown, state: RunnerState): WsChatEvent[] {
   if (!isRecord(raw)) return [];
   const events: WsChatEvent[] = [];
   const frameType = typeof raw.type === "string" ? raw.type : undefined;
@@ -1122,6 +1161,7 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
     frameLog: [],
     routingItemIds: new Set<string>(),
     routingItemText: new Map<string, string>(),
+    emittedText: "",
   };
 
   // Timing instrumentation — each phase records its delta from t0.
