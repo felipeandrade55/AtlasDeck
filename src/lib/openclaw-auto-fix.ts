@@ -169,6 +169,22 @@ export function ensureStreamingConfig(): StreamingFixReport {
     }
   }
 
+  // Global streaming config — override mode="off" to "on"
+  if (
+    data.streaming &&
+    typeof data.streaming === "object" &&
+    !Array.isArray(data.streaming)
+  ) {
+    const streaming = data.streaming as Record<string, unknown>;
+    if (streaming.mode !== "on") {
+      changed.push("streaming.mode");
+      streaming.mode = "on";
+    }
+  } else if (!data.streaming) {
+    changed.push("streaming");
+    data.streaming = { mode: "on" };
+  }
+
   if (changed.length === 0) {
     return {
       ok: true,
@@ -566,12 +582,15 @@ export function checkOpenClawHealth(): HealthCheckReport {
       const parsed = JSON.parse(fs.readFileSync(openclawJsonPath, "utf8")) as {
         agents?: { defaults?: Record<string, unknown> };
         gateway?: { controlUi?: Record<string, unknown> };
+        streaming?: Record<string, unknown>;
       };
       const d = parsed.agents?.defaults ?? {};
+      const s = parsed.streaming ?? {};
       streamingOk =
         d.blockStreamingDefault === "on" &&
         d.blockStreamingBreak === "text_end" &&
-        typeof d.blockStreamingChunk === "object";
+        typeof d.blockStreamingChunk === "object" &&
+        s.mode !== "off";
       const cui = parsed.gateway?.controlUi ?? {};
       backendAuthOk = cui.dangerouslyDisableDeviceAuth === true;
     }
