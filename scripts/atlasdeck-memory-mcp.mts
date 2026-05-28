@@ -536,12 +536,12 @@ server.registerTool(
   "reminder_update",
   {
     title: "Update a reminder",
-    description: "Modify an existing reminder, such as marking it completed/pending, updating its text, or changing its due date.",
+    description: "Modify an existing reminder. Use when the user wants to edit, postpone, change description, complete, or reschedule a reminder. IMPORTANT: You must first list all reminders using `reminder_list` to search for the target reminder by description, get its UUID `id`, and then invoke this tool with that ID and the desired changes.",
     inputSchema: {
-      id: z.string().min(1).describe("The unique ID of the reminder to update."),
-      text: z.string().optional().describe("New text of the reminder."),
-      completed: z.boolean().optional().describe("Set to true to complete the reminder, or false to mark it pending."),
-      due_at: z.string().nullable().optional().describe("ISO datetime string, or null to clear the due date."),
+      id: z.string().min(1).describe("The unique UUID of the reminder to update."),
+      text: z.string().optional().describe("Optional new description/text for the reminder."),
+      completed: z.boolean().optional().describe("Optional completion status (true to complete, false to keep pending)."),
+      due_at: z.string().nullable().optional().describe("Optional ISO datetime string for when this is due, or null to clear it."),
     },
   },
   async (args) => {
@@ -560,9 +560,9 @@ server.registerTool(
   "reminder_remove",
   {
     title: "Delete a reminder",
-    description: "Permanently delete/remove a quick reminder by its ID.",
+    description: "Permanently delete/remove a quick reminder. IMPORTANT: You must first list all reminders using `reminder_list` to search for the target reminder by description, get its UUID `id`, and then invoke this tool with that ID.",
     inputSchema: {
-      id: z.string().min(1).describe("The unique ID of the reminder to delete."),
+      id: z.string().min(1).describe("The unique UUID of the reminder to delete."),
     },
   },
   async (args) => {

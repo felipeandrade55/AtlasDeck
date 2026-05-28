@@ -14,7 +14,10 @@ import {
   Clock, 
   ArrowLeft,
   Loader2,
-  AlertCircle
+  AlertCircle,
+  Edit2,
+  Check,
+  X
 } from "lucide-react";
 import Link from "next/link";
 
@@ -37,6 +40,11 @@ export default function RemindersPage() {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<FilterType>("active");
   const [submitting, setSubmitting] = useState(false);
+
+  // Inline edit state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState("");
+  const [editDueAt, setEditDueAt] = useState("");
   const router = useRouter();
 
   // Load reminders
@@ -128,6 +136,64 @@ export default function RemindersPage() {
     } catch (err) {
       console.error("Failed to delete reminder:", err);
       setReminders(original);
+    }
+  };
+
+  // Format date helper for input type="datetime-local"
+  const formatForInput = (isoString: string | null) => {
+    if (!isoString) return "";
+    const date = new Date(isoString);
+    const pad = (num: number) => String(num).padStart(2, "0");
+    const yyyy = date.getFullYear();
+    const MM = pad(date.getMonth() + 1);
+    const dd = pad(date.getDate());
+    const hh = pad(date.getHours());
+    const mm = pad(date.getMinutes());
+    return `${yyyy}-${MM}-${dd}T${hh}:${mm}`;
+  };
+
+  // Start inline editing
+  const startEditing = (reminder: Reminder) => {
+    setEditingId(reminder.id);
+    setEditText(reminder.text);
+    setEditDueAt(formatForInput(reminder.due_at));
+  };
+
+  // Save inline edit
+  const handleSaveEdit = async (id: string) => {
+    if (!editText.trim()) return;
+
+    // Optimistically update
+    setReminders((prev) =>
+      prev.map((r) =>
+        r.id === id
+          ? {
+              ...r,
+              text: editText.trim(),
+              due_at: editDueAt ? new Date(editDueAt).toISOString() : null,
+            }
+          : r
+      )
+    );
+    setEditingId(null);
+
+    try {
+      const res = await fetch(`/api/reminders/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: editText.trim(),
+          due_at: editDueAt ? new Date(editDueAt).toISOString() : null,
+        }),
+      });
+
+      if (!res.ok) {
+        // Rollback
+        fetchReminders();
+      }
+    } catch (err) {
+      console.error("Failed to save reminder edit:", err);
+      fetchReminders();
     }
   };
 
@@ -330,6 +396,7 @@ export default function RemindersPage() {
           <div className="space-y-2 max-h-[50vh] overflow-y-auto pr-1">
             {filteredReminders.map((reminder) => {
               const due = formatDueDate(reminder.due_at);
+              const isEditing = reminder.id === editingId;
               return (
                 <div
                   key={reminder.id}
@@ -340,56 +407,115 @@ export default function RemindersPage() {
                     opacity: reminder.completed ? 0.65 : 1,
                   }}
                 >
-                  <div className="flex items-center gap-3.5 flex-1 min-w-0">
-                    <button
-                      onClick={() => handleToggle(reminder.id, reminder.completed)}
-                      className="transition-transform active:scale-95 cursor-pointer text-left"
-                      style={{ background: "none", border: "none" }}
-                    >
-                      {reminder.completed ? (
-                        <CheckCircle className="w-5 h-5" style={{ color: "#4ade80" }} />
-                      ) : (
-                        <Circle className="w-5 h-5" style={{ color: "var(--text-muted)" }} />
-                      )}
-                    </button>
-
-                    <div className="flex flex-col gap-1 min-w-0">
-                      <span 
-                        className="font-medium text-sm break-words" 
-                        style={{ 
+                  {isEditing ? (
+                    <div className="flex flex-col md:flex-row gap-3 flex-1 min-w-0 mr-3">
+                      <input
+                        type="text"
+                        value={editText}
+                        onChange={(e) => setEditText(e.target.value)}
+                        className="flex-1 px-3 py-2 rounded-lg outline-none font-medium transition-all text-sm"
+                        style={{
+                          backgroundColor: "var(--card)",
+                          border: "1px solid var(--border)",
                           color: "var(--text-primary)",
-                          textDecoration: reminder.completed ? "line-through" : "none"
                         }}
-                      >
-                        {reminder.text}
-                      </span>
-                      
-                      {due && (
-                        <div className="flex items-center gap-1.5 text-xs font-semibold">
-                          {due.isPast && !reminder.completed ? (
-                            <div className="flex items-center gap-1 px-2 py-0.5 rounded" style={{ backgroundColor: "rgba(239,68,68,0.12)", color: "var(--error)" }}>
-                              <AlertCircle className="w-3.5 h-3.5" />
-                              <span>Atrasado ({due.label})</span>
-                            </div>
+                      />
+                      <input
+                        type="datetime-local"
+                        value={editDueAt}
+                        onChange={(e) => setEditDueAt(e.target.value)}
+                        className="px-3 py-2 rounded-lg outline-none text-xs font-semibold font-mono transition-all cursor-pointer"
+                        style={{
+                          backgroundColor: "var(--card)",
+                          border: "1px solid var(--border)",
+                          color: "var(--text-secondary)",
+                        }}
+                      />
+                      <div className="flex gap-2 shrink-0 items-center justify-end">
+                        <button
+                          onClick={() => handleSaveEdit(reminder.id)}
+                          disabled={!editText.trim()}
+                          className="p-2 rounded-lg transition-all hover:bg-emerald-500/10 cursor-pointer"
+                          style={{ color: "#4ade80", border: "none", background: "none" }}
+                          title="Salvar"
+                        >
+                          <Check className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => setEditingId(null)}
+                          className="p-2 rounded-lg transition-all hover:bg-white/5 cursor-pointer"
+                          style={{ color: "var(--text-muted)", border: "none", background: "none" }}
+                          title="Cancelar"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-3.5 flex-1 min-w-0">
+                        <button
+                          onClick={() => handleToggle(reminder.id, reminder.completed)}
+                          className="transition-transform active:scale-95 cursor-pointer text-left"
+                          style={{ background: "none", border: "none" }}
+                        >
+                          {reminder.completed ? (
+                            <CheckCircle className="w-5 h-5" style={{ color: "#4ade80" }} />
                           ) : (
-                            <div className="flex items-center gap-1 px-2 py-0.5 rounded" style={{ backgroundColor: "var(--surface-elevated)", color: "var(--text-muted)" }}>
-                              <Clock className="w-3.5 h-3.5" />
-                              <span>{due.label}</span>
+                            <Circle className="w-5 h-5" style={{ color: "var(--text-muted)" }} />
+                          )}
+                        </button>
+
+                        <div className="flex flex-col gap-1 min-w-0">
+                          <span 
+                            className="font-medium text-sm break-words" 
+                            style={{ 
+                              color: "var(--text-primary)",
+                              textDecoration: reminder.completed ? "line-through" : "none"
+                            }}
+                          >
+                            {reminder.text}
+                          </span>
+                          
+                          {due && (
+                            <div className="flex items-center gap-1.5 text-xs font-semibold">
+                              {due.isPast && !reminder.completed ? (
+                                <div className="flex items-center gap-1 px-2 py-0.5 rounded" style={{ backgroundColor: "rgba(239,68,68,0.12)", color: "var(--error)" }}>
+                                  <AlertCircle className="w-3.5 h-3.5" />
+                                  <span>Atrasado ({due.label})</span>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-1 px-2 py-0.5 rounded" style={{ backgroundColor: "var(--surface-elevated)", color: "var(--text-muted)" }}>
+                                  <Clock className="w-3.5 h-3.5" />
+                                  <span>{due.label}</span>
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
-                      )}
-                    </div>
-                  </div>
+                      </div>
 
-                  <button
-                    onClick={() => handleDelete(reminder.id)}
-                    className="p-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500/10 cursor-pointer"
-                    style={{ color: "var(--error)", border: "none", background: "none" }}
-                    title="Excluir lembrete"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                      <div className="flex gap-1.5 shrink-0">
+                        <button
+                          onClick={() => startEditing(reminder)}
+                          className="p-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity hover:bg-white/5 cursor-pointer"
+                          style={{ color: "var(--text-secondary)", border: "none", background: "none" }}
+                          title="Editar lembrete"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+
+                        <button
+                          onClick={() => handleDelete(reminder.id)}
+                          className="p-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500/10 cursor-pointer"
+                          style={{ color: "var(--error)", border: "none", background: "none" }}
+                          title="Excluir lembrete"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </div>
               );
             })}
