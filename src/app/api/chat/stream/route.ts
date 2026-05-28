@@ -185,11 +185,10 @@ export async function POST(req: NextRequest) {
     console.warn("[chat/stream] logActivity failed:", err);
   }
 
-  // forceInline appends a routing hint *only* to the prompt we send to
-  // OpenClaw — the persisted user message above stays as the original
-  // text the operator typed, so the thread history doesn't get polluted
-  // when the user clicks "Forçar resposta direta" from the stub banner.
-  const effectivePrompt = body.forceInline ? `${prompt}${FORCE_INLINE_HINT}` : prompt;
+  // Always append the inline hint for web sessions to prevent the agent
+  // from routing the response via tools like 'message' or 'telegram_send'
+  // and causing buffering/stubs.
+  const effectivePrompt = `${prompt}${FORCE_INLINE_HINT}`;
 
   // Pre-create assistant message in streaming state so the UI gets an ID up front.
   const assistantMsg = appendMessage({
