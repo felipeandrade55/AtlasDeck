@@ -30,6 +30,7 @@ import {
 import { runOpenClawChat, type RunnerEvent } from "@/lib/openclaw-runner";
 import { logActivity, updateActivity } from "@/lib/activities-db";
 import { publishEvent } from "@/lib/live-events";
+import { createTask, updateTask } from "@/lib/tasks-db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -39,14 +40,9 @@ interface ChatStreamBody {
   agentId?: string;
   message?: string;
   workspace?: string;
-  /**
-   * When true, the route appends a routing hint to the prompt sent to
-   * OpenClaw asking the agent to reply directly in this session instead
-   * of routing the real answer to another channel (Telegram, etc.). The
-   * hint is NOT persisted on the user message — chat-db stores the
-   * original prompt so the conversation log stays clean.
-   */
   forceInline?: boolean;
+  thinking?: string;
+  fastMode?: boolean;
 }
 
 const FORCE_INLINE_HINT =
@@ -76,6 +72,22 @@ function deriveTitleFromPrompt(prompt: string): string {
   const collapsed = prompt.replace(/\s+/g, " ").trim();
   if (!collapsed) return "Nova conversa";
   return collapsed.length > 60 ? `${collapsed.slice(0, 57)}…` : collapsed;
+}
+
+// Heuristic: only promote a chat turn into a kanban card when it looks
+// like real work. Trivia like "me explique BGP em 3 linhas" should NOT
+// pollute the Live Mission board — only substantial requests or those
+// with explicit "do X" verbs should. Threshold + verb list chosen so
+// short Q&A pings stay out while page/product/build/publish requests
+// always trigger.
+const KANBAN_LENGTH_THRESHOLD = 120;
+const KANBAN_WORK_VERBS_RE =
+  /\b(crie|criar|cria|criem|fa[çc]a|fa[çc]am|fazer|construa|construir|constr[oó]i|implemente|implementar|publique|publicar|publica|desenvolva|desenvolver|monte|montar|gere|gerar|projete|projetar|configure|configurar|build|create|implement|make|develop|deploy|publish|launch|generate|design)\b/i;
+
+function shouldCreateKanbanTask(prompt: string): boolean {
+  if (!prompt) return false;
+  if (prompt.length >= KANBAN_LENGTH_THRESHOLD) return true;
+  return KANBAN_WORK_VERBS_RE.test(prompt);
 }
 
 function summarizeToolInput(input: unknown): string {
@@ -273,6 +285,8 @@ export async function POST(req: NextRequest) {
           workspace: thread!.workspace,
           history,
           signal: ac.signal,
+          thinking: body.thinking,
+          fastMode: body.fastMode,
         })) {
           handleEvent(evt, send);
           if (evt.type === "done" || evt.type === "error") break;

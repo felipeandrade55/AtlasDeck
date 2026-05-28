@@ -116,6 +116,23 @@ export default function ChatPage() {
     backendAuthOk: boolean;
   } | null>(null);
 
+  const [thinkingMode, setThinkingMode] = useState<"reasoning" | "instant">("reasoning");
+
+  useEffect(() => {
+    const saved = localStorage.getItem("atlas_chat_thinking_mode");
+    if (saved === "instant") {
+      setThinkingMode("instant");
+    }
+  }, []);
+
+  const toggleThinkingMode = () => {
+    setThinkingMode((prev) => {
+      const next = prev === "reasoning" ? "instant" : "reasoning";
+      localStorage.setItem("atlas_chat_thinking_mode", next);
+      return next;
+    });
+  };
+
   const runAutoFix = useCallback(
     async (which: "streaming" | "heartbeat" | "auth" | "all") => {
       if (autoFixBusy) return;
@@ -458,6 +475,8 @@ export default function ChatPage() {
         agentId,
         message: text,
         forceInline: opts?.forceInline,
+        thinking: thinkingMode === "instant" ? "off" : undefined,
+        fastMode: thinkingMode === "instant" ? true : undefined,
         onMeta: (meta) => {
           realAssistantId = meta.assistantMessageId;
           if (!activeThreadId) setActiveThreadId(meta.threadId);
@@ -864,6 +883,18 @@ export default function ChatPage() {
                   · {tts.engine === "fishaudio" ? "fish" : "11labs"}
                 </span>
               )}
+            </button>
+            <button
+              type="button"
+              onClick={toggleThinkingMode}
+              style={toggleButtonStyle(thinkingMode === "instant")}
+              title={
+                thinkingMode === "instant"
+                  ? "Modo Instantâneo (Ultra-rápido, thinking desligado). Clique para mudar para Modo Raciocínio."
+                  : "Modo Raciocínio (Mais inteligente, gpt-5.5 com thinking ativo). Clique para mudar para Modo Instantâneo."
+              }
+            >
+              {thinkingMode === "instant" ? "⚡ Rápido" : "🧠 Raciocínio"}
             </button>
             <button
               type="button"

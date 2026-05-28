@@ -28,6 +28,8 @@ export interface RunnerInput {
   workspace?: string | null;
   history?: Array<{ role: "user" | "assistant"; content: string }>;
   signal?: AbortSignal;
+  thinking?: string;
+  fastMode?: boolean;
 }
 
 export type RunnerProvider = "ws" | "cli" | "ollama";
@@ -492,6 +494,8 @@ export async function* runOpenClawChat(input: RunnerInput): AsyncGenerator<Runne
         sessionKey,
         sessionId: input.sessionId,
         signal: input.signal,
+        thinking: input.thinking,
+        fastMode: input.fastMode,
       })) {
         if (evt.type === "error") {
           // First byte never arrived or gateway refused — try the CLI.

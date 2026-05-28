@@ -21,6 +21,8 @@ export interface SendOptions {
    * button after a stub-reply is detected).
    */
   forceInline?: boolean;
+  thinking?: string;
+  fastMode?: boolean;
   onMeta?: (meta: StreamMeta) => void;
   onProvider?: (payload: { provider: string; detail?: string; buffered?: boolean }) => void;
   onToken?: (delta: string) => void;
@@ -62,6 +64,8 @@ export function useChatStream() {
           message: opts.message,
           workspace: opts.workspace ?? undefined,
           forceInline: opts.forceInline === true ? true : undefined,
+          thinking: opts.thinking ?? undefined,
+          fastMode: opts.fastMode !== undefined ? opts.fastMode : undefined,
         }),
         signal: ac.signal,
       });

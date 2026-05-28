@@ -32,6 +32,8 @@ export interface WsChatInput {
   sessionKey: string;
   sessionId?: string | null;
   signal?: AbortSignal;
+  thinking?: string;
+  fastMode?: boolean;
 }
 
 export type WsChatEvent =
@@ -1017,11 +1019,16 @@ function buildChatSendRequest(input: WsChatInput): Record<string, unknown> {
     idempotencyKey: randomUUID(),
     ...(input.sessionId ? { sessionId: input.sessionId } : {}),
   };
-  const thinking = process.env.ATLAS_CHAT_THINKING?.trim();
+  const thinking = input.thinking ?? process.env.ATLAS_CHAT_THINKING?.trim();
   if (thinking) params.thinking = thinking;
-  const fastMode = process.env.ATLAS_CHAT_FAST_MODE?.trim();
-  if (fastMode === "true") params.fastMode = true;
-  if (fastMode === "false") params.fastMode = false;
+
+  if (input.fastMode !== undefined) {
+    params.fastMode = input.fastMode;
+  } else {
+    const fastMode = process.env.ATLAS_CHAT_FAST_MODE?.trim();
+    if (fastMode === "true") params.fastMode = true;
+    if (fastMode === "false") params.fastMode = false;
+  }
   return {
     type: "req",
     id: randomUUID(),
