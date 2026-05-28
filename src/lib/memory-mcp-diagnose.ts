@@ -18,7 +18,11 @@ import {
   inspectStatus,
   type InstallStatus,
 } from "@/lib/openclaw-mcp-config";
-import { getOpenClawDir, getOpenClawWorkspace } from "@/lib/openclaw-config";
+import {
+  getOpenClawDir,
+  getOpenClawWorkspace,
+  getAgentWorkspacePath,
+} from "@/lib/openclaw-config";
 
 // Substring used by the memory-injector to mark its TOOL_GUIDANCE
 // block. If this string isn't present in the agent's MEMORY.md, the
@@ -45,6 +49,7 @@ export interface DiagnoseReport {
   summary: { ok: number; warn: number; fail: number };
   memoryMd: {
     path: string;
+    pathSource: "openclaw.json" | "atlasdeck-config" | "fallback";
     exists: boolean;
     hasGuidance: boolean;
     sizeBytes: number;
@@ -302,7 +307,13 @@ export async function diagnoseMemoryMcp(opts: {
         stdoutTail: "",
         startError: "openclaw dir missing",
       },
-      { path: "", exists: false, hasGuidance: false, sizeBytes: 0 },
+      {
+        path: "",
+        pathSource: "fallback",
+        exists: false,
+        hasGuidance: false,
+        sizeBytes: 0,
+      },
       {
         sessionsScanned: 0,
         memoryToolCalls: 0,
@@ -421,9 +432,17 @@ export async function diagnoseMemoryMcp(opts: {
   }
 
   // ─── 7. MEMORY.md tool guidance present ─────────────────────────
-  const memoryMdPath = path.join(getOpenClawWorkspace(), "MEMORY.md");
+  // Resolve via openclaw.json first (authoritative — same source the
+  // daemon uses), falling back to AtlasDeck's own setting only when
+  // openclaw.json can't be parsed.
+  const agentWsPath = getAgentWorkspacePath(agentId);
+  const resolvedWsPath = agentWsPath ?? getOpenClawWorkspace();
+  const memoryMdPath = path.join(resolvedWsPath, "MEMORY.md");
+  const pathSource: "openclaw.json" | "atlasdeck-config" | "fallback" =
+    agentWsPath ? "openclaw.json" : "atlasdeck-config";
   let memoryMdInfo = {
     path: memoryMdPath,
+    pathSource,
     exists: false,
     hasGuidance: false,
     sizeBytes: 0,
@@ -432,6 +451,7 @@ export async function diagnoseMemoryMcp(opts: {
     const content = await fsAsync.readFile(memoryMdPath, "utf-8");
     memoryMdInfo = {
       path: memoryMdPath,
+      pathSource,
       exists: true,
       hasGuidance: content.includes(GUIDANCE_MARKER),
       sizeBytes: Buffer.byteLength(content, "utf-8"),

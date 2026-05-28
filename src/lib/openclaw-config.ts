@@ -202,6 +202,41 @@ export function resolveOpenClawAgentsConfigPath(): { path: string; isFallback: b
  * regardless of how it's being managed (systemd unit, PM2, manual `openclaw daemon`,
  * Docker, etc.). HTTP reachability is the truth — systemd state is just one signal.
  */
+/**
+ * Resolve the on-disk workspace path for a specific OpenClaw agent
+ * by reading openclaw.json — the single source of truth that the
+ * daemon itself uses. This bypasses AtlasDeck's own `openclawWorkspace`
+ * setting (which can drift when auto-fix or a manual config edit changes
+ * it) and asks the daemon's actual config: where does THIS agent read
+ * MEMORY.md from?
+ *
+ * Returns null if the agent isn't declared or the file can't be parsed.
+ * Falls back to <openclawDir>/<workspace> (relative path resolution)
+ * to match how the daemon itself interprets these values.
+ */
+export function getAgentWorkspacePath(agentId: string): string | null {
+  try {
+    const openclawDir = getOpenClawDir();
+    const cfgPath = path.join(openclawDir, "openclaw.json");
+    const raw = fs.readFileSync(cfgPath, "utf8");
+    const parsed = JSON.parse(raw) as {
+      agents?: { list?: Array<{ id?: string; workspace?: string }> };
+    };
+    const list = parsed.agents?.list;
+    if (!Array.isArray(list)) return null;
+    const entry = list.find((a) => a?.id === agentId);
+    if (!entry?.workspace || typeof entry.workspace !== "string") return null;
+    // OpenClaw treats workspace as a path relative to openclawDir when
+    // it starts with "./" or is a bare segment. Absolute paths are kept
+    // as-is.
+    return path.isAbsolute(entry.workspace)
+      ? entry.workspace
+      : path.resolve(openclawDir, entry.workspace);
+  } catch {
+    return null;
+  }
+}
+
 export function getOpenClawGatewayInfo(): { port: number; token: string; url: string } {
   const defaultPort = 18789;
   let port = defaultPort;

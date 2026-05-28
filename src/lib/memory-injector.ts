@@ -16,7 +16,10 @@ import {
   type MemoryRow,
 } from "@/lib/memory-db";
 import { resolveWorkspacePath } from "@/lib/workspace-resolver";
-import { getOpenClawWorkspace } from "@/lib/openclaw-config";
+import {
+  getOpenClawWorkspace,
+  getAgentWorkspacePath,
+} from "@/lib/openclaw-config";
 import { indexFile } from "@/lib/memory-fts";
 import { buildPromptBlock } from "@/lib/memory-extractor";
 
@@ -165,19 +168,24 @@ export async function injectIntoWorkspace(
     };
   }
 
-  // Resolve the on-disk workspace path. The "workspace" id is the
-  // convention memory-extractor uses for the main agent, but the
-  // real on-disk path for that agent is whatever's configured in
-  // openclawWorkspace (typically <OPENCLAW_DIR>/workspace/mission-control,
-  // NOT <OPENCLAW_DIR>/workspace). resolveWorkspacePath("workspace")
-  // returns the wrong path here — writing MEMORY.md there is silently
-  // a no-op because the agent reads from getOpenClawWorkspace(). For
-  // every other workspace id (e.g. "workspace-devops") we fall back
-  // to the generic resolver.
-  const wsPath =
-    workspace === "workspace"
-      ? getOpenClawWorkspace()
-      : resolveWorkspacePath(workspace);
+  // Resolve the on-disk workspace path. "workspace" is the convention
+  // memory-extractor uses for the main agent, but the real on-disk
+  // path comes from openclaw.json (`agents.list[id=main].workspace`),
+  // NOT from AtlasDeck's data/openclaw-config.json — those two can
+  // drift apart (auto-fix occasionally rewrites the latter to
+  // <OPENCLAW_DIR>/workspace without /mission-control, which is
+  // wrong and leaves MEMORY.md in a folder no agent reads).
+  // Reading openclaw.json directly guarantees we write where the
+  // daemon will actually look on next session boot.
+  let wsPath: string | null = null;
+  if (workspace === "workspace") {
+    wsPath = getAgentWorkspacePath("main") ?? getOpenClawWorkspace();
+  } else if (workspace.startsWith("workspace-")) {
+    const agentId = workspace.slice("workspace-".length);
+    wsPath = getAgentWorkspacePath(agentId) ?? resolveWorkspacePath(workspace);
+  } else {
+    wsPath = resolveWorkspacePath(workspace);
+  }
   if (!wsPath) {
     return {
       workspace,

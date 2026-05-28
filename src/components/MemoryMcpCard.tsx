@@ -75,6 +75,7 @@ interface DiagnoseReport {
   summary: { ok: number; warn: number; fail: number };
   memoryMd?: {
     path: string;
+    pathSource?: "openclaw.json" | "atlasdeck-config" | "fallback";
     exists: boolean;
     hasGuidance: boolean;
     sizeBytes: number;
@@ -583,6 +584,24 @@ export function MemoryMcpCard() {
                   {diagnose.memoryMd.hasGuidance ? "presente" : "AUSENTE"}
                 </strong>
               </div>
+              {diagnose.memoryMd.pathSource && (
+                <div style={{ color: "var(--text-muted)" }}>
+                  Path resolvido via:{" "}
+                  <strong
+                    style={{
+                      color:
+                        diagnose.memoryMd.pathSource === "openclaw.json"
+                          ? "#34d399"
+                          : "#facc15",
+                    }}
+                  >
+                    {diagnose.memoryMd.pathSource}
+                  </strong>
+                  {diagnose.memoryMd.pathSource !== "openclaw.json" && (
+                    <span> — pode estar drift do daemon</span>
+                  )}
+                </div>
+              )}
             </div>
           )}
           {diagnose.spawnProbe.attempted && diagnose.spawnProbe.stderrTail && (
