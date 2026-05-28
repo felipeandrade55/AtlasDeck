@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Cpu, HardDrive, MemoryStick, Shield, ShieldCheck, Clock } from "lucide-react";
+import { Cpu, HardDrive, MemoryStick, Shield, ShieldCheck, Clock, Activity, Send } from "lucide-react";
 
 interface SystemStats {
   cpu: number;
@@ -13,6 +13,13 @@ interface SystemStats {
   activeServices: number;
   totalServices: number;
   uptime: string;
+  gatewayActive?: boolean;
+  gatewayRuntime?: string;
+  telegramEnabled?: boolean;
+  telegramStatus?: "pass" | "warn" | "fail" | "unknown";
+  telegramDetail?: string;
+  telegramBotName?: string;
+  telegramPendingUpdates?: number;
 }
 
 export function StatusBar() {
@@ -25,6 +32,13 @@ export function StatusBar() {
     activeServices: 0,
     totalServices: 4,
     uptime: "0d 0h",
+    gatewayActive: false,
+    gatewayRuntime: "unknown",
+    telegramEnabled: false,
+    telegramStatus: "unknown",
+    telegramDetail: "Não diagnosticado",
+    telegramBotName: "",
+    telegramPendingUpdates: 0,
   });
 
   const [updateInfo, setUpdateInfo] = useState<{ hasUpdate: boolean, sha: string }>({ hasUpdate: false, sha: "..." });
@@ -65,14 +79,19 @@ export function StatusBar() {
   }, []);
 
   const cpuColor = stats.cpu < 60 ? "var(--positive)" : stats.cpu < 85 ? "var(--warning)" : "var(--negative)";
-  const ramPercent = (stats.ram.used / stats.ram.total) * 100;
+  const ramPercent = stats.ram.total > 0 ? (stats.ram.used / stats.ram.total) * 100 : 0;
   const ramColor = ramPercent < 60 ? "var(--positive)" : ramPercent < 85 ? "var(--warning)" : "var(--negative)";
-  const diskPercent = (stats.disk.used / stats.disk.total) * 100;
+  const diskPercent = stats.disk.total > 0 ? (stats.disk.used / stats.disk.total) * 100 : 0;
   const diskColor = diskPercent < 60 ? "var(--positive)" : diskPercent < 85 ? "var(--warning)" : "var(--negative)";
 
   // StatusMetric component
-  const StatusMetric = ({ icon: Icon, label, value, barPercent, color }: any) => (
-    <div className="flex items-center gap-1.5" style={{ height: "24px" }}>
+  const StatusMetric = ({ icon: Icon, label, value, barPercent, color, title, onClick }: any) => (
+    <div 
+      className="flex items-center gap-1.5 cursor-pointer hover:opacity-80 transition-all active:scale-[0.98]" 
+      style={{ height: "24px" }}
+      title={title}
+      onClick={onClick}
+    >
       <Icon style={{ width: "14px", height: "14px", color: "var(--text-muted)" }} />
       <span
         style={{
@@ -137,7 +156,15 @@ export function StatusBar() {
       }}
     >
       {/* CPU */}
-      <StatusMetric icon={Cpu} label="CPU" value={`${stats.cpu}%`} barPercent={stats.cpu} color={cpuColor} />
+      <StatusMetric 
+        icon={Cpu} 
+        label="CPU" 
+        value={`${stats.cpu}%`} 
+        barPercent={stats.cpu} 
+        color={cpuColor} 
+        title="Uso do Processador (CPU) · Carga média de processamento do servidor. Clique para abrir o painel de Monitoramento."
+        onClick={() => router.push('/system?tab=hardware')}
+      />
 
       {/* RAM */}
       <StatusMetric
@@ -146,6 +173,8 @@ export function StatusBar() {
         value={`${stats.ram.used.toFixed(1)}/${stats.ram.total}GB`}
         barPercent={ramPercent}
         color={ramColor}
+        title="Memória RAM física ativa · Quantidade de RAM sendo consumida do total disponível. Clique para abrir o painel de Monitoramento."
+        onClick={() => router.push('/system?tab=hardware')}
       />
 
       {/* Disk */}
@@ -155,13 +184,19 @@ export function StatusBar() {
         value={`${diskPercent.toFixed(0)}%`}
         barPercent={diskPercent}
         color={diskColor}
+        title="Espaço em Disco · Porcentagem de armazenamento principal em uso no servidor. Clique para ver detalhes de I/O."
+        onClick={() => router.push('/system?tab=hardware')}
       />
 
       {/* Separator */}
       <div style={{ width: "1px", height: "16px", backgroundColor: "var(--border)" }} />
 
       {/* VPN Status */}
-      <div className="flex items-center gap-1">
+      <div 
+        className="flex items-center gap-1.5 cursor-pointer hover:opacity-80 transition-all active:scale-[0.98]"
+        title={`Conexão segura VPN Tailscale · Status: ${stats.vpnActive ? "Ativo" : "Inativo"}. Permite acessar o sistema com segurança máxima. Clique para gerenciar.`}
+        onClick={() => router.push('/system?tab=hardware')}
+      >
         <div
           style={{
             width: "6px",
@@ -184,7 +219,11 @@ export function StatusBar() {
       </div>
 
       {/* Firewall Status */}
-      <div className="flex items-center gap-1">
+      <div 
+        className="flex items-center gap-1 cursor-pointer hover:opacity-80 transition-all active:scale-[0.98]"
+        title={`Firewall UFW (Proteção do Sistema) · Status: ${stats.firewallActive ? "Ativo e Protegendo (bloqueia conexões públicas desconhecidas)" : "Inativo (Atenção: servidor exposto)"}. Clique para ver regras.`}
+        onClick={() => router.push('/system?tab=hardware')}
+      >
         <ShieldCheck
           style={{
             width: "12px",
@@ -208,8 +247,101 @@ export function StatusBar() {
       {/* Separator */}
       <div style={{ width: "1px", height: "16px", backgroundColor: "var(--border)" }} />
 
+      {/* Gateway OpenClaw Status */}
+      <div 
+        className="flex items-center gap-1.5 cursor-pointer hover:opacity-80 transition-all active:scale-[0.98]"
+        title={`Serviço do Gateway OpenClaw · Conecta e encaminha requisições do robô para as APIs das IAs. Status: ${stats.gatewayActive ? `Ativo (${stats.gatewayRuntime})` : "Inativo (Crítico: o robô não responderá às mensagens)"}. Clique para reiniciar ou configurar.`}
+        onClick={() => router.push('/system?tab=services')}
+      >
+        <Activity
+          style={{
+            width: "12px",
+            height: "12px",
+            color: stats.gatewayActive ? "var(--positive)" : "var(--negative)",
+            animation: stats.gatewayActive ? "pulse 2s infinite" : undefined,
+          }}
+        />
+        <span
+          style={{
+            fontFamily: "var(--font-body)",
+            fontSize: "10px",
+            fontWeight: 600,
+            letterSpacing: "1px",
+            color: "var(--text-muted)",
+          }}
+        >
+          GATEWAY
+        </span>
+      </div>
+
+      {/* Telegram Status */}
+      {(() => {
+        const isEnabled = stats.telegramEnabled;
+        const status = stats.telegramStatus || "unknown";
+        const botName = stats.telegramBotName || "";
+        const pending = stats.telegramPendingUpdates || 0;
+        
+        let color = "var(--text-muted)";
+        let statusLabel = "DESATIVADO";
+        let detail = "Integração do Telegram desabilitada ou sem contas configuradas.";
+        
+        if (isEnabled) {
+          if (status === "pass") {
+            color = "var(--positive)";
+            statusLabel = "CONECTADO";
+            detail = `Tudo saudável. Bot ativo: ${botName}. Prontificado a responder mensagens.`;
+          } else if (status === "warn") {
+            color = "var(--warning)";
+            statusLabel = "PENDÊNCIAS";
+            detail = `Atenção: ${pending} updates pendentes acumulados no backlog do bot. Pode haver latência ou travamento.`;
+          } else if (status === "fail") {
+            color = "var(--negative)";
+            statusLabel = "ERRO BOT";
+            detail = `Erro crítico na integração do Telegram: ${stats.telegramDetail || "Falha de comunicação ou token inválido"}.`;
+          } else {
+            color = "var(--text-muted)";
+            statusLabel = "SINDICALIZADO";
+            detail = "Buscando integridade do robô do Telegram...";
+          }
+        }
+        
+        return (
+          <div 
+            className="flex items-center gap-1.5 cursor-pointer hover:opacity-80 transition-all active:scale-[0.98]"
+            title={`Integração Telegram · Status: ${statusLabel}. ${detail} Clique para executar o Telegram Doctor.`}
+            onClick={() => router.push('/settings?openDoctor=1')}
+          >
+            <Send
+              style={{
+                width: "11px",
+                height: "11px",
+                color,
+              }}
+            />
+            <span
+              style={{
+                fontFamily: "var(--font-body)",
+                fontSize: "10px",
+                fontWeight: 600,
+                letterSpacing: "1px",
+                color: "var(--text-muted)",
+              }}
+            >
+              TG: {statusLabel}
+            </span>
+          </div>
+        );
+      })()}
+
+      {/* Separator */}
+      <div style={{ width: "1px", height: "16px", backgroundColor: "var(--border)" }} />
+
       {/* Systemd Services */}
-      <div className="flex items-center gap-1">
+      <div 
+        className="flex items-center gap-1 cursor-pointer hover:opacity-80 transition-all active:scale-[0.98]"
+        title={`Serviços de Sistema · ${stats.activeServices} ativos de ${stats.totalServices} monitorados no ecossistema AtlasDeck (Mission Control, Content Vault, ClassVault, CreatorOS). Clique para gerenciar.`}
+        onClick={() => router.push('/system?tab=services')}
+      >
         <span
           style={{
             fontFamily: "var(--font-body)",
@@ -226,7 +358,11 @@ export function StatusBar() {
       <div style={{ width: "1px", height: "16px", backgroundColor: "var(--border)" }} />
 
       {/* Uptime */}
-      <div className="flex items-center gap-1">
+      <div 
+        className="flex items-center gap-1 cursor-pointer hover:opacity-80 transition-all active:scale-[0.98]"
+        title={`Tempo de Operação · O sistema está rodando sem interrupção há ${stats.uptime}. Clique para monitorar de perto.`}
+        onClick={() => router.push('/system?tab=hardware')}
+      >
         <Clock style={{ width: "12px", height: "12px", color: "var(--text-muted)" }} />
         <span
           style={{
@@ -246,8 +382,9 @@ export function StatusBar() {
       {/* Update Indicator */}
       {updateInfo.hasUpdate ? (
         <div 
-          className="flex items-center gap-1 cursor-pointer hover:opacity-80 transition-opacity" 
+          className="flex items-center gap-1 cursor-pointer hover:opacity-80 transition-all active:scale-[0.98]" 
           style={{ animation: "pulse 2s infinite" }} 
+          title="Nova versão disponível no repositório GitHub do Jarvis! Clique para atualizar e implantar."
           onClick={() => router.push('/settings')}
         >
           <div style={{ width: "6px", height: "6px", borderRadius: "50%", backgroundColor: "var(--warning)" }} />
@@ -257,7 +394,8 @@ export function StatusBar() {
         </div>
       ) : (
         <div 
-          className="flex items-center gap-1 cursor-pointer hover:opacity-80 transition-opacity" 
+          className="flex items-center gap-1 cursor-pointer hover:opacity-80 transition-all active:scale-[0.98]" 
+          title={`O seu Jarvis está atualizado na última versão de produção. Commit SHA: ${updateInfo.sha}. Clique para gerenciar atualizações.`}
           onClick={() => router.push('/settings')}
         >
           <div style={{ width: "6px", height: "6px", borderRadius: "50%", backgroundColor: "var(--positive)" }} />

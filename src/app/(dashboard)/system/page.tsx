@@ -121,6 +121,16 @@ export default function SystemMonitorPage() {
   const [actionLoading, setActionLoading] = useState<Record<string, boolean>>({});
   const [logsModal, setLogsModal] = useState<LogsModal | null>(null);
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const tab = params.get("tab") as SystemTab | null;
+      if (tab && ["hardware", "services", "openclaw"].includes(tab)) {
+        setSelectedTab(tab);
+      }
+    }
+  }, []);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [showAddRule, setShowAddRule] = useState(false);
   const [newRulePort, setNewRulePort] = useState("");

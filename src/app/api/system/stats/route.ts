@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 import { exec } from "child_process";
 import { promisify } from "util";
 import os from "os";
+import { existsSync, readFileSync } from "fs";
+import { getLastHealth } from "@/lib/health-monitor";
+import { detectGatewayRuntime } from "@/lib/gateway-control";
+import { resolveOpenClawAgentsConfigPath } from "@/lib/openclaw-config";
 
 const execAsync = promisify(exec);
 
@@ -71,6 +75,72 @@ export async function GET() {
     const hours = Math.floor((uptimeSeconds % 86400) / 3600);
     const uptime = `${days}d ${hours}h`;
 
+    // ─── GATEWAY & TELEGRAM ENRICHMENT ─────────────────────────────────────
+    const health = getLastHealth();
+    let gatewayActive = false;
+    let gatewayRuntime = "unknown";
+    let telegramEnabled = false;
+    let telegramStatus = "unknown";
+    let telegramDetail = "Não diagnosticado";
+    let telegramBotName = "";
+    let telegramPendingUpdates = 0;
+
+    // Check local configuration
+    try {
+      const { path: configPath } = resolveOpenClawAgentsConfigPath();
+      if (existsSync(configPath)) {
+        const cfg = JSON.parse(readFileSync(configPath, "utf-8"));
+        telegramEnabled = !!cfg.channels?.telegram?.enabled;
+      }
+    } catch {}
+
+    if (health) {
+      const gwCheck = health.checks.find(c => c.id === "gateway");
+      gatewayActive = gwCheck ? gwCheck.status === "pass" : false;
+      
+      const tgEnabledCheck = health.checks.find(c => c.id === "channel-enabled");
+      telegramEnabled = tgEnabledCheck ? tgEnabledCheck.status === "pass" : telegramEnabled;
+
+      // Find worst status among telegram checks
+      const tgChecks = health.checks.filter(c => c.category === "telegram");
+      if (tgChecks.length > 0) {
+        const hasFail = tgChecks.some(c => c.status === "fail");
+        const hasWarn = tgChecks.some(c => c.status === "warn");
+        telegramStatus = hasFail ? "fail" : hasWarn ? "warn" : "pass";
+
+        const botCheck = tgChecks.find(c => c.id.startsWith("bot-"));
+        if (botCheck) {
+          telegramBotName = botCheck.detail;
+          telegramDetail = `Bot ativo: ${botCheck.detail}`;
+        }
+        
+        const backlogCheck = tgChecks.find(c => c.id.startsWith("backlog-"));
+        if (backlogCheck) {
+          const match = backlogCheck.detail.match(/(\d+) updates/);
+          if (match) telegramPendingUpdates = parseInt(match[1]);
+        }
+      } else {
+        telegramStatus = telegramEnabled ? "pass" : "unknown";
+        telegramDetail = telegramEnabled ? "Habilitado e saudável" : "Desabilitado";
+      }
+
+      // Read runtime from details
+      if (gwCheck) {
+        if (gwCheck.detail.includes("systemd")) gatewayRuntime = "systemd";
+        else if (gwCheck.detail.includes("pm2")) gatewayRuntime = "pm2";
+        else if (gwCheck.detail.includes("process")) gatewayRuntime = "process";
+      }
+    } else {
+      // Fallback: fast active check
+      try {
+        const runtime = await detectGatewayRuntime();
+        gatewayRuntime = runtime;
+        gatewayActive = runtime !== "unknown";
+      } catch {}
+      telegramStatus = telegramEnabled ? "pass" : "unknown";
+      telegramDetail = telegramEnabled ? "Configurado" : "Desativado";
+    }
+
     return NextResponse.json({
       cpu,
       ram,
@@ -80,6 +150,13 @@ export async function GET() {
       activeServices,
       totalServices,
       uptime,
+      gatewayActive,
+      gatewayRuntime,
+      telegramEnabled,
+      telegramStatus,
+      telegramDetail,
+      telegramBotName,
+      telegramPendingUpdates,
     });
   } catch (error) {
     console.error("Error fetching system stats:", error);
