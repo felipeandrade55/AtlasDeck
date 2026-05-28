@@ -83,7 +83,9 @@ interface DiagnoseReport {
   toolUseScan?: {
     sessionsScanned: number;
     memoryToolCalls: number;
+    totalToolCalls: number;
     perTool: Record<string, number>;
+    allTools: Record<string, number>;
     lastSeenAt: string | null;
   };
 }
@@ -534,7 +536,9 @@ export function MemoryMcpCard() {
               <div>
                 Sessões varridas:{" "}
                 <strong>{diagnose.toolUseScan.sessionsScanned}</strong>{" "}
-                · Chamadas a memory_*:{" "}
+                · Total de tool calls:{" "}
+                <strong>{diagnose.toolUseScan.totalToolCalls}</strong>{" "}
+                · memory_*:{" "}
                 <strong
                   style={{
                     color:
@@ -548,12 +552,34 @@ export function MemoryMcpCard() {
               </div>
               {diagnose.toolUseScan.lastSeenAt && (
                 <div>
-                  Última chamada: {diagnose.toolUseScan.lastSeenAt}
+                  Última chamada a memory_*: {diagnose.toolUseScan.lastSeenAt}
                 </div>
               )}
-              {Object.keys(diagnose.toolUseScan.perTool).length > 0 && (
-                <div>
-                  Por tool: {JSON.stringify(diagnose.toolUseScan.perTool)}
+              {Object.keys(diagnose.toolUseScan.allTools).length > 0 && (
+                <div className="mt-1">
+                  <span style={{ color: "var(--text-muted)" }}>
+                    Top tools que o Jarvis ESTÁ chamando:
+                  </span>
+                  <ul className="ml-3 mt-0.5">
+                    {Object.entries(diagnose.toolUseScan.allTools)
+                      .sort(([, a], [, b]) => b - a)
+                      .slice(0, 8)
+                      .map(([name, count]) => (
+                        <li key={name}>
+                          <span
+                            className="font-mono"
+                            style={{
+                              color: name.startsWith("memory_")
+                                ? "#34d399"
+                                : "var(--text-primary)",
+                            }}
+                          >
+                            {name}
+                          </span>{" "}
+                          × {count}
+                        </li>
+                      ))}
+                  </ul>
                 </div>
               )}
             </div>

@@ -57,7 +57,9 @@ export interface DiagnoseReport {
   toolUseScan: {
     sessionsScanned: number;
     memoryToolCalls: number;
+    totalToolCalls: number;
     perTool: Record<string, number>;
+    allTools: Record<string, number>;
     lastSeenAt: string | null;
   };
 }
@@ -83,7 +85,9 @@ export interface SpawnProbeResult {
 async function scanRecentMemoryToolCalls(): Promise<{
   sessionsScanned: number;
   memoryToolCalls: number;
+  totalToolCalls: number;
   perTool: Record<string, number>;
+  allTools: Record<string, number>;
   lastSeenAt: string | null;
 }> {
   const sessionsDir = path.join(getOpenClawDir(), "agents", "main", "sessions");
@@ -91,7 +95,9 @@ async function scanRecentMemoryToolCalls(): Promise<{
   const result = {
     sessionsScanned: 0,
     memoryToolCalls: 0,
+    totalToolCalls: 0,
     perTool: {} as Record<string, number>,
+    allTools: {} as Record<string, number>,
     lastSeenAt: null as string | null,
   };
 
@@ -123,17 +129,17 @@ async function scanRecentMemoryToolCalls(): Promise<{
 
     for (const line of raw.split("\n")) {
       if (!line.trim()) continue;
-      if (!line.includes("memory_")) continue;
-      // Fast string filter passed — try to parse for the tool name.
+      if (!line.includes("tool_use")) continue;
       let obj: unknown;
       try {
         obj = JSON.parse(line);
       } catch {
         continue;
       }
-      // Recursively walk for a tool_use block whose name starts with
-      // memory_. JSONL shapes vary across OpenClaw versions; this is
-      // resilient to that.
+      // Walk recursively for any tool_use block. We track ALL tools so
+      // the diagnose can distinguish "LLM doesn't see memory_* tools"
+      // (no MCP-style tool calls at all) from "LLM sees but ignores
+      // them" (calls other tools but not memory_*).
       const walk = (v: unknown): void => {
         if (!v || typeof v !== "object") return;
         if (Array.isArray(v)) {
@@ -143,18 +149,18 @@ async function scanRecentMemoryToolCalls(): Promise<{
         const obj = v as Record<string, unknown>;
         const type = obj.type;
         const name = obj.name;
-        if (
-          type === "tool_use" &&
-          typeof name === "string" &&
-          name.startsWith("memory_")
-        ) {
-          result.memoryToolCalls++;
-          result.perTool[name] = (result.perTool[name] ?? 0) + 1;
-          const ts =
-            (typeof obj.timestamp === "string" && obj.timestamp) ||
-            new Date(stat.mtimeMs).toISOString();
-          if (!result.lastSeenAt || ts > result.lastSeenAt) {
-            result.lastSeenAt = ts;
+        if (type === "tool_use" && typeof name === "string") {
+          result.totalToolCalls++;
+          result.allTools[name] = (result.allTools[name] ?? 0) + 1;
+          if (name.startsWith("memory_")) {
+            result.memoryToolCalls++;
+            result.perTool[name] = (result.perTool[name] ?? 0) + 1;
+            const ts =
+              (typeof obj.timestamp === "string" && obj.timestamp) ||
+              new Date(stat.mtimeMs).toISOString();
+            if (!result.lastSeenAt || ts > result.lastSeenAt) {
+              result.lastSeenAt = ts;
+            }
           }
         }
         for (const key of Object.keys(obj)) walk(obj[key]);
@@ -317,7 +323,9 @@ export async function diagnoseMemoryMcp(opts: {
       {
         sessionsScanned: 0,
         memoryToolCalls: 0,
+        totalToolCalls: 0,
         perTool: {},
+        allTools: {},
         lastSeenAt: null,
       },
     );
@@ -498,13 +506,26 @@ export async function diagnoseMemoryMcp(opts: {
       title: "Nenhuma sessão recente para analisar",
       detail: "Sem JSONLs nas últimas 24h em agents/main/sessions/ — converse com o Jarvis pra gerar dados.",
     });
-  } else {
+  } else if (toolUseScan.totalToolCalls === 0) {
     checks.push({
       id: "tool-use-scan",
       level: "fail",
-      title: "Jarvis NÃO está chamando as tools de memória",
-      detail: `${toolUseScan.sessionsScanned} sessões verificadas, zero chamadas a memory_*. Causas comuns:\n  • MEMORY.md sem guidance (veja check acima)\n  • gateway não foi reiniciado após a injection\n  • OpenClaw com tools cachadas de sessão anterior — abra uma conversa nova no Telegram`,
-      fix: 'Clique em "Reverificar" + comece um diálogo NOVO no Telegram pedindo "Lembre que X" explicitamente.',
+      title: "Jarvis NÃO está chamando NENHUMA tool",
+      detail: `${toolUseScan.sessionsScanned} sessões varridas. Zero tool calls de qualquer tipo. Isso é mais grave que "ignora memory_*" — sugere que o agente nunca está em modo que chama tools, OU as conversas avaliadas não chegaram a um ponto de decisão. Possivelmente:\n  • Toda interação foi via "Rápido mode" sem tools\n  • Toda sessão foi acknowledge curto sem necessidade de tools\n  • Algum filtro está removendo tools antes do LLM ver`,
+      fix: "Mande no Telegram uma pergunta que EXIJA tool (ex: 'busque na minha memória X', 'crie um lembrete pra amanhã'). Se ainda assim zero, é problema de OpenClaw config.",
+    });
+  } else {
+    const top = Object.entries(toolUseScan.allTools)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 5)
+      .map(([n, c]) => `${n}(${c})`)
+      .join(", ");
+    checks.push({
+      id: "tool-use-scan",
+      level: "fail",
+      title: "Jarvis chama outras tools mas IGNORA memory_*",
+      detail: `${toolUseScan.totalToolCalls} tool calls em ${toolUseScan.sessionsScanned} sessões — mas ZERO em memory_*. Top tools usadas: ${top}.\nIsso prova que o LLM tem tools disponíveis, mas a guidance pra usar memory_add/memory_search não está convencendo (ou nem chegou).\nCausas:\n  • MEMORY.md atualizado MAS sessão atual está com system prompt cacheado de antes do update\n  • Tool descriptions em inglês competem com prompt em PT-BR — o modelo prefere as outras\n  • Importance threshold do modelo não está acionando memory_add em "lembre"`,
+      fix: 'Comece uma conversa NOVA no Telegram (sessão fresca lê o MEMORY.md atualizado) e seja explícito: "Lembre que minha cor favorita é roxo, salve na memória de longo prazo".',
     });
   }
 
