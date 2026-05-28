@@ -67,12 +67,57 @@ async function safeExec(cmd: string, timeoutMs = 8000): Promise<CmdResult> {
   }
 }
 
-async function hasSystemdUnit(unit = "openclaw-gateway"): Promise<boolean> {
-  const r = await safeExec(
+/**
+ * Where is the openclaw-gateway systemd unit installed?
+ *
+ * Returns the scope so callers can build the correct `systemctl [--user]`
+ * invocation. We check user-scoped first because that's how OpenClaw
+ * installs by default for non-root setups (and how the user's VPS runs it
+ * even as root: `~/.config/systemd/user/openclaw-gateway.service`).
+ *
+ * Without this, the previous boolean check ran `systemctl show` against the
+ * system bus only, missed the `--user` unit, fell through to the pgrep
+ * strategy, killed the systemd-managed PID, and tried to spawn a duplicate
+ * → EADDRINUSE on port 18789 while systemd auto-respawned the original.
+ */
+async function detectSystemdScope(
+  unit = "openclaw-gateway",
+): Promise<"user" | "system" | null> {
+  // --user first: typical OpenClaw install pattern
+  const userR = await safeExec(
+    `systemctl --user show ${unit} --property=LoadState --value 2>/dev/null`,
+    3000,
+  );
+  if (userR.ok && userR.stdout.trim() === "loaded") return "user";
+
+  const sysR = await safeExec(
     `systemctl show ${unit} --property=LoadState --value 2>/dev/null`,
     3000,
   );
-  return r.ok && r.stdout.trim() === "loaded";
+  if (sysR.ok && sysR.stdout.trim() === "loaded") return "system";
+
+  return null;
+}
+
+function systemctlCmd(scope: "user" | "system", verb: string, unit = "openclaw-gateway"): string {
+  return scope === "user"
+    ? `systemctl --user ${verb} ${unit}`
+    : `systemctl ${verb} ${unit}`;
+}
+
+/**
+ * True if the PID's cgroup membership shows it was started by the
+ * openclaw-gateway systemd unit. We use this to refuse to SIGTERM a PID
+ * that systemd will just respawn — when supervised, restarts MUST go
+ * through `systemctl restart` so systemd accounts for the lifecycle.
+ */
+async function isPidSupervisedBySystemd(pid: number): Promise<boolean> {
+  try {
+    const cg = (await readFile(`/proc/${pid}/cgroup`)).toString("utf8");
+    return /openclaw-gateway\.service/.test(cg);
+  } catch {
+    return false;
+  }
 }
 
 async function findPm2Name(): Promise<string | null> {
@@ -164,7 +209,7 @@ async function isLinuxProc(): Promise<boolean> {
 }
 
 export async function detectGatewayRuntime(): Promise<GatewayRuntime> {
-  if (await hasSystemdUnit()) return "systemd";
+  if ((await detectSystemdScope()) !== null) return "systemd";
   if (await findPm2Name()) return "pm2";
   if ((await findGatewayPids()).length > 0) return "process";
   return "unknown";
@@ -193,11 +238,16 @@ export async function startGateway(): Promise<RestartResult> {
   }
 
   // systemd takes precedence if available
-  if (await hasSystemdUnit()) {
-    log.push("→ systemd unit detectada — usando `systemctl start openclaw-gateway`");
-    const r = await safeExec("systemctl start openclaw-gateway 2>&1", 15000);
+  const scope = await detectSystemdScope();
+  if (scope !== null) {
+    const scopeLabel = scope === "user" ? "systemd --user" : "systemd (system)";
+    log.push(`→ ${scopeLabel} unit detectada — usando \`${systemctlCmd(scope, "start")}\``);
+    const r = await safeExec(`${systemctlCmd(scope, "start")} 2>&1`, 15000);
     if (r.ok) {
-      const check = await safeExec("systemctl is-active openclaw-gateway 2>&1 || echo unknown", 3000);
+      const check = await safeExec(
+        `${systemctlCmd(scope, "is-active")} 2>&1 || echo unknown`,
+        3000,
+      );
       const state = check.stdout.trim();
       log.push(`systemctl start: ok · is-active=${state}`);
       return { success: state === "active", runtime: "systemd", output: log.join("\n") };
@@ -278,12 +328,14 @@ export async function restartGateway(): Promise<RestartResult> {
   const log: string[] = [];
 
   // ─── Strategy 1: systemd ──────────────────────────────────────
-  if (await hasSystemdUnit()) {
-    log.push("→ systemd unit detectada (openclaw-gateway.service)");
-    const r = await safeExec(`systemctl restart openclaw-gateway 2>&1`, 15000);
+  const scope = await detectSystemdScope();
+  if (scope !== null) {
+    const scopeLabel = scope === "user" ? "--user" : "(system)";
+    log.push(`→ systemd unit detectada (openclaw-gateway.service ${scopeLabel})`);
+    const r = await safeExec(`${systemctlCmd(scope, "restart")} 2>&1`, 15000);
     if (r.ok) {
       const check = await safeExec(
-        `systemctl is-active openclaw-gateway 2>&1 || echo unknown`,
+        `${systemctlCmd(scope, "is-active")} 2>&1 || echo unknown`,
         3000,
       );
       const state = check.stdout.trim();
@@ -297,7 +349,7 @@ export async function restartGateway(): Promise<RestartResult> {
     log.push(`systemctl restart falhou: ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
     log.push("Tentando próxima estratégia…");
   } else {
-    log.push("systemd: unit openclaw-gateway.service não encontrada");
+    log.push("systemd: unit openclaw-gateway.service não encontrada (system+user)");
   }
 
   // ─── Strategy 2: PM2 ──────────────────────────────────────────
@@ -344,9 +396,40 @@ export async function restartGateway(): Promise<RestartResult> {
 
   log.push(`Candidatos detectados: ${pids.join(", ")}`);
 
+  // Refuse to SIGTERM systemd-supervised PIDs — systemd will respawn them
+  // and our detached respawn collides on port 18789 → EADDRINUSE crash loop.
+  // If ALL candidates are supervised, we surface the unit-detection bug as
+  // the actual failure mode so the user sees what happened.
+  const supervisedPids: number[] = [];
+  const unsupervisedPids: number[] = [];
+  for (const pid of pids) {
+    if (await isPidSupervisedBySystemd(pid)) supervisedPids.push(pid);
+    else unsupervisedPids.push(pid);
+  }
+  if (supervisedPids.length > 0 && unsupervisedPids.length === 0) {
+    log.push(
+      `✗ Todos os PIDs (${supervisedPids.join(", ")}) estão sob systemd ` +
+        `(cgroup: openclaw-gateway.service) mas detectSystemdScope() não achou a unit.`,
+    );
+    log.push(
+      "  Provavelmente o systemctl não tem permissão pra ver a unit (--user " +
+        "rodando como outro usuário, ou XDG_RUNTIME_DIR ausente).",
+    );
+    log.push("Recomendado: reinicie via SSH com `systemctl --user restart openclaw-gateway`.");
+    return { success: false, runtime: "systemd", output: log.join("\n") };
+  }
+  if (supervisedPids.length > 0) {
+    log.push(
+      `⚠ Ignorando PIDs supervisionados pelo systemd: ${supervisedPids.join(", ")} ` +
+        "(matá-los provocaria respawn + EADDRINUSE)",
+    );
+  }
+  const targetPids = unsupervisedPids;
+  log.push(`Alvos para SIGTERM+respawn: ${targetPids.join(", ") || "(nenhum)"}`);
+
   // Try each PID in order — first one that survives capture wins
   let lastErr = "";
-  for (const pid of pids) {
+  for (const pid of targetPids) {
     log.push(`▸ Tentando PID ${pid}…`);
 
     let argv: string[];
@@ -442,7 +525,7 @@ export async function restartGateway(): Promise<RestartResult> {
     return { success: true, runtime: "process", output: log.join("\n") };
   }
 
-  log.push(`✗ Todos os ${pids.length} PID(s) falharam. Último erro: ${lastErr}`);
+  log.push(`✗ Todos os ${targetPids.length} PID(s) elegíveis falharam. Último erro: ${lastErr}`);
   log.push("Tente: `openclaw daemon start` ou veja `pgrep -af openclaw`.");
   return { success: false, runtime: "process", output: log.join("\n") };
 }
@@ -460,14 +543,20 @@ export async function gatewayLogs(
   const errOnly = !!opts.errorsOnly;
 
   // 1. systemd journal
-  if (await hasSystemdUnit()) {
+  const journalScope = await detectSystemdScope();
+  if (journalScope !== null) {
+    const userFlag = journalScope === "user" ? "--user " : "";
     const cmd = errOnly
-      ? `journalctl -u openclaw-gateway -n ${lines} --no-pager -p err 2>/dev/null`
-      : `journalctl -u openclaw-gateway -n ${lines} --no-pager 2>/dev/null`;
+      ? `journalctl ${userFlag}-u openclaw-gateway -n ${lines} --no-pager -p err 2>/dev/null`
+      : `journalctl ${userFlag}-u openclaw-gateway -n ${lines} --no-pager 2>/dev/null`;
     const r = await safeExec(cmd, 8000);
     const text = (r.stdout || "").trim();
     if (text && !/^-- No entries --$/m.test(text)) {
-      return { source: "journalctl (systemd)", output: text, found: true };
+      return {
+        source: `journalctl (systemd ${journalScope})`,
+        output: text,
+        found: true,
+      };
     }
   }
 
