@@ -41,7 +41,7 @@ export type WsChatEvent =
   | { type: "session"; sessionId: string }
   | { type: "usage"; tokensIn: number; tokensOut: number; cost?: number; model?: string }
   | { type: "timing"; phase: "handshake" | "hello-ok" | "chat-send" | "first-delta" | "final"; ms: number }
-  | { type: "done" }
+  | { type: "done"; buffered?: boolean }
   | { type: "error"; message: string; code?: string };
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 8_000;
@@ -850,9 +850,7 @@ function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
 
       switch (inferredState) {
         case "final": {
-          // Buffered mode: when no `delta` frames preceded this `final`,
-          // the reply may still be inside the final payload. Try every
-          // known field plus the recursive longest-string fallback.
+          const isBuffered = !state.tokensEmitted;
           if (!state.tokensEmitted) {
             const finalText = extractPayloadText(payload);
             if (finalText) {
@@ -862,7 +860,7 @@ function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
               // Gateway closed the stream without ever sending the
               // reply text. We surface the full frame trace inside the
               // chat bubble itself — the user can copy/paste it back
-              // and we patch the parser if a new event shape appeared.
+              // and we patch the operator if a new event shape appeared.
               // Also written to the server log so `pm2 logs` shows it
               // without `MEMORY_DEBUG=1`. We do NOT fall back to CLI
               // here because CLI defeats the real-time UX; the user
@@ -890,7 +888,7 @@ function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
                   `não ter reiniciado — confira \`systemctl --user status openclaw-gateway\`.\n\n` +
                   `3. **Bug do gateway** — o trace completo dos frames recebidos está salvo no ` +
                   `log do servidor. Rode \`pm2 logs mission-control --lines 200\` (ou o equivalente ` +
-                  `pro seu setup) e procure por \`[ws] routing-tool follow-up\` e ` +
+                  `pro seu setup) e procure por \`[ws] routing-tool follow-up\` and ` +
                   `\`[ws] state=final without any text\`. Cole esse output e eu adiciono o campo certo.\n\n` +
                   `**Trace truncado dos frames desta sessão (primeiros 4KB):**\n` +
                   "```json\n" +
@@ -909,7 +907,7 @@ function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
               model: typeof usage.model === "string" ? usage.model : undefined,
             });
           }
-          events.push({ type: "done" });
+          events.push({ type: "done", buffered: isBuffered });
           break;
         }
         case "aborted":

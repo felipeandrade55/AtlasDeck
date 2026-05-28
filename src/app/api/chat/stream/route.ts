@@ -450,26 +450,29 @@ export async function POST(req: NextRequest) {
             // live as each phase reports.
             timings[evt.phase] = evt.ms;
             providerDetailForTurn = formatTimings(timings, providerDetailForTurn);
-            // Heuristic: gateway buffered the reply if first-delta and
-            // final arrived within 100ms of each other.
-            if (
-              timings["first-delta"] != null &&
-              timings["final"] != null &&
-              Math.abs(timings["final"] - timings["first-delta"]) < 100
-            ) {
-              bufferedDetected = true;
-            }
-            if (providerForTurn) {
-              send("provider", {
-                provider: providerForTurn,
-                detail: providerDetailForTurn,
-                buffered: bufferedDetected,
-              });
-            }
-            break;
-          case "done":
-            // Handled by the loop break — finally block does the persistence.
-            break;
+             // Heuristic: gateway buffered the reply if first-delta and
+             // final arrived within 100ms of each other. Skip for WS which has exact tracking.
+             if (
+               providerForTurn !== "ws" &&
+               timings["first-delta"] != null &&
+               timings["final"] != null &&
+               Math.abs(timings["final"] - timings["first-delta"]) < 100
+             ) {
+               bufferedDetected = true;
+             }
+             if (providerForTurn) {
+               send("provider", {
+                 provider: providerForTurn,
+                 detail: providerDetailForTurn,
+                 buffered: bufferedDetected,
+               });
+             }
+             break;
+           case "done":
+             if (evt.buffered !== undefined) {
+               bufferedDetected = evt.buffered;
+             }
+             break;
           case "error":
             send("error", { message: evt.message, code: evt.code });
             updateMessage(assistantMsg.id, {
