@@ -560,6 +560,39 @@ export function getLastHealth(): DiagnoseResponse | null {
 }
 
 /**
+ * Per-account poller memory snapshot. Exposed so `runDiagnose` (and any
+ * UI that calls it) can surface "polling has been stuck for N minutes"
+ * BEFORE the auto-restart fires — closing a real gap reported by users
+ * who saw `pending=1` for 10 minutes while the doctor still said
+ * "Tudo saudável".
+ *
+ * Returns the same numbers the Tier-2 detector reads, so the UI can
+ * show a coherent picture: "5/6 ticks até auto-restart" matches what
+ * the watchdog will actually do.
+ */
+export function getPollerMemory(accountId: string): {
+  lastPending: number;
+  consecutiveNonDraining: number;
+  consecutiveStale: number;
+  staleTickThreshold: number;
+  growingTickThreshold: number;
+  tickIntervalMs: number;
+  lastStuckRestartAt: number;
+} | null {
+  const mem = state.pollerMem.get(accountId);
+  if (!mem) return null;
+  return {
+    lastPending: mem.lastPending,
+    consecutiveNonDraining: mem.consecutiveNonDraining,
+    consecutiveStale: mem.consecutiveStale,
+    staleTickThreshold: STUCK_POLLER_STALE_TICKS,
+    growingTickThreshold: STUCK_POLLER_CONSECUTIVE,
+    tickIntervalMs: TICK_INTERVAL_MS,
+    lastStuckRestartAt: mem.lastStuckRestartAt,
+  };
+}
+
+/**
  * Snapshot of the auto-restart watchdog for the diagnose endpoint. We
  * expose the raw attempt timestamps + circuit-breaker fields so the user
  * can see how close we are to "giving up" without having to read code.

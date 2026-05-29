@@ -23,6 +23,7 @@ import {
   ChevronDown,
   ChevronRight,
   Loader2,
+  Power,
 } from "lucide-react";
 
 interface DiagnoseResponse {
@@ -160,12 +161,18 @@ function severityClasses(s: Severity): { icon: typeof CheckCircle; color: string
   }
 }
 
+type RestartState =
+  | { kind: "idle" }
+  | { kind: "running" }
+  | { kind: "done"; success: boolean; output: string };
+
 export function GatewayDiagnoseCard() {
   const [data, setData] = useState<DiagnoseResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expandedIncidents, setExpandedIncidents] = useState<Set<string>>(new Set());
   const [copied, setCopied] = useState(false);
+  const [restartState, setRestartState] = useState<RestartState>({ kind: "idle" });
 
   const fetchDiag = useCallback(async () => {
     setLoading(true);
@@ -181,6 +188,36 @@ export function GatewayDiagnoseCard() {
       setLoading(false);
     }
   }, []);
+
+  /**
+   * Manual override: skip the Tier-2 12-min wait and reanimate the gateway
+   * now. Reuses /api/actions restart-gateway which already runs the sweep
+   * + systemctl restart + reset-failed path, so the user gets the same
+   * defended restart they'd get from the watchdog.
+   */
+  const forceRestart = useCallback(async () => {
+    if (!confirm("Reiniciar o gateway OpenClaw agora? Vai pausar Telegram por ~15-30s.")) return;
+    setRestartState({ kind: "running" });
+    try {
+      const r = await fetch("/api/actions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "restart-gateway" }),
+      });
+      const j = (await r.json()) as { success?: boolean; output?: string; error?: string };
+      const success = !!j.success;
+      const output = j.output || j.error || "(sem detalhe)";
+      setRestartState({ kind: "done", success, output });
+      // Re-fetch diagnose after a beat so the user sees the new state
+      setTimeout(() => void fetchDiag(), 3000);
+    } catch (e) {
+      setRestartState({
+        kind: "done",
+        success: false,
+        output: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }, [fetchDiag]);
 
   useEffect(() => {
     void fetchDiag();
@@ -227,7 +264,25 @@ export function GatewayDiagnoseCard() {
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          <button
+            onClick={forceRestart}
+            disabled={restartState.kind === "running"}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-colors disabled:opacity-40"
+            style={{
+              backgroundColor: "rgba(245, 158, 11, 0.15)",
+              color: "#fbbf24",
+              border: "1px solid rgba(245, 158, 11, 0.35)",
+            }}
+            title="Reinicia o gateway agora — útil quando você sabe que o canal está travado e não quer esperar o auto-restart (até 12min)"
+          >
+            {restartState.kind === "running" ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Power className="w-3.5 h-3.5" />
+            )}
+            Forçar restart agora
+          </button>
           <button
             onClick={copyJson}
             disabled={!data}
@@ -257,6 +312,24 @@ export function GatewayDiagnoseCard() {
           </button>
         </div>
       </div>
+
+      {restartState.kind === "done" && (
+        <div
+          className="mb-4 p-3 rounded-lg text-sm"
+          style={{
+            backgroundColor: restartState.success ? "rgba(16, 185, 129, 0.10)" : "rgba(239, 68, 68, 0.10)",
+            color: restartState.success ? "#6ee7b7" : "#fca5a5",
+            border: `1px solid ${restartState.success ? "rgba(16, 185, 129, 0.25)" : "rgba(239, 68, 68, 0.25)"}`,
+          }}
+        >
+          <div className="font-medium mb-1">
+            {restartState.success ? "Restart disparado" : "Restart falhou"}
+          </div>
+          <pre className="text-xs whitespace-pre-wrap break-words font-mono opacity-80 max-h-32 overflow-y-auto">
+            {restartState.output}
+          </pre>
+        </div>
+      )}
 
       {error && (
         <div

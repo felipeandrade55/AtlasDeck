@@ -10,6 +10,9 @@ import { resolveOpenClawAgentsConfigPath } from "./openclaw-config";
 import { getTelegramAccountLocal } from "./telegram-accounts-local";
 import { tgCall, type TgBotInfo, type TgWebhookInfo } from "./telegram-api";
 import { detectGatewayRuntime } from "./gateway-control";
+// NOTE: getPollerMemory is loaded via dynamic import inside runDiagnose
+// because health-monitor.ts already statically imports this file; loading
+// it back here statically would create a circular dependency.
 
 export type CheckStatus = "pass" | "warn" | "fail" | "skip";
 
@@ -241,6 +244,44 @@ export async function runDiagnose(opts: RunDiagnoseOptions): Promise<DiagnoseRes
           destructive: true,
         },
       });
+    }
+
+    // Pending-stale check: pending=1 sustained across multiple ticks is the
+    // exact symptom of a stuck poller — gateway alive, channel "healthy",
+    // but no messages getting processed. This used to slip past the doctor
+    // because the only backlog rule was `pending > 50`. Reads the live
+    // poller memory from the health-monitor so the user sees the same
+    // counter the auto-restart watchdog is evaluating.
+    if (pending >= 1) {
+      try {
+        const { getPollerMemory } = await import("./health-monitor");
+        const mem = getPollerMemory(id);
+        if (mem && mem.consecutiveStale > 0) {
+          const minutesStale = (mem.consecutiveStale * mem.tickIntervalMs) / 60_000;
+          const ticksUntilRestart = mem.staleTickThreshold - mem.consecutiveStale;
+          const minutesUntilRestart = (ticksUntilRestart * mem.tickIntervalMs) / 60_000;
+          // Surface as a warn at 6 min stale, escalate to fail when we're
+          // 1 tick away from auto-restart. The user sees the watchdog's
+          // countdown without having to read code.
+          const status: CheckStatus =
+            mem.consecutiveStale >= mem.staleTickThreshold - 1 ? "fail" : "warn";
+          checks.push({
+            id: `polling-stale-${id}`,
+            category: "telegram",
+            label: `Conta "${id}": polling pode estar travado`,
+            status,
+            detail:
+              status === "fail"
+                ? `${pending} update(s) pendente(s) por ${minutesStale.toFixed(0)}min sem o gateway drenar. Auto-restart dispara no próximo tick (~${Math.max(0, minutesUntilRestart).toFixed(0)}min).`
+                : `${pending} update(s) pendente(s) por ${minutesStale.toFixed(0)}min. Se persistir, auto-restart dispara em ~${Math.max(0, minutesUntilRestart).toFixed(0)}min. Pra agilizar, clique em "Reiniciar gateway".`,
+            fix: { action: "restart-gateway", label: "Reiniciar gateway agora", accountId: id },
+          });
+        }
+      } catch {
+        // Dynamic import failing means the health-monitor isn't loaded
+        // (e.g. unit test or cold edge runtime) — skip the enriched check
+        // rather than fail the diagnose.
+      }
     }
 
     // Emit routing telemetry for the health monitor's stuck-poller detection.
