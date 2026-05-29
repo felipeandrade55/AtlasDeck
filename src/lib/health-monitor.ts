@@ -61,17 +61,31 @@ const AUTO_RESTART_MAX_ATTEMPTS = 3;
 const AUTO_RESTART_COOLDOWN_MS = 5 * 60 * 1000; // wait 5 min between attempts; tick is 2 min
 
 // ─── Stuck-poller detection ─────────────────────────────────────────────
-// pending_update_count growing across consecutive ticks while the gateway
-// process is alive means the Telegram adapter inside the gateway has hung
-// (typical cause: 409 Conflict recovery loop, NAT/socket timeout on the
-// long-poll). Require N consecutive *growing* ticks before firing so
-// active conversations (where pending oscillates around 1) don't trigger
-// false-positive restarts. Tightened on 2026-05-29 after we observed the
-// watchdog killing the gateway during active chat: pending=1 for two ticks
-// was enough to fire under the old threshold, but pending=1 is the normal
-// steady state for a single in-flight message.
-const STUCK_POLLER_MIN_PENDING = 3;       // ignore light traffic ticks
-const STUCK_POLLER_CONSECUTIVE = 3;       // 3 ticks = 6 minutes of strictly-growing backlog
+// pending_update_count behavior across consecutive ticks while the gateway
+// process is alive tells us if the Telegram adapter inside the gateway is
+// healthy. Two failure modes we need to detect:
+//
+//   Tier 1 (fast — backlog under load):
+//     pending >= 3 and STRICTLY GROWING across N ticks. Catches the case
+//     where messages flood in and the gateway processes nothing — typical
+//     for a 409 Conflict / NAT timeout / event-loop deadlock.
+//
+//   Tier 2 (slow — small backlog that never drains):
+//     pending >= 1 for K consecutive ticks WITHOUT ever returning to 0.
+//     Catches the subtle case where a single message has been pending for
+//     many minutes — observed on 2026-05-29: gateway up, channel "healthy",
+//     but no inbound traffic processed for 14 minutes while the user
+//     waited for a reply. Tier 1 misses this because pending stays at 1.
+//
+// Why two tiers instead of just lowering Tier 1 thresholds: active
+// conversation can keep pending at 1 for short stretches (one in-flight
+// message at a time). Tier 2's K=6 (12min) is long enough that real
+// conversations always have a moment where pending hits 0 between
+// exchanges, resetting the counter; only a truly stuck poller can hold
+// pending at 1+ for the entire window.
+const STUCK_POLLER_MIN_PENDING = 3;        // tier 1: ignore light traffic ticks
+const STUCK_POLLER_CONSECUTIVE = 3;        // tier 1: 3 ticks = 6 minutes of strictly-growing backlog
+const STUCK_POLLER_STALE_TICKS = 6;        // tier 2: 6 ticks = 12 minutes of non-zero pending without ever draining
 const STUCK_POLLER_QUIET_MS = 10 * 60 * 1000; // re-arm: wait 10 min after a stuck-restart before re-flagging
 
 interface CheckMemory {
@@ -84,8 +98,10 @@ interface CheckMemory {
 interface PollerMemory {
   /** pending_update_count last seen for this account. */
   lastPending: number;
-  /** Consecutive ticks where pending stayed non-zero AND did not shrink. */
+  /** Tier 1 — consecutive ticks where pending stayed non-zero AND did not shrink. */
   consecutiveNonDraining: number;
+  /** Tier 2 — consecutive ticks where pending was non-zero (never dropped to 0). */
+  consecutiveStale: number;
   /** Timestamp of the last stuck-poller restart, to debounce re-arm. */
   lastStuckRestartAt: number;
 }
@@ -216,6 +232,7 @@ async function tick(reason: "scheduled" | "manual" = "scheduled"): Promise<Diagn
         const mem = state.pollerMem.get(r.accountId);
         if (mem && r.pendingUpdates === 0) {
           mem.consecutiveNonDraining = 0;
+          mem.consecutiveStale = 0;
           mem.lastPending = 0;
         }
       }
@@ -277,26 +294,35 @@ async function maybeAutoRestartStuckPoller(
     const mem = state.pollerMem.get(r.accountId) ?? {
       lastPending: 0,
       consecutiveNonDraining: 0,
+      consecutiveStale: 0,
       lastStuckRestartAt: 0,
     };
 
-    // Strictly growing AND above threshold. The previous "growing-or-equal"
-    // rule mistook normal conversation rhythm (where pending stays at 1
-    // while the gateway processes each message inside a tick) for a stuck
-    // poller. A truly stuck poller will see pending climb monotonically
-    // because messages arrive but no offset commit drains them.
+    // Tier 1 — strictly growing backlog above MIN_PENDING. Catches floods.
     if (r.pendingUpdates >= STUCK_POLLER_MIN_PENDING && r.pendingUpdates > mem.lastPending) {
       mem.consecutiveNonDraining++;
     } else {
       mem.consecutiveNonDraining = 0;
     }
+
+    // Tier 2 — any non-zero backlog that never drains. Only resets when
+    // pending hits 0 (a real chat session always has moments where the
+    // gateway is caught up between messages).
+    if (r.pendingUpdates >= 1) {
+      mem.consecutiveStale++;
+    } else {
+      mem.consecutiveStale = 0;
+    }
+
     mem.lastPending = r.pendingUpdates;
     state.pollerMem.set(r.accountId, mem);
 
     // Debounce: if we restarted recently for this account, wait the
     // re-arm window before treating it as stuck again.
     const recentlyRestarted = now - mem.lastStuckRestartAt < STUCK_POLLER_QUIET_MS;
-    if (mem.consecutiveNonDraining >= STUCK_POLLER_CONSECUTIVE && !recentlyRestarted) {
+    const tier1Trigger = mem.consecutiveNonDraining >= STUCK_POLLER_CONSECUTIVE;
+    const tier2Trigger = mem.consecutiveStale >= STUCK_POLLER_STALE_TICKS;
+    if ((tier1Trigger || tier2Trigger) && !recentlyRestarted) {
       stuck.push(r.accountId);
     }
   }
@@ -341,6 +367,7 @@ async function maybeAutoRestartStuckPoller(
       if (mem) {
         mem.lastStuckRestartAt = now;
         mem.consecutiveNonDraining = 0;
+        mem.consecutiveStale = 0;
         mem.lastPending = 0;
       }
     }

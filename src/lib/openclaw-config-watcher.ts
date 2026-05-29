@@ -40,14 +40,31 @@ interface WatcherState {
   sweepsThatChanged: number;
 }
 
-const state: WatcherState = {
-  started: false,
-  watcher: null,
-  debounceTimer: null,
-  lastOwnWriteAt: 0,
-  sweepsRun: 0,
-  sweepsThatChanged: 0,
+/**
+ * Why globalThis-pinned state: Next.js bundles `instrumentation.ts` and each
+ * API route as separate chunks. Without this, the module is duplicated and
+ * the API route's `getOpenClawConfigWatcherStats()` reads a *different* state
+ * object than the one `startOpenClawConfigWatcher()` mutated at boot — the
+ * diagnose endpoint would always report `started: false` even though the
+ * watcher is actually running. globalThis bypasses the chunk-level
+ * deduplication and ensures every importer of this module sees the same
+ * singleton.
+ */
+const STATE_KEY = "__atlasdeckOpenClawConfigWatcherState";
+type GlobalWithState = typeof globalThis & {
+  [STATE_KEY]?: WatcherState;
 };
+const globalRef = globalThis as GlobalWithState;
+const state: WatcherState =
+  globalRef[STATE_KEY] ??
+  (globalRef[STATE_KEY] = {
+    started: false,
+    watcher: null,
+    debounceTimer: null,
+    lastOwnWriteAt: 0,
+    sweepsRun: 0,
+    sweepsThatChanged: 0,
+  });
 
 function runSweepNow(): void {
   // Ignore self-triggered events for a couple of debounce windows after we
