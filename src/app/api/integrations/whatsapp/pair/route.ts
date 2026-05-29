@@ -26,15 +26,63 @@ const globalAny = globalThis as unknown as Record<string, Map<string, PairState>
 const activePairs: Map<string, PairState> = globalAny[globalKey] ?? new Map<string, PairState>();
 globalAny[globalKey] = activePairs;
 
+/**
+ * OpenClaw renders the WhatsApp QR via `qrcode` npm with `type: "terminal"`,
+ * which emits each module as TWO SPACES wrapped in ANSI background-color
+ * escape codes (black bg = dark/data module, white bg = light/quiet zone).
+ * If we run plain stripAnsi those colors get deleted and we\'re left with
+ * blank spaces — exactly why every previous attempt had a "QR header
+ * appears then nothing" symptom in the UI.
+ *
+ * This pre-processor walks the ANSI stream, tracks the current bg color,
+ * and replaces spaces with unicode FULL BLOCK chars when inside a dark
+ * bg run. After it runs, the regular stripAnsi can safely drop the
+ * remaining escape codes — the QR survives as plain unicode.
+ */
+function qrAnsiBgToBlocks(input: string): string {
+  const out: string[] = [];
+  let bg: "dark" | "light" | null = null;
+  const re = /\x1b\[([0-9;]+)m/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(input)) !== null) {
+    const chunk = input.slice(lastIndex, match.index);
+    if (bg === "dark") {
+      out.push(chunk.replace(/ /g, "\u2588"));
+    } else if (bg === "light") {
+      // Light bg with spaces = "empty" pixel of the QR. Render as a true
+      // space (it's already visually blank, but we kill any stray bg by
+      // dropping the wrapping escape via stripAnsi later).
+      out.push(chunk);
+    } else {
+      out.push(chunk);
+    }
+    for (const codeStr of match[1].split(";")) {
+      const code = Number(codeStr);
+      // 40-47 = standard bg, 100-107 = bright bg.
+      if (code === 40 || code === 100) bg = "dark";
+      else if (code === 47 || code === 107) bg = "light";
+      else if (code === 49 || code === 0) bg = null;
+      // Foreground colors / other SGR codes don't affect bg state.
+    }
+    lastIndex = re.lastIndex;
+  }
+  const tail = input.slice(lastIndex);
+  if (bg === "dark") out.push(tail.replace(/ /g, "\u2588"));
+  else out.push(tail);
+  return out.join("");
+}
+
 function stripAnsi(str: string): string {
-  return str
-    // ANSI escape sequences (colors, cursor moves, clear screen, etc.).
+  // 1. Convert QR ANSI bg patterns to unicode blocks so they survive (2).
+  const blocked = qrAnsiBgToBlocks(str);
+  return blocked
+    // 2. Strip remaining ANSI escape sequences (colors, cursor moves, etc.).
     .replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, "")
-    // PTY (`script -qfc`) emits \r\n line endings — normalize so the <pre>
-    // doesn't double-space, which would push the QR off-screen.
+    // 3. PTY (`script -qfc`) emits \r\n — normalize so <pre> doesn\'t double-space.
     .replace(/\r\n/g, "\n")
-    // Standalone \r (line-overwrite, used by progress bars). Keep only the
-    // text after the last \r within a line so the final state shows.
+    // 4. Standalone \r (progress-bar overwrites). Keep only the text after
+    // the last \r within a line so the final state shows.
     .replace(/^.*\r(?!\n)/gm, "");
 }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   X,
   RefreshCw,
@@ -109,6 +109,15 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
   const [pairingOutput, setPairingOutput] = useState<string>("");
   const [pairingExited, setPairingExited] = useState<boolean>(false);
   const [pairingLoading, setPairingLoading] = useState<boolean>(false);
+  const pairingPanelRef = useRef<HTMLPreElement | null>(null);
+
+  // Auto-scroll the terminal panel so the QR/latest log lines are visible
+  // without the user having to manually drag the scrollbar. Triggered on
+  // every polling tick that updates pairingOutput.
+  useEffect(() => {
+    const el = pairingPanelRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [pairingOutput]);
 
   const [repairing, setRepairing] = useState(false);
   const [repairResult, setRepairResult] = useState<{
@@ -874,9 +883,10 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
                                   </div>
                                 )}
                                 <pre
-                                  className="font-mono bg-black text-white p-4 rounded-md overflow-x-auto text-[7px] leading-[7px] md:text-[8px] md:leading-[8px] tracking-[0px] text-center select-none"
+                                  ref={pairingPanelRef}
+                                  className="font-mono bg-black text-white p-4 rounded-md overflow-auto text-[8px] leading-[8px] md:text-[10px] md:leading-[10px] tracking-[0px] text-center select-none"
                                   style={{
-                                    maxHeight: "440px",
+                                    maxHeight: "560px",
                                     border: "1px solid rgba(255,255,255,0.15)",
                                     display: "block",
                                     whiteSpace: "pre",
