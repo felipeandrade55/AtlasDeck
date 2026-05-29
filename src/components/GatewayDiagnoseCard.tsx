@@ -24,6 +24,8 @@ import {
   ChevronRight,
   Loader2,
   Power,
+  Gauge,
+  Sparkles,
 } from "lucide-react";
 
 interface DiagnoseResponse {
@@ -66,6 +68,26 @@ interface DiagnoseResponse {
     summary: string;
     hint: string;
   } | null;
+  agentLoad: {
+    latestUsage: { percent: number; at: number } | null;
+    recentTimeouts: number;
+    recentCompactionFailures: number;
+    recentSurfaceErrors: number;
+    severity: "ok" | "warn" | "critical";
+    hint: string;
+    windowMs: number;
+  };
+  agentLoadWatchdog: {
+    started: boolean;
+    enabled: boolean;
+    intervalMs: number;
+    cooldownMs: number;
+    lastTickAt: number;
+    rotationsCount: number;
+    lastRotationAt: number;
+    lastRotationReason: string | null;
+    lastError: string | null;
+  };
 }
 
 type Severity = "ok" | "warn" | "fail";
@@ -163,6 +185,21 @@ function deriveSignals(d: DiagnoseResponse): DerivedSignal[] {
     });
   }
 
+  // Context headroom — the *predictive* signal. Goes red BEFORE the bot
+  // goes silent so the user (or auto-rotação) can act.
+  const loadSeverity: Severity =
+    d.agentLoad.severity === "critical"
+      ? "fail"
+      : d.agentLoad.severity === "warn"
+        ? "warn"
+        : "ok";
+  signals.push({
+    key: "agent-load",
+    label: "Carga da conversa",
+    severity: loadSeverity,
+    detail: d.agentLoad.hint,
+  });
+
   return signals;
 }
 
@@ -190,6 +227,11 @@ type RestartState =
   | { kind: "running" }
   | { kind: "done"; success: boolean; output: string };
 
+type RotateState =
+  | { kind: "idle" }
+  | { kind: "running" }
+  | { kind: "done"; success: boolean; output: string };
+
 export function GatewayDiagnoseCard() {
   const [data, setData] = useState<DiagnoseResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -197,6 +239,8 @@ export function GatewayDiagnoseCard() {
   const [expandedIncidents, setExpandedIncidents] = useState<Set<string>>(new Set());
   const [copied, setCopied] = useState(false);
   const [restartState, setRestartState] = useState<RestartState>({ kind: "idle" });
+  const [rotateState, setRotateState] = useState<RotateState>({ kind: "idle" });
+  const [autoToggleBusy, setAutoToggleBusy] = useState(false);
 
   const fetchDiag = useCallback(async () => {
     setLoading(true);
@@ -242,6 +286,68 @@ export function GatewayDiagnoseCard() {
       });
     }
   }, [fetchDiag]);
+
+  /**
+   * Rotate the active Telegram session. This is the "I don't want to type
+   * /new" button — the rotator renames the current JSONL so the next
+   * inbound message lands on a fresh session with empty context. Cheaper
+   * than restarting the gateway and (unlike restart) actually resolves
+   * the token-overflow case.
+   */
+  const rotateSession = useCallback(async () => {
+    if (
+      !confirm(
+        "Resetar a conversa do Telegram?\n\nA conversa atual fica arquivada (.reset.<ts>.jsonl) e a próxima mensagem começa do zero. Sem perda — só sem histórico no contexto do agente.",
+      )
+    )
+      return;
+    setRotateState({ kind: "running" });
+    try {
+      const r = await fetch("/api/telegram/rotate-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const j = (await r.json()) as {
+        rotated?: boolean;
+        reason?: string;
+        rotatedTo?: string;
+      };
+      setRotateState({
+        kind: "done",
+        success: !!j.rotated,
+        output:
+          (j.reason || "(sem detalhe)") +
+          (j.rotatedTo ? `\n→ ${j.rotatedTo}` : ""),
+      });
+      setTimeout(() => void fetchDiag(), 1500);
+    } catch (e) {
+      setRotateState({
+        kind: "done",
+        success: false,
+        output: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }, [fetchDiag]);
+
+  const toggleAutoRotate = useCallback(
+    async (next: boolean) => {
+      setAutoToggleBusy(true);
+      try {
+        await fetch("/api/telegram/auto-rotate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: next }),
+        });
+        await fetchDiag();
+      } catch {
+        // Diagnose refresh will reflect the actual state next tick.
+      } finally {
+        setAutoToggleBusy(false);
+      }
+    },
+    [fetchDiag],
+  );
 
   useEffect(() => {
     void fetchDiag();
@@ -289,6 +395,24 @@ export function GatewayDiagnoseCard() {
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end">
+          <button
+            onClick={rotateSession}
+            disabled={rotateState.kind === "running"}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-colors disabled:opacity-40"
+            style={{
+              backgroundColor: "rgba(168, 85, 247, 0.15)",
+              color: "#c4b5fd",
+              border: "1px solid rgba(168, 85, 247, 0.35)",
+            }}
+            title="Arquiva a conversa atual e começa do zero na próxima mensagem do Telegram. Sem restart de gateway."
+          >
+            {rotateState.kind === "running" ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="w-3.5 h-3.5" />
+            )}
+            Resetar conversa
+          </button>
           <button
             onClick={forceRestart}
             disabled={restartState.kind === "running"}
@@ -351,6 +475,24 @@ export function GatewayDiagnoseCard() {
           </div>
           <pre className="text-xs whitespace-pre-wrap break-words font-mono opacity-80 max-h-32 overflow-y-auto">
             {restartState.output}
+          </pre>
+        </div>
+      )}
+
+      {rotateState.kind === "done" && (
+        <div
+          className="mb-4 p-3 rounded-lg text-sm"
+          style={{
+            backgroundColor: rotateState.success ? "rgba(168, 85, 247, 0.10)" : "rgba(245, 158, 11, 0.10)",
+            color: rotateState.success ? "#c4b5fd" : "#fbbf24",
+            border: `1px solid ${rotateState.success ? "rgba(168, 85, 247, 0.25)" : "rgba(245, 158, 11, 0.25)"}`,
+          }}
+        >
+          <div className="font-medium mb-1">
+            {rotateState.success ? "Conversa resetada" : "Reset não aplicado"}
+          </div>
+          <pre className="text-xs whitespace-pre-wrap break-words font-mono opacity-80 max-h-32 overflow-y-auto">
+            {rotateState.output}
           </pre>
         </div>
       )}
@@ -427,6 +569,83 @@ export function GatewayDiagnoseCard() {
                 </div>
               );
             })}
+          </div>
+
+          {/* Auto-rotação — ligada por padrão. O painel só existe pra
+              transparência (mostrar que tá ativa, contar rotações) e
+              como botão de fuga emergencial se algo der errado. */}
+          <div
+            className="mb-4 rounded-lg p-3"
+            style={{
+              backgroundColor: "var(--card-elevated, rgba(255,255,255,0.03))",
+              border: "1px solid var(--border)",
+            }}
+          >
+            <div className="flex items-start justify-between gap-3 mb-1">
+              <div className="flex items-center gap-2">
+                <Gauge className="w-4 h-4" style={{ color: data.agentLoadWatchdog.enabled ? "#6ee7b7" : "#fbbf24" }} />
+                <div className="text-sm font-medium" style={{ color: "var(--text)" }}>
+                  Auto-rotação da conversa
+                </div>
+                <span
+                  className="text-xs px-2 py-0.5 rounded-full"
+                  style={{
+                    backgroundColor: data.agentLoadWatchdog.enabled
+                      ? "rgba(16, 185, 129, 0.15)"
+                      : "rgba(245, 158, 11, 0.15)",
+                    color: data.agentLoadWatchdog.enabled ? "#6ee7b7" : "#fbbf24",
+                    border: `1px solid ${data.agentLoadWatchdog.enabled ? "rgba(16, 185, 129, 0.30)" : "rgba(245, 158, 11, 0.30)"}`,
+                  }}
+                >
+                  {data.agentLoadWatchdog.enabled ? "Ativa" : "Desligada"}
+                </span>
+              </div>
+              <button
+                onClick={() => void toggleAutoRotate(!data.agentLoadWatchdog.enabled)}
+                disabled={autoToggleBusy}
+                className="text-xs underline-offset-2 hover:underline transition-colors disabled:opacity-40"
+                style={{ color: "var(--text-muted)" }}
+                title={
+                  data.agentLoadWatchdog.enabled
+                    ? "Pausa a auto-rotação. Use só se ela estiver causando problema — depois reative."
+                    : "Religa a auto-rotação."
+                }
+              >
+                {autoToggleBusy
+                  ? "…"
+                  : data.agentLoadWatchdog.enabled
+                    ? "desligar"
+                    : "religar"}
+              </button>
+            </div>
+            <div className="text-xs" style={{ color: "var(--text-muted)" }}>
+              {data.agentLoadWatchdog.enabled
+                ? "Reseta a conversa do Telegram sozinha quando a carga fica crítica. Você não precisa fazer nada."
+                : "Pausada — você vai precisar clicar em \"Resetar conversa\" manualmente quando o bot ficar mudo."}
+              {data.agentLoadWatchdog.rotationsCount > 0 && (
+                <div className="mt-1">
+                  <span className="font-mono">
+                    {data.agentLoadWatchdog.rotationsCount} rotação{data.agentLoadWatchdog.rotationsCount === 1 ? "" : "ões"}
+                  </span>{" "}
+                  desde o último boot
+                  {data.agentLoadWatchdog.lastRotationAt > 0
+                    ? ` · última ${new Date(data.agentLoadWatchdog.lastRotationAt).toLocaleString("pt-BR")}`
+                    : ""}
+                </div>
+              )}
+              {data.agentLoadWatchdog.lastError && (
+                <div className="mt-1" style={{ color: "#fbbf24" }}>
+                  ⚠ {data.agentLoadWatchdog.lastError}
+                </div>
+              )}
+              {data.agentLoad.latestUsage && (
+                <div className="mt-1">
+                  Último uso de prompt observado:{" "}
+                  <span className="font-mono">{data.agentLoad.latestUsage.percent}%</span>{" "}
+                  ({new Date(data.agentLoad.latestUsage.at).toLocaleString("pt-BR")})
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Incidents list — empty most of the time, gold when present */}

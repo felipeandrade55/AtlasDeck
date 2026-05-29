@@ -128,17 +128,31 @@ export function useChatStream() {
       }
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
-        // Browser fetch() rejects with "Failed to fetch" on every kind of
-        // network failure (DNS, offline, CORS, TLS, dropped TCP). The
-        // bare message is useless to operators, so we wrap it with the
-        // most likely culprit so the chat banner is actionable.
+        // Browser fetch() rejects with cryptic messages on every kind of
+        // network failure (DNS, offline, CORS, TLS, dropped TCP, Chrome
+        // ERR_NETWORK_CHANGED mid-stream). We classify these as
+        // NETWORK_TRANSIENT so the chat UI can offer a 1-click retry
+        // instead of forcing the user to retype the prompt.
         const raw = (err as Error).message || "erro desconhecido";
-        const enriched =
-          raw === "Failed to fetch"
-            ? "Sem conexão com o servidor (Failed to fetch). Verifique sua internet, " +
-              "se o AtlasDeck está rodando e se nada está bloqueando /api/chat/stream."
-            : raw;
-        opts.onError?.(enriched);
+        const name = (err as Error).name || "";
+        // Chrome: "Failed to fetch" (and ERR_NETWORK_CHANGED also surfaces
+        // as TypeError "Failed to fetch"). Safari: "Load failed" / "The
+        // network connection was lost." Firefox: "NetworkError when
+        // attempting to fetch resource." plus a generic "network error".
+        const transientPatterns =
+          /failed to fetch|load failed|network ?error|network changed|network connection|connection (was )?(lost|reset|closed)/i;
+        const isTransient =
+          transientPatterns.test(raw) ||
+          (name === "TypeError" && /fetch|network/i.test(raw));
+        if (isTransient) {
+          opts.onError?.(
+            "Conexão com o servidor caiu no envio. Pode ser troca de rede, " +
+              "VPN, atualização pendente do navegador ou queda momentânea.",
+            "NETWORK_TRANSIENT",
+          );
+        } else {
+          opts.onError?.(raw);
+        }
       }
     } finally {
       setIsStreaming(false);

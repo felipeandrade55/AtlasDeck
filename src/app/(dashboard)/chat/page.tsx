@@ -66,6 +66,11 @@ export default function ChatPage() {
   const [ttsEnabled, setTtsEnabled] = useState(true);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
+  // When the last chat send failed with a transient network error, we
+  // surface a "Tentar novamente" button in the banner. The code mirrors
+  // what useChatStream's onError passes us — null in normal/non-network
+  // failures so the retry CTA stays hidden.
+  const [statusBannerCode, setStatusBannerCode] = useState<string | null>(null);
   const [showImportModal, setShowImportModal] = useState(false);
   const [showVoiceModal, setShowVoiceModal] = useState(false);
   const [showWakeModal, setShowWakeModal] = useState(false);
@@ -373,11 +378,13 @@ export default function ChatPage() {
     setActiveThreadId(null);
     setMessages([]);
     setStatusBanner(null);
+    setStatusBannerCode(null);
   }, []);
 
   const handleSelectThread = useCallback((id: string) => {
     setActiveThreadId(id);
     setStatusBanner(null);
+    setStatusBannerCode(null);
   }, []);
 
   const handleTogglePin = useCallback(async (thread: ChatThread) => {
@@ -420,53 +427,73 @@ export default function ChatPage() {
   );
 
   const handleSend = useCallback(
-    async (text: string, opts?: { forceInline?: boolean }) => {
+    async (
+      text: string,
+      opts?: { forceInline?: boolean; _retry?: boolean },
+    ) => {
       const threadId = await ensureThread();
       const agentId = selectedAgent;
       const userTempId = `tmp-user-${Date.now()}`;
       const assistantTempId = `tmp-assistant-${Date.now() + 1}`;
       const nowIso = new Date().toISOString();
 
-      // Optimistic insert
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: userTempId,
-          thread_id: threadId ?? "",
-          role: "user",
-          content: text,
-          tool_name: null,
-          tool_input: null,
-          tool_output: null,
-          audio_path: null,
-          tts_path: null,
-          tokens_in: 0,
-          tokens_out: 0,
-          cost: 0,
-          status: "complete",
-          error: null,
-          created_at: nowIso,
-        },
-        {
-          id: assistantTempId,
-          thread_id: threadId ?? "",
-          role: "assistant",
-          content: "",
-          tool_name: null,
-          tool_input: null,
-          tool_output: null,
-          audio_path: null,
-          tts_path: null,
-          tokens_in: 0,
-          tokens_out: 0,
-          cost: 0,
-          status: "streaming",
-          error: null,
-          created_at: nowIso,
-        },
-      ]);
+      const userMessage: ChatMessage = {
+        id: userTempId,
+        thread_id: threadId ?? "",
+        role: "user",
+        content: text,
+        tool_name: null,
+        tool_input: null,
+        tool_output: null,
+        audio_path: null,
+        tts_path: null,
+        tokens_in: 0,
+        tokens_out: 0,
+        cost: 0,
+        status: "complete",
+        error: null,
+        created_at: nowIso,
+      };
+      const assistantPlaceholder: ChatMessage = {
+        id: assistantTempId,
+        thread_id: threadId ?? "",
+        role: "assistant",
+        content: "",
+        tool_name: null,
+        tool_input: null,
+        tool_output: null,
+        audio_path: null,
+        tts_path: null,
+        tokens_in: 0,
+        tokens_out: 0,
+        cost: 0,
+        status: "streaming",
+        error: null,
+        created_at: nowIso,
+      };
+
+      // Optimistic insert. On retry, the previous user turn is already in
+      // state and the trailing assistant bubble is an error placeholder —
+      // strip it so the user doesn't see a stale red bubble next to the
+      // fresh streaming one.
+      setMessages((prev) => {
+        if (opts?._retry) {
+          const cleaned = prev.slice();
+          while (cleaned.length > 0) {
+            const tail = cleaned[cleaned.length - 1];
+            if (tail.role === "assistant" && tail.status === "error") {
+              cleaned.pop();
+            } else {
+              break;
+            }
+          }
+          return [...cleaned, assistantPlaceholder];
+        }
+        return [...prev, userMessage, assistantPlaceholder];
+      });
 
       setStatusBanner(null);
+      setStatusBannerCode(null);
       let realAssistantId = assistantTempId;
       let assembled = "";
       const startedAt = Date.now();
@@ -587,6 +614,7 @@ export default function ChatPage() {
             setAgentDiagnostics((d) => ({ ...d, deviceRequired: true }));
           }
           setStatusBanner(`⚠ ${message}`);
+          setStatusBannerCode(code ?? null);
           setMessages((prev) =>
             prev.map((m) =>
               m.id === realAssistantId
@@ -648,6 +676,17 @@ export default function ChatPage() {
     handleSendRef.current = handleSend;
   }, [handleSend]);
 
+  // 1-click recovery for transient network failures (Chrome
+  // ERR_NETWORK_CHANGED, Safari "Load failed", dropped TCP mid-stream).
+  // Reuses the optimistic user bubble and only replaces the failed
+  // assistant placeholder, so the timeline stays clean.
+  const retryLastSend = useCallback(() => {
+    if (!lastUserPrompt || stream.isStreaming) return;
+    setStatusBanner(null);
+    setStatusBannerCode(null);
+    void handleSend(lastUserPrompt, { _retry: true });
+  }, [handleSend, lastUserPrompt, stream.isStreaming]);
+
   const pushToTalk = usePushToTalk({
     // Space-bar push-to-talk and Modo Conversa would race for the same
     // SpeechRecognition slot; suspend push-to-talk while conversation
@@ -668,6 +707,7 @@ export default function ChatPage() {
     paused: stream.isStreaming || speakingId !== null,
     onUtterance: (text) => {
       setStatusBanner(null);
+      setStatusBannerCode(null);
       void handleSendRef.current?.(text);
     },
   });
@@ -1009,7 +1049,38 @@ export default function ChatPage() {
         />
 
         {statusBanner && (
-          <div style={bannerStyle}>{statusBanner}</div>
+          <div style={bannerStyle}>
+            <span
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: 12,
+              }}
+            >
+              <span>{statusBanner}</span>
+              {statusBannerCode === "NETWORK_TRANSIENT" &&
+                lastUserPrompt &&
+                !stream.isStreaming && (
+                  <button
+                    type="button"
+                    onClick={retryLastSend}
+                    style={{
+                      background: "transparent",
+                      border: "1px solid var(--danger, #ef4444)",
+                      borderRadius: 4,
+                      color: "var(--danger, #ef4444)",
+                      fontSize: 11,
+                      padding: "3px 10px",
+                      cursor: "pointer",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    Tentar novamente
+                  </button>
+                )}
+            </span>
+          </div>
         )}
         {tts.lastError && (
           <div style={bannerStyle}>

@@ -31,6 +31,8 @@ import { migrateTelegramAccountsFromConfig } from "@/lib/telegram-accounts-local
 import { migrateWhatsappAccountsFromConfig } from "@/lib/whatsapp-accounts-local";
 import { getLastHealth, getWatchdogState } from "@/lib/health-monitor";
 import { getOpenClawConfigWatcherStats } from "@/lib/openclaw-config-watcher";
+import { snapshotAgentLoad, type AgentLoadSnapshot } from "@/lib/agent-load-monitor";
+import { getAgentLoadWatchdogState } from "@/lib/agent-load-watchdog";
 
 export const dynamic = "force-dynamic";
 
@@ -205,6 +207,8 @@ export async function GET() {
   const watchdog = getWatchdogState();
   const watcher = getOpenClawConfigWatcherStats();
   const agentFailure = await detectAgentFailures(logs?.output ?? null);
+  const agentLoad: AgentLoadSnapshot = snapshotAgentLoad(logs?.output ?? null);
+  const agentLoadWatchdog = getAgentLoadWatchdogState();
 
   return NextResponse.json({
     timestamp: new Date().toISOString(),
@@ -238,5 +242,17 @@ export async function GET() {
     watchdog,
     watcher,
     agentFailure,
+    agentLoad,
+    agentLoadWatchdog: {
+      started: agentLoadWatchdog.started,
+      enabled: agentLoadWatchdog.enabled,
+      intervalMs: agentLoadWatchdog.intervalMs,
+      cooldownMs: agentLoadWatchdog.cooldownMs,
+      lastTickAt: agentLoadWatchdog.lastTickAt,
+      rotationsCount: agentLoadWatchdog.rotationsCount,
+      lastRotationAt: agentLoadWatchdog.lastRotationAt,
+      lastRotationReason: agentLoadWatchdog.lastRotationReason,
+      lastError: agentLoadWatchdog.lastError,
+    },
   });
 }

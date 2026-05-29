@@ -31,6 +31,16 @@ export async function register(): Promise<void> {
   } catch (err) {
     console.warn("[instrumentation] health monitor bootstrap failed:", err);
   }
+  // Agent-load watchdog. Polls gateway logs for "prompt token usage" and
+  // "turn idle timed out" so the diagnose card can show context headroom
+  // and (opt-in via AGENT_LOAD_AUTO_ROTATE=on) auto-rotate the Telegram
+  // session before the next message hits the overflow wall.
+  try {
+    const { startAgentLoadWatchdog } = await import("./lib/agent-load-watchdog");
+    startAgentLoadWatchdog();
+  } catch (err) {
+    console.warn("[instrumentation] agent-load watchdog bootstrap failed:", err);
+  }
   // Make sure the nightly backup cron is registered on a fresh install —
   // idempotent, so existing crontabs are left alone.
   try {
