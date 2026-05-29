@@ -30,32 +30,36 @@ export interface SweepResult {
 }
 
 /**
- * Ensure `gateway.tools.allow` contains the keys AtlasDeck needs to drive
- * channel pairing via /tools/invoke. Without this, the gateway's default
- * deny list returns 404 for `whatsapp_login` and pairing from the UI is
- * impossible (the CLI fallback requires a real TTY).
+ * Strip tool names from `gateway.tools.allow` that are known not to exist
+ * in the running OpenClaw version. Historical AtlasDeck builds (and our
+ * own previous sweep iteration) wrote `whatsapp_login` here because we
+ * thought the WhatsApp plugin exposed it as an agent tool. It DOES NOT
+ * in v2026.5.12 — every plugin we inspected returns `toolNames: []` for
+ * pairing. The pairing path is now `openclaw channels login --channel
+ * whatsapp` via a PTY. Leaving stale entries triggers a noisy gateway
+ * warning every boot:
+ *   [tools] tools.profile (messaging) allowlist contains unknown
+ *           entries (whatsapp_login). These entries won't match any
+ *           tool unless the plugin is enabled.
  *
  * Returns true when the config object was mutated.
  */
-function ensureGatewayToolsAllow(raw: Record<string, unknown>, required: string[]): boolean {
+function pruneInvalidGatewayTools(raw: Record<string, unknown>): boolean {
   const gateway = (raw.gateway && typeof raw.gateway === "object" ? raw.gateway : {}) as Record<string, unknown>;
   const tools = (gateway.tools && typeof gateway.tools === "object" ? gateway.tools : {}) as Record<string, unknown>;
   const allowRaw = Array.isArray(tools.allow) ? (tools.allow as unknown[]) : [];
-  const allow = new Set(allowRaw.filter((v): v is string => typeof v === "string"));
-  let changed = false;
-  for (const t of required) {
-    if (!allow.has(t)) {
-      allow.add(t);
-      changed = true;
-    }
-  }
-  if (!changed) return false;
+  const allowStrings = allowRaw.filter((v): v is string => typeof v === "string");
+  // Known phantoms: tools we used to whitelist that don't exist in the
+  // current plugin registry. Add new entries here as we discover them.
+  const PHANTOM_TOOLS = new Set(["whatsapp_login"]);
+  const cleaned = allowStrings.filter((name) => !PHANTOM_TOOLS.has(name));
+  if (cleaned.length === allowStrings.length) return false;
 
   raw.gateway = {
     ...gateway,
     tools: {
       ...tools,
-      allow: Array.from(allow),
+      allow: cleaned,
     },
   };
   return true;
@@ -110,6 +114,25 @@ function ensureWhatsappChannelDefaults(raw: Record<string, unknown>): boolean {
  * Returns the list of ids whose entry was actually flipped from absent or
  * false to true.
  */
+/**
+ * Delete `plugins.entries.<id>` when present. Used to evict a plugin
+ * declaration the gateway can't satisfy (e.g. acpx never installed on
+ * disk → "plugin not installed" warning at every boot). Returns true
+ * when the entry was actually removed.
+ */
+function removeOrphanPluginEntry(raw: Record<string, unknown>, id: string): boolean {
+  const plugins = (raw.plugins && typeof raw.plugins === "object" ? raw.plugins : null) as
+    | Record<string, unknown>
+    | null;
+  if (!plugins) return false;
+  const entries = (plugins.entries && typeof plugins.entries === "object" ? plugins.entries : null) as
+    | Record<string, unknown>
+    | null;
+  if (!entries || !(id in entries)) return false;
+  delete entries[id];
+  return true;
+}
+
 function ensurePluginsEnabled(raw: Record<string, unknown>, ids: string[]): string[] {
   const plugins = (raw.plugins && typeof raw.plugins === "object" ? raw.plugins : {}) as Record<string, unknown>;
   const entries = (plugins.entries && typeof plugins.entries === "object" ? plugins.entries : {}) as Record<string, unknown>;
@@ -147,13 +170,25 @@ export function sweepOpenClawConfig(): SweepResult {
     const raw = JSON.parse(readFileSync(configPath, "utf-8"));
     const changedTelegram = migrateTelegramAccountsFromConfig(raw);
     const changedWhatsapp = migrateWhatsappAccountsFromConfig(raw);
-    const changedGatewayToolsAllow = ensureGatewayToolsAllow(raw, ["whatsapp_login"]);
+    // We used to "ensure" whatsapp_login was in gateway.tools.allow. Turned
+    // out the tool doesn't exist in v2026.5.12 (toolNames: []). Now we
+    // PRUNE phantom entries instead — sweep heals configs left dirty by
+    // previous AtlasDeck builds.
+    const changedGatewayToolsAllow = pruneInvalidGatewayTools(raw);
 
-    // External plugins must be explicitly enabled — whatsapp + acpx both have
-    // activation.onStartup=false in their manifests. Without this the gateway
-    // boots without their runtimes registered and /tools/invoke returns
-    // "Tool not available: whatsapp_login".
-    const changedPluginsEnabled = ensurePluginsEnabled(raw, ["whatsapp", "acpx"]);
+    // External plugins that must be explicitly enabled. Only `whatsapp` —
+    // acpx used to be here on the suspicion it was the Codex fallback
+    // backend, but `ls ~/.openclaw/npm/node_modules/@openclaw/acpx`
+    // confirmed the package is never actually installed, and the user's
+    // Codex agent runs fine through the `openai-codex` profile without
+    // it. Keeping acpx in the enabled list only produced a recurring
+    // "plugin not installed" warning every boot.
+    const changedPluginsEnabled = ensurePluginsEnabled(raw, ["whatsapp"]);
+
+    // Belt-and-suspenders: if a previous sweep left `plugins.entries.acpx`
+    // around, strip it so the warning goes away. Pure cleanup — has no
+    // effect when the entry isn't there.
+    const removedAcpxEntry = removeOrphanPluginEntry(raw, "acpx");
 
     // Backfill required channels.whatsapp fields so the plugin's own
     // channel-config validator passes at load time (it runs INSIDE the
@@ -166,7 +201,8 @@ export function sweepOpenClawConfig(): SweepResult {
       changedWhatsapp ||
       changedGatewayToolsAllow ||
       changedPluginsEnabled.length > 0 ||
-      changedWhatsappChannelDefaults
+      changedWhatsappChannelDefaults ||
+      removedAcpxEntry
     ) {
       writeFileSync(configPath, JSON.stringify(raw, null, 2), "utf-8");
     }

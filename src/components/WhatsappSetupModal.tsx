@@ -106,10 +106,8 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
   const [restartResult, setRestartResult] = useState<ClientRestartResult | null>(null);
 
   const [pairingAccountId, setPairingAccountId] = useState<string | null>(null);
-  const [pairingMessage, setPairingMessage] = useState<string>("");
-  const [pairingQrDataUrl, setPairingQrDataUrl] = useState<string | null>(null);
-  const [pairingConnected, setPairingConnected] = useState<boolean>(false);
-  const [pairingError, setPairingError] = useState<{ error: string; hint?: string } | null>(null);
+  const [pairingOutput, setPairingOutput] = useState<string>("");
+  const [pairingExited, setPairingExited] = useState<boolean>(false);
   const [pairingLoading, setPairingLoading] = useState<boolean>(false);
 
   const [repairing, setRepairing] = useState(false);
@@ -167,8 +165,9 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
     }
   }, [open, refresh]);
 
-  // Polling do QR via gateway HTTP tool — não há mais terminal/spawn pra rastrear.
-  // O endpoint /qr-login com action=wait bloqueia até o QR mudar ou conectar.
+  // Pareamento via PTY: spawn `script -qfc 'openclaw channels login ...' /dev/null`
+  // server-side, polling buffer'd output. `whatsapp_login` HTTP tool não existe em
+  // v2026.5.12 (toolNames: []), então o caminho oficial é o CLI com TTY alocado.
   useEffect(() => {
     if (!pairingAccountId) return;
 
@@ -177,88 +176,72 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
 
     async function poll() {
       try {
-        const res = await fetch("/api/integrations/whatsapp/qr-login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            accountId: pairingAccountId,
-            action: "wait",
-            currentQrDataUrl: pairingQrDataUrl ?? undefined,
-          }),
-        });
+        const res = await fetch(`/api/integrations/whatsapp/pair?accountId=${pairingAccountId}`);
+        if (!res.ok) return;
         const data = await res.json();
         if (!isActive) return;
 
-        if (!res.ok) {
-          setPairingError({ error: data.error || `HTTP ${res.status}`, hint: data.hint });
-          return; // stop polling
-        }
+        setPairingOutput(data.output ?? "");
+        setPairingExited(!!data.exited);
 
-        if (data.qrDataUrl) setPairingQrDataUrl(data.qrDataUrl);
-        if (data.message) setPairingMessage(data.message);
-
-        if (data.connected) {
-          setPairingConnected(true);
-          setPairingMessage(data.message || "Conectado!");
+        const lowerOut = (data.output || "").toLowerCase();
+        if (
+          lowerOut.includes("session connected") ||
+          lowerOut.includes("logged in") ||
+          lowerOut.includes("conectado") ||
+          data.exitCode === 0
+        ) {
           void refresh();
-          return; // stop polling
         }
 
-        timer = setTimeout(poll, 1200);
+        if (!data.exited) {
+          timer = setTimeout(poll, 1500);
+        }
       } catch (err) {
         if (!isActive) return;
-        setPairingError({ error: err instanceof Error ? err.message : String(err) });
+        console.error("Erro no polling do pareamento:", err);
       }
     }
 
-    timer = setTimeout(poll, 600);
+    void poll();
 
     return () => {
       isActive = false;
       if (timer) clearTimeout(timer);
     };
-  }, [pairingAccountId, pairingQrDataUrl, refresh]);
+  }, [pairingAccountId, refresh]);
 
   const startPairing = async (accountId: string) => {
     setPairingAccountId(accountId);
-    setPairingMessage("Pedindo QR ao gateway…");
-    setPairingQrDataUrl(null);
-    setPairingConnected(false);
-    setPairingError(null);
+    setPairingOutput("Iniciando terminal e gerando QR Code…");
+    setPairingExited(false);
     setPairingLoading(true);
     try {
-      const res = await fetch("/api/integrations/whatsapp/qr-login", {
+      const res = await fetch(`/api/integrations/whatsapp/pair?action=start&accountId=${accountId}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId, action: "start", force: false }),
       });
       const data = await res.json();
-      if (!res.ok) {
-        setPairingError({ error: data.error || `HTTP ${res.status}`, hint: data.hint });
-        return;
-      }
-      if (data.qrDataUrl) setPairingQrDataUrl(data.qrDataUrl);
-      if (data.message) setPairingMessage(data.message);
-      if (data.connected) {
-        setPairingConnected(true);
-        void refresh();
+      if (data.success) {
+        setPairingOutput(data.output || "Aguardando terminal…");
+      } else {
+        setPairingOutput(`Erro: ${data.error}`);
       }
     } catch (e) {
-      setPairingError({ error: e instanceof Error ? e.message : String(e) });
+      setPairingOutput(`Erro ao conectar à API: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setPairingLoading(false);
     }
   };
 
-  const stopPairing = (accountId: string) => {
-    // No spawn to kill — the gateway wait endpoint times out on its own.
-    // Just clear UI state so the polling effect tears down.
-    void accountId;
+  const stopPairing = async (accountId: string) => {
+    try {
+      await fetch(`/api/integrations/whatsapp/pair?action=stop&accountId=${accountId}`, {
+        method: "POST",
+      });
+    } catch {}
     setPairingAccountId(null);
-    setPairingMessage("");
-    setPairingQrDataUrl(null);
-    setPairingConnected(false);
-    setPairingError(null);
+    setPairingOutput("");
+    setPairingExited(true);
     void refresh();
   };
 
@@ -883,46 +866,24 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
                                   </button>
                                 </div>
                                 <p className="text-[11px] text-gray-400">
-                                  Abra o WhatsApp no celular → <strong>Aparelhos Conectados</strong> → escaneie o código abaixo.
+                                  Abra o WhatsApp no celular → <strong>Aparelhos Conectados</strong> → escaneie o QR abaixo (vem do terminal do gateway).
                                 </p>
-
-                                {pairingError ? (
-                                  <div className="text-xs space-y-1 p-3 rounded bg-red-950/40 border border-red-900/50">
-                                    <div className="text-red-300 font-medium flex items-center gap-1">
-                                      <XCircle className="w-3.5 h-3.5" /> {pairingError.error}
-                                    </div>
-                                    {pairingError.hint && (
-                                      <div className="text-yellow-300 text-[11px]">{pairingError.hint}</div>
-                                    )}
-                                  </div>
-                                ) : pairingConnected ? (
-                                  <div className="text-xs p-3 rounded bg-emerald-950/40 border border-emerald-700/40 text-emerald-300 flex items-center gap-1.5">
-                                    <CheckCircle2 className="w-4 h-4" /> {pairingMessage || "WhatsApp conectado com sucesso."}
-                                  </div>
-                                ) : pairingQrDataUrl ? (
-                                  <div className="flex flex-col items-center gap-2">
-                                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                                    <img
-                                      src={pairingQrDataUrl}
-                                      alt="QR Code WhatsApp"
-                                      className="bg-white p-3 rounded-lg"
-                                      style={{
-                                        width: "min(320px, 80vw)",
-                                        height: "min(320px, 80vw)",
-                                        imageRendering: "pixelated",
-                                        border: "1px solid rgba(255,255,255,0.15)",
-                                      }}
-                                    />
-                                    {pairingMessage && (
-                                      <span className="text-[11px] text-gray-400">{pairingMessage}</span>
-                                    )}
-                                  </div>
-                                ) : (
-                                  <div className="flex items-center gap-2 text-xs text-gray-400 p-3">
-                                    <Loader2 className="w-4 h-4 animate-spin" />
-                                    {pairingMessage || "Aguardando QR do gateway…"}
+                                {pairingExited && (
+                                  <div className="text-xs text-yellow-400 font-medium">
+                                    Terminal encerrado. Se não conectou, tente Reparar config e iniciar de novo.
                                   </div>
                                 )}
+                                <pre
+                                  className="font-mono bg-black text-white p-4 rounded-md overflow-x-auto text-[7px] leading-[7px] md:text-[8px] md:leading-[8px] tracking-[0px] text-center select-none"
+                                  style={{
+                                    maxHeight: "440px",
+                                    border: "1px solid rgba(255,255,255,0.15)",
+                                    display: "block",
+                                    whiteSpace: "pre",
+                                  }}
+                                >
+                                  {pairingOutput || "Aguardando geração do QR Code…"}
+                                </pre>
                               </div>
                             )}
                           </div>

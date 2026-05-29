@@ -20,7 +20,6 @@ import { sweepOpenClawConfig } from "@/lib/openclaw-config-sweep";
 import { readOpenClawConfig } from "@/lib/openclaw-config";
 import {
   WHATSAPP_PLUGIN,
-  ACPX_PLUGIN,
   isPluginInstalled,
   installPluginSync,
 } from "@/lib/openclaw-plugins";
@@ -43,10 +42,14 @@ function tailLines(text: string, max: number): string {
 
 export async function POST() {
   try {
-    // 1. Install required plugins — idempotent. Sync install is fine; both
-    //    plugins together are < 60s on a warm cache and 1-2 minutes cold.
+    // 1. Install required plugins — idempotent. Sync install is fine;
+    //    @openclaw/whatsapp ~50MB, < 90s on warm cache. We used to also
+    //    install @openclaw/acpx here, but inspection on the user's VPS
+    //    showed acpx isn't actually needed for WhatsApp pairing — the
+    //    only effect of the orphan plugins.entries.acpx is a boot warning
+    //    (now pruned by the sweep).
     const installs: PluginInstallReport[] = [];
-    for (const pkg of [WHATSAPP_PLUGIN, ACPX_PLUGIN]) {
+    for (const pkg of [WHATSAPP_PLUGIN]) {
       const probe = isPluginInstalled(pkg);
       if (probe.installed) {
         installs.push({
