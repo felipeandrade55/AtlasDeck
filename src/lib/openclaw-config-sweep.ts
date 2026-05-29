@@ -23,6 +23,7 @@ export interface SweepResult {
   changedTelegram: boolean;
   changedWhatsapp: boolean;
   changedGatewayToolsAllow: boolean;
+  changedPluginsEnabled: string[];
   configPath: string;
   error?: string;
 }
@@ -59,6 +60,37 @@ function ensureGatewayToolsAllow(raw: Record<string, unknown>, required: string[
   return true;
 }
 
+/**
+ * Force `plugins.entries.<id>.enabled = true` for each id passed in.
+ * External plugins like @openclaw/whatsapp have `activation.onStartup: false`
+ * in their manifest, so they only load when the host config explicitly
+ * enables them. Without this, the gateway boots without the WhatsApp
+ * runtime and `whatsapp_login` never gets registered (resulting in
+ * "Tool not available: whatsapp_login" from /tools/invoke).
+ *
+ * Returns the list of ids whose entry was actually flipped from absent or
+ * false to true.
+ */
+function ensurePluginsEnabled(raw: Record<string, unknown>, ids: string[]): string[] {
+  const plugins = (raw.plugins && typeof raw.plugins === "object" ? raw.plugins : {}) as Record<string, unknown>;
+  const entries = (plugins.entries && typeof plugins.entries === "object" ? plugins.entries : {}) as Record<string, unknown>;
+  const flipped: string[] = [];
+  for (const id of ids) {
+    const entry = (entries[id] && typeof entries[id] === "object" ? entries[id] : {}) as Record<string, unknown>;
+    if (entry.enabled !== true) {
+      entries[id] = { ...entry, enabled: true };
+      flipped.push(id);
+    }
+  }
+  if (flipped.length === 0) return flipped;
+
+  raw.plugins = {
+    ...plugins,
+    entries,
+  };
+  return flipped;
+}
+
 export function sweepOpenClawConfig(): SweepResult {
   const { path: configPath } = resolveOpenClawAgentsConfigPath();
   if (!existsSync(configPath)) {
@@ -67,6 +99,7 @@ export function sweepOpenClawConfig(): SweepResult {
       changedTelegram: false,
       changedWhatsapp: false,
       changedGatewayToolsAllow: false,
+      changedPluginsEnabled: [],
       configPath,
     };
   }
@@ -75,7 +108,19 @@ export function sweepOpenClawConfig(): SweepResult {
     const changedTelegram = migrateTelegramAccountsFromConfig(raw);
     const changedWhatsapp = migrateWhatsappAccountsFromConfig(raw);
     const changedGatewayToolsAllow = ensureGatewayToolsAllow(raw, ["whatsapp_login"]);
-    if (changedTelegram || changedWhatsapp || changedGatewayToolsAllow) {
+
+    // External plugins must be explicitly enabled — whatsapp + acpx both have
+    // activation.onStartup=false in their manifests. Without this the gateway
+    // boots without their runtimes registered and /tools/invoke returns
+    // "Tool not available: whatsapp_login".
+    const changedPluginsEnabled = ensurePluginsEnabled(raw, ["whatsapp", "acpx"]);
+
+    if (
+      changedTelegram ||
+      changedWhatsapp ||
+      changedGatewayToolsAllow ||
+      changedPluginsEnabled.length > 0
+    ) {
       writeFileSync(configPath, JSON.stringify(raw, null, 2), "utf-8");
     }
     return {
@@ -83,6 +128,7 @@ export function sweepOpenClawConfig(): SweepResult {
       changedTelegram,
       changedWhatsapp,
       changedGatewayToolsAllow,
+      changedPluginsEnabled,
       configPath,
     };
   } catch (err) {
@@ -91,6 +137,7 @@ export function sweepOpenClawConfig(): SweepResult {
       changedTelegram: false,
       changedWhatsapp: false,
       changedGatewayToolsAllow: false,
+      changedPluginsEnabled: [],
       configPath,
       error: err instanceof Error ? err.message : String(err),
     };

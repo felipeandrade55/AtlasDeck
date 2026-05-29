@@ -386,25 +386,52 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
 
       const sweep = json.sweep || {};
       const validate = json.validate || {};
-      const movedBits: string[] = [];
-      if (sweep.changedWhatsapp) movedBits.push("WhatsApp limpo");
-      if (sweep.changedTelegram) movedBits.push("Telegram limpo");
-      if (sweep.changedGatewayToolsAllow) movedBits.push("whatsapp_login liberado no gateway");
-      if (movedBits.length === 0) movedBits.push("nada a migrar");
+      const installs: Array<{
+        package: string;
+        alreadyInstalled: boolean;
+        ok: boolean;
+        durationMs: number;
+        outputTail: string;
+      }> = Array.isArray(json.installs) ? json.installs : [];
+      const restart = json.restart || {};
+
+      const bits: string[] = [];
+      for (const i of installs) {
+        if (i.alreadyInstalled) {
+          bits.push(`${i.package} já instalado`);
+        } else if (i.ok) {
+          bits.push(`${i.package} instalado (${(i.durationMs / 1000).toFixed(1)}s)`);
+        } else {
+          bits.push(`${i.package} FALHOU`);
+        }
+      }
+      if (sweep.changedWhatsapp) bits.push("WhatsApp sanitizado");
+      if (sweep.changedTelegram) bits.push("Telegram sanitizado");
+      if (sweep.changedGatewayToolsAllow) bits.push("whatsapp_login liberado no gateway");
+      if (Array.isArray(sweep.changedPluginsEnabled) && sweep.changedPluginsEnabled.length > 0) {
+        bits.push(`plugins enabled: ${sweep.changedPluginsEnabled.join(", ")}`);
+      }
+      if (restart.ok === true) bits.push(restart.message || "gateway reiniciado");
+      else if (restart.ok === false) bits.push(`restart falhou (${restart.message ?? ""})`);
+
+      if (bits.length === 0) bits.push("config já estava OK");
 
       const detail = (validate.output || "").trim() || "(validator não respondeu)";
-      const ok = validate.ok === true || (sweep.ran && validate.ok !== false);
+      const ok = !!json.ok;
 
       setRepairResult({
         ok,
         summary: ok
-          ? `Reparo aplicado: ${movedBits.join(" · ")}. Schema OK.`
-          : `Schema ainda rejeita após reparo: ${movedBits.join(" · ")}.`,
+          ? `Reparo completo: ${bits.join(" · ")}`
+          : `Reparo parcial: ${bits.join(" · ")}`,
         detail,
       });
 
       await refresh();
-      if (autoRestart && ok) {
+      // Backend já reiniciou o gateway dentro do repair quando necessário,
+      // mas se o usuário marcou auto-restart e o backend não reiniciou,
+      // chamamos o restart client (mostra o banner padrão).
+      if (autoRestart && restart.ok !== true) {
         setRestarting(true);
         setRestartResult(null);
         const result = await restartGatewayClient();
