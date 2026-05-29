@@ -131,6 +131,7 @@ type Phase =
   | "enabling-bridge"
   | "cleaning-codex"
   | "restarting"
+  | "full-restarting"
   | "probing"
   | "error";
 
@@ -343,6 +344,57 @@ export function MemoryMcpCard() {
       setBanner({
         kind: "error",
         text: "Falha ao rodar probe do server.",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }, []);
+
+  const fullRestart = useCallback(async () => {
+    if (
+      !window.confirm(
+        "STOP + START completo do gateway OpenClaw. Isso DESTRÓI todas as " +
+          "threads Codex existentes — é o que precisa pra projeção nova de " +
+          "MCP chegar. Vai interromper conversas em andamento por ~5 segundos.\n\n" +
+          "Continuar?",
+      )
+    ) {
+      return;
+    }
+    setPhase("full-restarting");
+    setBanner({
+      kind: "info",
+      text: "Stop + start completo do gateway (recria threads Codex)…",
+    });
+    try {
+      const res = await fetch("/api/openclaw/memory-mcp/full-restart", {
+        method: "POST",
+      });
+      const json = (await res.json()) as {
+        ok: boolean;
+        strategy: string | null;
+        summary: string;
+        hint: string;
+      };
+      // Refresh diagnose to update process info / uptime.
+      const diagRes = await fetch(
+        "/api/openclaw/memory-mcp/diagnose?agentId=main",
+        { cache: "no-store" },
+      );
+      const diagJson = (await diagRes.json()) as DiagnoseReport;
+      setDiagnose(diagJson);
+      setPhase("idle");
+      setBanner({
+        kind: json.ok ? "success" : "warn",
+        text: json.ok
+          ? `Stop+start ok via ${json.strategy}. ${json.hint}`
+          : `Falhou: ${json.summary}`,
+        detail: json.summary,
+      });
+    } catch (err) {
+      setPhase("error");
+      setBanner({
+        kind: "error",
+        text: "Falha ao fazer full restart.",
         detail: err instanceof Error ? err.message : String(err),
       });
     }
@@ -764,6 +816,25 @@ export function MemoryMcpCard() {
             <Stethoscope className="w-4 h-4" />
           )}
           Probe gateway
+        </button>
+
+        <button
+          onClick={fullRestart}
+          disabled={phase !== "idle" && phase !== "loading"}
+          className="flex items-center gap-2 px-3 py-2 rounded-lg transition-colors disabled:opacity-50 text-sm"
+          style={{
+            backgroundColor: "rgba(251,146,60,0.12)",
+            color: "#fdba74",
+            border: "1px solid rgba(251,146,60,0.35)",
+          }}
+          title="STOP + START completo do gateway. Destroi threads Codex existentes — necessário pra projeção MCP nova chegar (hot reload não basta)"
+        >
+          {phase === "full-restarting" ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <PowerOff className="w-4 h-4" />
+          )}
+          Full restart
         </button>
 
         {status?.installed && (
