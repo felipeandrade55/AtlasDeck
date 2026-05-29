@@ -89,7 +89,6 @@ export function deleteWhatsappAccountLocal(id: string): void {
  * data/whatsapp-accounts.json via setWhatsappAccountLocal.
  */
 const ALLOWED_OPENCLAW_KEYS = new Set([
-  "token",
   "phoneNumber",
 ]);
 

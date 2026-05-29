@@ -252,11 +252,6 @@ export async function PUT(req: NextRequest) {
         // at startup. Reading only known keys from the prior state guarantees
         // the written object has no extras.
         const next: WhatsappAccountConfig = {};
-        if (typeof patch.token === "string") {
-          next.token = patch.token.trim();
-        } else if (typeof existing.token === "string") {
-          next.token = existing.token;
-        }
         if (typeof patch.phoneNumber === "string") {
           next.phoneNumber = patch.phoneNumber.trim();
         } else if (typeof existing.phoneNumber === "string") {

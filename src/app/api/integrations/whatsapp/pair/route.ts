@@ -68,23 +68,21 @@ export async function POST(req: NextRequest) {
       }
 
       const config = readOpenClawConfig();
-      const child = spawn(
-        config.openclawBin,
-        ["channels", "login", "--channel", "whatsapp", "--account", accountId],
-        {
-          cwd: config.openclawDir,
-          env: {
-            ...process.env,
-            OPENCLAW_DIR: config.openclawDir,
-            OPENCLAW_WORKSPACE: config.openclawWorkspace,
-          },
-          shell: true,
-        }
-      );
+      const command = `${config.openclawBin} channels login --channel whatsapp --account ${accountId}`;
+      
+      const child = spawn(command, {
+        cwd: config.openclawDir,
+        env: {
+          ...process.env,
+          OPENCLAW_DIR: config.openclawDir,
+          OPENCLAW_WORKSPACE: config.openclawWorkspace,
+        },
+        shell: true,
+      });
 
       const state: PairState = {
         child,
-        output: "",
+        output: `$ ${command}\n\n`,
         startedAt: Date.now(),
         exited: false,
         exitCode: null,

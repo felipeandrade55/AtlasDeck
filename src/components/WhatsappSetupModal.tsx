@@ -562,40 +562,6 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
                           {/* Form */}
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                             <label className="block text-xs space-y-1">
-                              <span style={{ color: "var(--text-secondary)" }}>Access Token (Meta / Cloud API)</span>
-                              <div className="flex items-center gap-1">
-                                <input
-                                  type={d.showToken ? "text" : "password"}
-                                  value={d.token}
-                                  onChange={(e) => updateDraft(d.id, { token: e.target.value, tokenTouched: true })}
-                                  placeholder={d.hasExistingToken ? live?.tokenMasked || "•••••" : "EAAG..."}
-                                  className="flex-1 rounded px-2 py-1.5 text-sm font-mono"
-                                  style={{ backgroundColor: "rgba(0,0,0,0.3)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() => updateDraft(d.id, { showToken: !d.showToken })}
-                                  className="p-1.5 rounded"
-                                  style={{ color: "var(--text-muted)", backgroundColor: "rgba(255,255,255,0.04)", border: "1px solid var(--border)" }}
-                                  title={d.showToken ? "Esconder" : "Mostrar"}
-                                >
-                                  {d.showToken ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                                </button>
-                                {!d.tokenTouched && d.hasExistingToken && !d.showToken && (
-                                  <button
-                                    type="button"
-                                    onClick={() => refresh({ reveal: true })}
-                                    className="p-1.5 rounded text-xs"
-                                    style={{ color: "var(--text-muted)", backgroundColor: "rgba(255,255,255,0.04)", border: "1px solid var(--border)" }}
-                                    title="Buscar token atual para editar"
-                                  >
-                                    carregar
-                                  </button>
-                                )}
-                              </div>
-                            </label>
-
-                            <label className="block text-xs space-y-1">
                               <span style={{ color: "var(--text-secondary)" }}>Número de Telefone de Origem (ID ou Número)</span>
                               <input
                                 value={d.phoneNumber}
@@ -607,12 +573,12 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
                             </label>
 
                             <label className="block text-xs space-y-1">
-                              <span style={{ color: "var(--text-secondary)" }}>Destinatário de Testes / Alertas (chatId)</span>
+                              <span style={{ color: "var(--text-secondary)" }}>Destinatário de Testes / Alertas (chatId - Opcional)</span>
                               <div className="flex items-center gap-1">
                                 <input
                                   value={d.chatId}
                                   onChange={(e) => updateDraft(d.id, { chatId: e.target.value })}
-                                  placeholder="ex: 5511988888888"
+                                  placeholder="ex: 5511988888888 (opcional)"
                                   className="flex-1 rounded px-2 py-1.5 text-sm font-mono"
                                   style={{ backgroundColor: "rgba(0,0,0,0.3)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
                                 />
@@ -664,7 +630,7 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
                                       <div>Telefone de Origem: {live.phoneNumber || "não configurado"}</div>
                                     </>
                                   ) : (
-                                    <div>Verifique o token de acesso e a conexão com os servidores do WhatsApp.</div>
+                                    <div>Inicie o pareamento do WhatsApp Web abaixo para conectar a conta.</div>
                                   )
                                 }
                               />
