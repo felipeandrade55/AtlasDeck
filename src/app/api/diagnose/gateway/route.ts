@@ -31,7 +31,7 @@ import { migrateTelegramAccountsFromConfig } from "@/lib/telegram-accounts-local
 import { migrateWhatsappAccountsFromConfig } from "@/lib/whatsapp-accounts-local";
 import { getLastHealth, getWatchdogState } from "@/lib/health-monitor";
 import { getOpenClawConfigWatcherStats } from "@/lib/openclaw-config-watcher";
-import { snapshotAgentLoad, type AgentLoadSnapshot } from "@/lib/agent-load-monitor";
+import { snapshotAgentLoad, parseLogTimestamp, type AgentLoadSnapshot } from "@/lib/agent-load-monitor";
 import { getAgentLoadWatchdogState } from "@/lib/agent-load-watchdog";
 
 export const dynamic = "force-dynamic";
@@ -111,16 +111,24 @@ async function readGatewayPidUptime(): Promise<Array<{ pid: number; startedAt: s
   }
 }
 
+const AGENT_FAILURE_WINDOW_MS = 30 * 60 * 1000;
+
 /**
  * Scan recent journalctl lines for known Codex/agent failure patterns and
- * summarise them. The user-visible failure of today (29/05/2026) was the
- * Telegram bot going silent because the Codex agent hit a token-overflow
- * timeout, compaction failed with provider_error_4xx, and the failover
- * surfaced an error instead of falling back. The gateway itself was
- * healthy — no signal in our existing checks. This adds a dedicated
- * signal so the doctor can tell the user "your bot is silent because
- * the agent gave up on a long conversation, not because the channel
- * died".
+ * summarise them. The user-visible failure of 2026-05-29 was the Telegram
+ * bot going silent because the Codex agent hit a token-overflow timeout,
+ * compaction failed with provider_error_4xx, and the failover surfaced an
+ * error instead of falling back. The gateway itself was healthy — no
+ * signal in our existing checks. This gives the doctor a dedicated
+ * signal: "your bot is silent because the agent gave up on a long
+ * conversation, not because the channel died."
+ *
+ * Only consider lines whose timestamp falls inside AGENT_FAILURE_WINDOW_MS.
+ * Without this filter, a single overflow event lives in the 200-line log
+ * buffer for hours and produces a "Bot não está respondendo" banner long
+ * after the bot has recovered or the user rotated the session. Lines we
+ * can't parse a timestamp from are kept (parser quirk shouldn't drop a
+ * known-recent-ish failure).
  *
  * Heuristic patterns are pulled from the actual journalctl output we
  * observed; extend the list as new failure modes surface.
@@ -132,7 +140,15 @@ async function detectAgentFailures(logs: string | null): Promise<{
   hint: string;
 } | null> {
   if (!logs) return null;
-  const text = logs.toLowerCase();
+  const cutoff = Date.now() - AGENT_FAILURE_WINDOW_MS;
+  const recentText = logs
+    .split("\n")
+    .filter((line) => {
+      const t = parseLogTimestamp(line);
+      return t === null || t >= cutoff;
+    })
+    .join("\n")
+    .toLowerCase();
   const patterns: Array<{ match: string; label: string }> = [
     { match: "codex app-server startup aborted", label: "Codex app-server abortou no boot" },
     { match: "codex app-server turn idle timed out", label: "Codex teve timeout em turno (provavelmente token overflow)" },
@@ -141,7 +157,7 @@ async function detectAgentFailures(logs: string | null): Promise<{
     { match: "embedded run failover decision", label: "Failover entre provedores deu erro" },
     { match: "agents/harness] codex agent harness failed", label: "Harness do Codex falhou" },
   ];
-  const hits = patterns.filter((p) => text.includes(p.match)).map((p) => p.label);
+  const hits = patterns.filter((p) => recentText.includes(p.match)).map((p) => p.label);
   if (hits.length === 0) return null;
   const tokenOverflow = hits.some((h) => /token|compaction|idle timed out/i.test(h));
   return {

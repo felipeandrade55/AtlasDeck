@@ -55,7 +55,7 @@ const DEFAULT_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
  * pin it to the current year and roll the date back a year if that puts
  * the timestamp in the future (handles January boundary crossings).
  */
-function parseLogTimestamp(line: string): number | null {
+export function parseLogTimestamp(line: string): number | null {
   const iso = line.match(ISO_TS_PATTERN) || line.match(INLINE_ISO_PATTERN);
   if (iso) {
     const t = Date.parse(iso[1]);
@@ -151,18 +151,18 @@ export function snapshotAgentLoad(
   // *the* user-visible failure — bot stopped responding — so that wins.
   // Otherwise grade by usage %.
   //
-  // We treat `latestUsage` as the *current* state of the session, even if
-  // the log line is older than the recent-counts window: token usage is
-  // monotonic within a single conversation, so if it was 77% an hour ago
-  // and nothing has rotated the session since, the next message still
-  // lands on a 77%-full prompt. We only down-rank stale usage if we can
-  // see a session-fresh signal *after* it (handled by the caller via
-  // session-rotator activity log, not here).
+  // We only treat `latestUsage` as a *current* signal if its log line is
+  // within the recency window. An old high-usage reading (e.g., 77% three
+  // hours ago) survives in the log buffer long after the bot recovered
+  // or the user rotated the session — surfacing it as "Problema crítico"
+  // produces a banner that lies about the bot's current state. The
+  // reading is still returned (for the "Último uso observado" display)
+  // but it no longer drives severity once stale.
   let severity: AgentLoadSeverity = "ok";
   let hint = "Carga do agente saudável.";
 
-  const usagePercent = latestUsage?.percent ?? 0;
-  const hasUsage = latestUsage !== null;
+  const usageIsRecent = latestUsage !== null && latestUsage.at >= cutoff;
+  const usagePercent = usageIsRecent ? latestUsage!.percent : 0;
 
   if (recentSurfaceErrors > 0) {
     severity = "critical";
@@ -172,16 +172,19 @@ export function snapshotAgentLoad(
     severity = "critical";
     hint =
       "Timeouts recentes do Codex — a conversa atual já está estourando contexto. Rotacionar para evitar bot silencioso.";
-  } else if (hasUsage && usagePercent >= 70) {
+  } else if (usageIsRecent && usagePercent >= 70) {
     // 70% is the empirically-observed danger zone — the prod timeouts
     // on 2026-05-29 fired at 70% and 77% prompt-token usage. Treat
     // anything ≥70 as critical so the auto-rotator can act before the
     // next message hits the wall.
     severity = "critical";
     hint = `Uso de prompt em ${usagePercent}% — próxima resposta tem alta chance de timeout. Rotacione a conversa.`;
-  } else if (hasUsage && usagePercent >= 50) {
+  } else if (usageIsRecent && usagePercent >= 50) {
     severity = "warn";
     hint = `Uso de prompt em ${usagePercent}% — janela apertando. Considere rotacionar antes de uma conversa longa.`;
+  } else if (latestUsage !== null && !usageIsRecent) {
+    const ageMin = Math.max(1, Math.floor((now - latestUsage.at) / 60_000));
+    hint = `Sem sinais recentes — último pico foi ${latestUsage.percent}% há ${ageMin}min (provavelmente já resolvido).`;
   }
 
   return {
