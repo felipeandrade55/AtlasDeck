@@ -154,12 +154,36 @@ interface ServerProbe {
       durationMs: number;
     };
   };
+  process?: {
+    pid: number | null;
+    uptimeSeconds: number | null;
+    cmdline: string | null;
+    detectedVia: string | null;
+  };
   gatewayLog: {
     path: string | null;
     exists: boolean;
     mcpLineCount: number;
     mcpLines: string[];
+    journalctl?: {
+      available: boolean;
+      lines: string[];
+      mcpLines: string[];
+    };
   };
+}
+
+function formatUptime(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  if (seconds < 86400) {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    return `${h}h ${m}m`;
+  }
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  return `${d}d ${h}h`;
 }
 
 interface Banner {
@@ -1246,6 +1270,60 @@ export function MemoryMcpCard() {
                 </pre>
               )}
             </details>
+            {serverProbe.process && serverProbe.process.pid && (
+              <div
+                className="mt-3 p-2 rounded"
+                style={{
+                  backgroundColor:
+                    serverProbe.process.uptimeSeconds &&
+                    serverProbe.process.uptimeSeconds > 600
+                      ? "rgba(248,113,113,0.10)"
+                      : "rgba(52,211,153,0.10)",
+                  border:
+                    serverProbe.process.uptimeSeconds &&
+                    serverProbe.process.uptimeSeconds > 600
+                      ? "1px solid rgba(248,113,113,0.35)"
+                      : "1px solid rgba(52,211,153,0.35)",
+                }}
+              >
+                <div className="font-medium" style={{ color: "var(--text-primary)" }}>
+                  Processo gateway atual
+                </div>
+                <div style={{ color: "var(--text-secondary)" }}>
+                  pid {serverProbe.process.pid} · uptime{" "}
+                  <strong
+                    style={{
+                      color:
+                        serverProbe.process.uptimeSeconds &&
+                        serverProbe.process.uptimeSeconds > 600
+                          ? "#fca5a5"
+                          : "#34d399",
+                    }}
+                  >
+                    {serverProbe.process.uptimeSeconds !== null
+                      ? formatUptime(serverProbe.process.uptimeSeconds)
+                      : "?"}
+                  </strong>{" "}
+                  {serverProbe.process.uptimeSeconds &&
+                    serverProbe.process.uptimeSeconds > 600 && (
+                      <span style={{ color: "#fca5a5" }}>
+                        ← gateway antigo, config nova pode não estar em RAM
+                      </span>
+                    )}
+                </div>
+                {serverProbe.process.cmdline && (
+                  <div
+                    className="font-mono mt-1"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    {serverProbe.process.cmdline}
+                  </div>
+                )}
+                <div style={{ color: "var(--text-muted)" }} className="text-xs">
+                  detectado via: {serverProbe.process.detectedVia}
+                </div>
+              </div>
+            )}
             <div className="mt-3">
               <div className="font-medium" style={{ color: "var(--text-primary)" }}>
                 Gateway logs — linhas com MCP/atlasdeck-memory
@@ -1269,6 +1347,31 @@ export function MemoryMcpCard() {
                 </pre>
               )}
             </div>
+            {serverProbe.gatewayLog.journalctl?.available && (
+              <div className="mt-3">
+                <div className="font-medium" style={{ color: "var(--text-primary)" }}>
+                  journalctl --user (systemctl)
+                </div>
+                <div style={{ color: "var(--text-muted)" }} className="text-xs">
+                  {serverProbe.gatewayLog.journalctl.mcpLines.length} linhas
+                  relevantes de {serverProbe.gatewayLog.journalctl.lines.length}{" "}
+                  tail
+                </div>
+                {serverProbe.gatewayLog.journalctl.mcpLines.length > 0 && (
+                  <pre
+                    className="whitespace-pre-wrap font-mono mt-1 p-2 rounded max-h-96 overflow-auto"
+                    style={{
+                      backgroundColor: "rgba(0,0,0,0.25)",
+                      color: "var(--text-muted)",
+                      fontSize: "10px",
+                      lineHeight: "1.4",
+                    }}
+                  >
+                    {serverProbe.gatewayLog.journalctl.mcpLines.join("\n")}
+                  </pre>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}

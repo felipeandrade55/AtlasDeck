@@ -76,11 +76,84 @@ async function tryCli(args: string[]): Promise<CliCall> {
  * MCP-related grep happens on the client (just sending the raw tail
  * keeps the endpoint simple and the filter visible to the user).
  */
+async function readJournalctl(): Promise<{
+  available: boolean;
+  lines: string[];
+  mcpLines: string[];
+}> {
+  // OpenClaw VPS runs via `systemctl --user` (per the user's memory).
+  // Logs go to the systemd journal — `/tmp/openclaw/*.log` is empty
+  // because the daemon doesn't write a file there in that setup.
+  // journalctl is the source of truth.
+  const candidates = [
+    ["--user-unit", "openclaw-gateway.service", "-n", "400", "--no-pager", "-o", "short-iso"],
+    ["--user-unit", "openclaw.service", "-n", "400", "--no-pager", "-o", "short-iso"],
+    ["--user", "-n", "400", "--no-pager", "-o", "short-iso"],
+  ];
+  for (const args of candidates) {
+    try {
+      const { stdout } = await execFileAsync("journalctl", args, {
+        timeout: 5000,
+        maxBuffer: 1024 * 1024,
+      });
+      const lines = stdout.split("\n").slice(-400);
+      const mcpLines = lines.filter((l) =>
+        /\b(mcp|atlasdeck-memory|MCP|projection|tool list|tools loaded|server load|approval|spawn)\b/i.test(
+          l,
+        ),
+      );
+      if (mcpLines.length > 0 || lines.some((l) => l.includes("openclaw"))) {
+        return { available: true, lines, mcpLines: mcpLines.slice(-80) };
+      }
+    } catch {}
+  }
+  return { available: false, lines: [], mcpLines: [] };
+}
+
+async function getGatewayProcessInfo(): Promise<{
+  pid: number | null;
+  uptimeSeconds: number | null;
+  cmdline: string | null;
+  detectedVia: string | null;
+}> {
+  // Try pgrep first — fastest, no parsing
+  for (const pattern of ["openclaw-gateway", "openclaw.*gateway", "openclaw daemon", "openclaw"]) {
+    try {
+      const { stdout } = await execFileAsync("pgrep", ["-f", pattern], {
+        timeout: 2000,
+      });
+      const pid = parseInt(stdout.trim().split("\n")[0], 10);
+      if (!Number.isFinite(pid)) continue;
+      // Read /proc for uptime + cmdline
+      let uptimeSeconds: number | null = null;
+      let cmdline: string | null = null;
+      try {
+        const stat = fs.statSync(`/proc/${pid}`);
+        uptimeSeconds = Math.floor((Date.now() - stat.ctimeMs) / 1000);
+      } catch {}
+      try {
+        cmdline = fs
+          .readFileSync(`/proc/${pid}/cmdline`, "utf-8")
+          .replace(/\0/g, " ")
+          .trim()
+          .slice(0, 200);
+      } catch {}
+      return { pid, uptimeSeconds, cmdline, detectedVia: `pgrep -f ${pattern}` };
+    } catch {}
+  }
+  return { pid: null, uptimeSeconds: null, cmdline: null, detectedVia: null };
+}
+
 async function tailGatewayLogs(): Promise<{
   path: string | null;
   exists: boolean;
   lines: string[];
   mcpLines: string[];
+  journalctl: {
+    available: boolean;
+    lines: string[];
+    mcpLines: string[];
+  };
 }> {
   const candidates: string[] = [];
   // Today's canonical log
@@ -103,8 +176,16 @@ async function tailGatewayLogs(): Promise<{
       }
     } catch {}
   }
+  // Always also try journalctl — primary log path for systemctl-user setups.
+  const journalctl = await readJournalctl();
   if (!logPath) {
-    return { path: null, exists: false, lines: [], mcpLines: [] };
+    return {
+      path: null,
+      exists: false,
+      lines: [],
+      mcpLines: [],
+      journalctl,
+    };
   }
   try {
     const stat = fs.statSync(logPath);
@@ -120,32 +201,42 @@ async function tailGatewayLogs(): Promise<{
         l,
       ),
     );
-    return { path: logPath, exists: true, lines, mcpLines: mcpLines.slice(-80) };
+    return {
+      path: logPath,
+      exists: true,
+      lines,
+      mcpLines: mcpLines.slice(-80),
+      journalctl,
+    };
   } catch (err) {
     return {
       path: logPath,
       exists: true,
       lines: [`(falha ao ler: ${err instanceof Error ? err.message : err})`],
       mcpLines: [],
+      journalctl,
     };
   }
 }
 
 export async function GET() {
-  const [show, list, logs] = await Promise.all([
+  const [show, list, logs, proc] = await Promise.all([
     tryCli(["mcp", "show", "atlasdeck-memory", "--json"]),
     tryCli(["mcp", "list", "--json"]),
     tailGatewayLogs(),
+    getGatewayProcessInfo(),
   ]);
   return NextResponse.json(
     {
       generatedAt: new Date().toISOString(),
       cli: { show, list },
+      process: proc,
       gatewayLog: {
         path: logs.path,
         exists: logs.exists,
         mcpLineCount: logs.mcpLines.length,
         mcpLines: logs.mcpLines,
+        journalctl: logs.journalctl,
       },
     },
     { headers: { "Cache-Control": "no-store, max-age=0" } },
