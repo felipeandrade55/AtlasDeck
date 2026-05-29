@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { spawn, ChildProcess } from "child_process";
 import { readOpenClawConfig } from "@/lib/openclaw-config";
+import fs from "fs";
+import path from "path";
 
 export const dynamic = "force-dynamic";
 
@@ -70,10 +72,31 @@ export async function POST(req: NextRequest) {
       const config = readOpenClawConfig();
       const command = `${config.openclawBin} channels login --channel whatsapp --account ${accountId}`;
       
+      // Scan for NVM node binary paths dynamically on Linux VPS
+      const currentPath = process.env.PATH || "";
+      const extraPaths = [
+        "/root/.npm-global/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+      ];
+      try {
+        const nvmNodeDir = "/root/.nvm/versions/node";
+        if (fs.existsSync(nvmNodeDir)) {
+          const versions = fs.readdirSync(nvmNodeDir);
+          for (const v of versions) {
+            extraPaths.push(path.join(nvmNodeDir, v, "bin"));
+          }
+        }
+      } catch {}
+
+      const envPath = [...extraPaths, currentPath].join(":");
+
       const child = spawn(command, {
         cwd: config.openclawDir,
         env: {
           ...process.env,
+          PATH: envPath,
           OPENCLAW_DIR: config.openclawDir,
           OPENCLAW_WORKSPACE: config.openclawWorkspace,
         },
@@ -99,6 +122,7 @@ export async function POST(req: NextRequest) {
       child.on("exit", (code) => {
         state.exited = true;
         state.exitCode = code;
+        state.output += `\n[Processo encerrado com código de saída: ${code}]\n`;
       });
 
       child.on("error", (err) => {
