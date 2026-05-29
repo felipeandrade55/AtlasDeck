@@ -131,7 +131,36 @@ type Phase =
   | "enabling-bridge"
   | "cleaning-codex"
   | "restarting"
+  | "probing"
   | "error";
+
+interface ServerProbe {
+  generatedAt: string;
+  cli: {
+    show: {
+      cmd: string;
+      args: string[];
+      ok: boolean;
+      stdout: string;
+      stderr: string;
+      durationMs: number;
+    };
+    list: {
+      cmd: string;
+      args: string[];
+      ok: boolean;
+      stdout: string;
+      stderr: string;
+      durationMs: number;
+    };
+  };
+  gatewayLog: {
+    path: string | null;
+    exists: boolean;
+    mcpLineCount: number;
+    mcpLines: string[];
+  };
+}
 
 interface Banner {
   kind: "success" | "warn" | "error" | "info";
@@ -145,6 +174,7 @@ export function MemoryMcpCard() {
   const [banner, setBanner] = useState<Banner | null>(null);
   const [showDetails, setShowDetails] = useState(false);
   const [diagnose, setDiagnose] = useState<DiagnoseReport | null>(null);
+  const [serverProbe, setServerProbe] = useState<ServerProbe | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -257,6 +287,38 @@ export function MemoryMcpCard() {
       setBanner({
         kind: "error",
         text: "Falha ao rodar diagnóstico.",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }, []);
+
+  const runServerProbe = useCallback(async () => {
+    setPhase("probing");
+    setBanner({
+      kind: "info",
+      text: "Consultando OpenClaw CLI + gateway logs…",
+    });
+    try {
+      const res = await fetch("/api/openclaw/memory-mcp/server-probe", {
+        cache: "no-store",
+      });
+      const json = (await res.json()) as ServerProbe;
+      setServerProbe(json);
+      setPhase("idle");
+      const haveLogs = json.gatewayLog.mcpLineCount > 0;
+      const haveCli = json.cli.show.ok || json.cli.list.ok;
+      setBanner({
+        kind: haveLogs || haveCli ? "success" : "warn",
+        text: haveLogs || haveCli
+          ? "Probe completo — veja resultado do CLI e logs do gateway abaixo."
+          : "Nem CLI nem logs retornaram dados úteis — provavelmente openclaw CLI fora do PATH do AtlasDeck E logs em outro lugar.",
+        detail: `cli.show.ok=${json.cli.show.ok} · cli.list.ok=${json.cli.list.ok} · log path=${json.gatewayLog.path ?? "não encontrado"}`,
+      });
+    } catch (err) {
+      setPhase("error");
+      setBanner({
+        kind: "error",
+        text: "Falha ao rodar probe do server.",
         detail: err instanceof Error ? err.message : String(err),
       });
     }
@@ -659,6 +721,25 @@ export function MemoryMcpCard() {
             <RefreshCw className="w-4 h-4" />
           )}
           Reiniciar gateway
+        </button>
+
+        <button
+          onClick={runServerProbe}
+          disabled={phase !== "idle" && phase !== "loading"}
+          className="flex items-center gap-2 px-3 py-2 rounded-lg transition-colors disabled:opacity-50 text-sm"
+          style={{
+            backgroundColor: "rgba(244,114,182,0.12)",
+            color: "#f9a8d4",
+            border: "1px solid rgba(244,114,182,0.35)",
+          }}
+          title="Consulta openclaw CLI (mcp show/list) e tail dos gateway logs — último recurso pra entender por que tools não chegam ao LLM"
+        >
+          {phase === "probing" ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <Stethoscope className="w-4 h-4" />
+          )}
+          Probe gateway
         </button>
 
         {status?.installed && (
@@ -1082,6 +1163,113 @@ export function MemoryMcpCard() {
               </pre>
             </details>
           )}
+        </div>
+      )}
+
+      {serverProbe && (
+        <div className="mt-4 space-y-2">
+          <div
+            className="rounded-lg p-3 text-xs"
+            style={{
+              backgroundColor: "var(--card-elevated, rgba(255,255,255,0.03))",
+              border: "1px solid var(--border)",
+              color: "var(--text-secondary)",
+            }}
+          >
+            <div
+              className="font-medium mb-2"
+              style={{ color: "var(--text-primary)" }}
+            >
+              Probe do gateway (CLI + logs)
+            </div>
+            <details open>
+              <summary
+                className="cursor-pointer mb-1"
+                style={{
+                  color: serverProbe.cli.show.ok ? "#34d399" : "#fca5a5",
+                }}
+              >
+                {`$ ${serverProbe.cli.show.cmd} ${serverProbe.cli.show.args.join(" ")} (${serverProbe.cli.show.durationMs}ms · ${serverProbe.cli.show.ok ? "ok" : "fail"})`}
+              </summary>
+              {serverProbe.cli.show.stdout && (
+                <pre
+                  className="whitespace-pre-wrap font-mono mt-1 p-2 rounded"
+                  style={{
+                    backgroundColor: "rgba(0,0,0,0.25)",
+                    color: "var(--text-muted)",
+                  }}
+                >
+                  {serverProbe.cli.show.stdout}
+                </pre>
+              )}
+              {serverProbe.cli.show.stderr && (
+                <pre
+                  className="whitespace-pre-wrap font-mono mt-1 p-2 rounded"
+                  style={{
+                    backgroundColor: "rgba(0,0,0,0.25)",
+                    color: "#fca5a5",
+                  }}
+                >
+                  {serverProbe.cli.show.stderr}
+                </pre>
+              )}
+            </details>
+            <details className="mt-2">
+              <summary
+                className="cursor-pointer mb-1"
+                style={{
+                  color: serverProbe.cli.list.ok ? "#34d399" : "#fca5a5",
+                }}
+              >
+                {`$ ${serverProbe.cli.list.cmd} ${serverProbe.cli.list.args.join(" ")} (${serverProbe.cli.list.durationMs}ms · ${serverProbe.cli.list.ok ? "ok" : "fail"})`}
+              </summary>
+              {serverProbe.cli.list.stdout && (
+                <pre
+                  className="whitespace-pre-wrap font-mono mt-1 p-2 rounded"
+                  style={{
+                    backgroundColor: "rgba(0,0,0,0.25)",
+                    color: "var(--text-muted)",
+                  }}
+                >
+                  {serverProbe.cli.list.stdout}
+                </pre>
+              )}
+              {serverProbe.cli.list.stderr && (
+                <pre
+                  className="whitespace-pre-wrap font-mono mt-1 p-2 rounded"
+                  style={{
+                    backgroundColor: "rgba(0,0,0,0.25)",
+                    color: "#fca5a5",
+                  }}
+                >
+                  {serverProbe.cli.list.stderr}
+                </pre>
+              )}
+            </details>
+            <div className="mt-3">
+              <div className="font-medium" style={{ color: "var(--text-primary)" }}>
+                Gateway logs — linhas com MCP/atlasdeck-memory
+              </div>
+              <div style={{ color: "var(--text-muted)" }} className="text-xs">
+                {serverProbe.gatewayLog.path
+                  ? `${serverProbe.gatewayLog.path} · ${serverProbe.gatewayLog.mcpLineCount} linhas relevantes`
+                  : "Nenhum log encontrado em /tmp/openclaw/ ou ~/.openclaw/logs/"}
+              </div>
+              {serverProbe.gatewayLog.mcpLines.length > 0 && (
+                <pre
+                  className="whitespace-pre-wrap font-mono mt-1 p-2 rounded max-h-96 overflow-auto"
+                  style={{
+                    backgroundColor: "rgba(0,0,0,0.25)",
+                    color: "var(--text-muted)",
+                    fontSize: "10px",
+                    lineHeight: "1.4",
+                  }}
+                >
+                  {serverProbe.gatewayLog.mcpLines.join("\n")}
+                </pre>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
