@@ -15,6 +15,7 @@ import {
   Settings as SettingsIcon,
   Trash2,
   Wrench,
+  Package,
 } from "lucide-react";
 
 type CheckStatus = "pass" | "warn" | "fail" | "skip";
@@ -27,7 +28,8 @@ interface FixHint {
     | "open-setup"
     | "runbook"
     | "retry"
-    | "repair-config";
+    | "repair-config"
+    | "install-whatsapp-plugin";
   label: string;
   accountId?: string;
   destructive?: boolean;
@@ -157,6 +159,33 @@ export function WhatsappDoctor({ open, onClose, onChanged }: Props) {
             onChanged?.();
           } else {
             log(false, json.error || json.validate?.output || "Reparo falhou — schema ainda inválido");
+          }
+        } else if (fix.action === "install-whatsapp-plugin") {
+          log(true, "Instalando @openclaw/whatsapp… (pode levar 30-90s na primeira vez)");
+          const res = await fetch("/api/integrations/whatsapp/install-plugin", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+          const json = (await res.json()) as {
+            ok?: boolean;
+            error?: string;
+            alreadyInstalled?: boolean;
+            durationMs?: number;
+            output?: string;
+          };
+          if (res.ok && json.ok) {
+            log(
+              true,
+              json.alreadyInstalled
+                ? "Plugin já estava instalado ✓"
+                : `Plugin instalado ✓ em ${((json.durationMs ?? 0) / 1000).toFixed(1)}s`,
+            );
+            setTimeout(() => void runDiagnose(false), 1500);
+            onChanged?.();
+          } else {
+            const tail = (json.output || "").split("\n").slice(-3).join(" · ").trim();
+            log(false, json.error || tail || "Install falhou — veja logs do gateway");
           }
         } else if (fix.action === "retry") {
           await runDiagnose(true);
@@ -467,6 +496,8 @@ function fixIconFor(action?: FixHint["action"]) {
       return { Comp: RefreshCw };
     case "repair-config":
       return { Comp: Wrench };
+    case "install-whatsapp-plugin":
+      return { Comp: Package };
     default:
       return null;
   }

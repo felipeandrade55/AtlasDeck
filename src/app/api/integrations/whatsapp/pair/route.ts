@@ -2,8 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { spawn, ChildProcess } from "child_process";
 import { readOpenClawConfig, resolveOpenClawAgentsConfigPath } from "@/lib/openclaw-config";
 import { migrateWhatsappAccountsFromConfig } from "@/lib/whatsapp-accounts-local";
+import {
+  WHATSAPP_PLUGIN,
+  isPluginInstalled,
+  installPluginStreaming,
+  buildOpenClawEnvPath,
+} from "@/lib/openclaw-plugins";
 import fs from "fs";
-import path from "path";
 
 export const dynamic = "force-dynamic";
 
@@ -16,8 +21,10 @@ interface PairState {
 }
 
 // Global active pairs map, surviving Next.js fast-refresh during dev
-const activePairs = (global as any).activeWhatsappPairs || new Map<string, PairState>();
-(global as any).activeWhatsappPairs = activePairs;
+const globalKey = "activeWhatsappPairs" as const;
+const globalAny = globalThis as unknown as Record<string, Map<string, PairState> | undefined>;
+const activePairs: Map<string, PairState> = globalAny[globalKey] ?? new Map<string, PairState>();
+globalAny[globalKey] = activePairs;
 
 function stripAnsi(str: string): string {
   return str.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, "");
@@ -72,7 +79,7 @@ export async function POST(req: NextRequest) {
 
       const config = readOpenClawConfig();
       const command = `${config.openclawBin} channels login --channel whatsapp --account ${accountId}`;
-      
+
       // Sanitize openclaw.json before spawning CLI to prevent schema validation errors
       try {
         const { path: configPath } = resolveOpenClawAgentsConfigPath();
@@ -85,66 +92,98 @@ export async function POST(req: NextRequest) {
       } catch (err) {
         console.error("Failed to auto-sanitize openclaw.json before pairing:", err);
       }
-      
-      // Scan for NVM node binary paths dynamically on Linux VPS
-      const currentPath = process.env.PATH || "";
-      const extraPaths = [
-        "/root/.npm-global/bin",
-        "/usr/local/bin",
-        "/usr/bin",
-        "/bin",
-      ];
-      try {
-        const nvmNodeDir = "/root/.nvm/versions/node";
-        if (fs.existsSync(nvmNodeDir)) {
-          const versions = fs.readdirSync(nvmNodeDir);
-          for (const v of versions) {
-            extraPaths.push(path.join(nvmNodeDir, v, "bin"));
-          }
-        }
-      } catch {}
 
-      const envPath = [...extraPaths, currentPath].join(":");
+      const envPath = buildOpenClawEnvPath();
+      const childEnv = {
+        ...process.env,
+        PATH: envPath,
+        OPENCLAW_DIR: config.openclawDir,
+        OPENCLAW_WORKSPACE: config.openclawWorkspace,
+      };
 
-      const child = spawn(command, {
-        cwd: config.openclawDir,
-        env: {
-          ...process.env,
-          PATH: envPath,
-          OPENCLAW_DIR: config.openclawDir,
-          OPENCLAW_WORKSPACE: config.openclawWorkspace,
-        },
-        shell: true,
-      });
-
+      // State has to exist before we kick off async work so polling sees
+      // install progress while it streams.
       const state: PairState = {
-        child,
-        output: `$ ${command}\n\n`,
+        child: null as unknown as ChildProcess,
+        output: "",
         startedAt: Date.now(),
         exited: false,
         exitCode: null,
       };
-
-      child.stdout?.on("data", (data) => {
-        state.output += data.toString();
-      });
-
-      child.stderr?.on("data", (data) => {
-        state.output += data.toString();
-      });
-
-      child.on("exit", (code) => {
-        state.exited = true;
-        state.exitCode = code;
-        state.output += `\n[Processo encerrado com código de saída: ${code}]\n`;
-      });
-
-      child.on("error", (err) => {
-        state.exited = true;
-        state.output += `\n[Erro ao iniciar CLI]: ${err.message}\n`;
-      });
-
       activePairs.set(accountId, state);
+
+      const spawnLogin = () => {
+        state.output += `$ ${command}\n\n`;
+        const child = spawn(command, {
+          cwd: config.openclawDir,
+          env: childEnv,
+          shell: true,
+        });
+        state.child = child;
+
+        child.stdout?.on("data", (data) => {
+          state.output += data.toString();
+        });
+        child.stderr?.on("data", (data) => {
+          state.output += data.toString();
+        });
+        child.on("exit", (code) => {
+          state.exited = true;
+          state.exitCode = code;
+          state.output += `\n[Processo encerrado com código de saída: ${code}]\n`;
+          if (code !== 0 && code !== null) {
+            state.output +=
+              "\nDica: se o terminal saiu sem mostrar QR, o plugin do WhatsApp pode estar quebrado.\n" +
+              "Tente o botão Reparar config ou rode no VPS: " +
+              `${config.openclawBin} plugins install ${WHATSAPP_PLUGIN}\n`;
+          }
+        });
+        child.on("error", (err) => {
+          state.exited = true;
+          state.output += `\n[Erro ao iniciar CLI]: ${err.message}\n`;
+        });
+      };
+
+      // Pre-flight: WhatsApp channel needs @openclaw/whatsapp installed,
+      // otherwise `channels login --channel whatsapp` silently exits with
+      // no QR — which is what bit us. Auto-install when missing and stream
+      // the npm output into the same terminal so the user sees progress.
+      const probe = isPluginInstalled(WHATSAPP_PLUGIN);
+      if (probe.installed) {
+        spawnLogin();
+      } else {
+        const reason = probe.error
+          ? `Não consegui verificar plugins (${probe.error}). Tentando instalar de qualquer jeito.`
+          : `Plugin ${WHATSAPP_PLUGIN} não está instalado — sem ele o CLI sai silencioso.`;
+        state.output +=
+          `[Pre-flight] ${reason}\n` +
+          `[Pre-flight] Rodando: ${config.openclawBin} plugins install ${WHATSAPP_PLUGIN}\n\n`;
+
+        const { child: installer, done } = installPluginStreaming(
+          WHATSAPP_PLUGIN,
+          (chunk) => {
+            state.output += chunk;
+          },
+        );
+        state.child = installer;
+
+        done.then((result) => {
+          state.output += `\n[Pre-flight] Install ${
+            result.ok ? "OK" : `falhou (exit ${result.exitCode})`
+          } em ${(result.durationMs / 1000).toFixed(1)}s\n\n`;
+          if (!result.ok) {
+            state.exited = true;
+            state.exitCode = result.exitCode ?? -1;
+            return;
+          }
+          spawnLogin();
+        }).catch((err) => {
+          state.exited = true;
+          state.output += `\n[Pre-flight] Erro inesperado: ${
+            err instanceof Error ? err.message : String(err)
+          }\n`;
+        });
+      }
 
       // Auto-terminate process after 5 minutes to prevent leaks
       setTimeout(() => {
