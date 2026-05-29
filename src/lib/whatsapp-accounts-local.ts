@@ -3,10 +3,15 @@
  * doesn't accept inside `channels.whatsapp.accounts.<id>`. Currently:
  *
  *   - `chatId`: AtlasDeck-only — used by proactive alert features (cost/budget
- *     warnings) to know where to send unsolicited messages. OpenClaw's own
- *     channel runtime doesn't need it.
+ *     warnings) to know where to send unsolicited messages.
+ *   - `dmPolicy`: per-account override AtlasDeck reads in the UI; OpenClaw
+ *     accepts a channel-level dmPolicy but not a per-account one in 2026.5.12+.
+ *   - `phoneNumber`: Baileys discovers the sender from the paired session;
+ *     OpenClaw 2026.5.12+ rejects this key inside accounts.<id>. We keep it
+ *     local as a label/display for the UI and for Cloud-API outbound calls
+ *     when a token is present.
  *
- * Same pattern as the telegram-accounts-local helper to prevent daemon validation errors.
+ * Same pattern as the telegram-accounts-local helper.
  */
 import fs from "fs";
 import path from "path";
@@ -16,6 +21,7 @@ const LOCAL_PATH = path.join(process.cwd(), "data", "whatsapp-accounts.json");
 export interface WhatsappAccountLocal {
   chatId?: string;
   dmPolicy?: string;
+  phoneNumber?: string;
 }
 
 function readAll(): Record<string, WhatsappAccountLocal> {
@@ -58,6 +64,14 @@ export function setWhatsappAccountLocal(id: string, patch: WhatsappAccountLocal)
       delete next.dmPolicy;
     }
   }
+  if (typeof patch.phoneNumber === "string") {
+    const trimmed = patch.phoneNumber.trim();
+    if (trimmed) {
+      next.phoneNumber = trimmed;
+    } else {
+      delete next.phoneNumber;
+    }
+  }
   if (Object.keys(next).length === 0) {
     if (id in all) {
       delete all[id];
@@ -80,17 +94,18 @@ export function deleteWhatsappAccountLocal(id: string): void {
 
 /**
  * Whitelist of keys OpenClaw v2026.5.12+ accepts inside
- * channels.whatsapp.accounts.<id>. Anything outside this set causes
- * "must NOT have additional properties" at startup, taking the gateway
- * down hard (we burned an evening on this — see project memory).
+ * channels.whatsapp.accounts.<id>. Empty by design: OpenClaw's WhatsApp
+ * channel uses Baileys, which discovers the sender from the paired session
+ * (`~/.openclaw/credentials/whatsapp/<id>/creds.json`). The schema rejects
+ * every property we used to write (`token`, `phoneNumber`, `chatId`,
+ * `dmPolicy`) with "must NOT have additional properties" — that kills the
+ * gateway and prevents `channels login` from generating a QR code.
  *
- * Keep this list narrow: every entry here must be a key OpenClaw's
- * runtime actually reads. UI-only or AtlasDeck-only fields belong in
- * data/whatsapp-accounts.json via setWhatsappAccountLocal.
+ * If a future OpenClaw release accepts a key again, add it here. Until then,
+ * every AtlasDeck-side field lives in data/whatsapp-accounts.json via
+ * setWhatsappAccountLocal, and openclaw.json carries only `accounts.<id>: {}`.
  */
-const ALLOWED_OPENCLAW_KEYS = new Set([
-  "phoneNumber",
-]);
+const ALLOWED_OPENCLAW_KEYS = new Set<string>();
 
 export function migrateWhatsappAccountsFromConfig(config: unknown): boolean {
   if (!config || typeof config !== "object") return false;
@@ -104,19 +119,20 @@ export function migrateWhatsappAccountsFromConfig(config: unknown): boolean {
   for (const [id, acct] of Object.entries(accounts)) {
     if (!acct || typeof acct !== "object") continue;
 
-    // Preserve chatId in local storage before stripping it (legacy migration).
+    // Preserve known fields in local storage before stripping (legacy migration).
     if (typeof acct.chatId === "string" && acct.chatId.trim()) {
       setWhatsappAccountLocal(id, { chatId: acct.chatId.trim() });
     }
-
-    // Preserve dmPolicy in local storage before stripping it (legacy migration).
     if (typeof acct.dmPolicy === "string" && acct.dmPolicy.trim()) {
       setWhatsappAccountLocal(id, { dmPolicy: acct.dmPolicy.trim() });
     }
+    if (typeof acct.phoneNumber === "string" && acct.phoneNumber.trim()) {
+      setWhatsappAccountLocal(id, { phoneNumber: acct.phoneNumber.trim() });
+    }
 
-    // Whitelist sweep: any key OpenClaw doesn't accept gets deleted.
-    // This is the defense against schema drift — if OpenClaw added/removed
-    // fields between versions, we strip whatever isn't in ALLOWED.
+    // Whitelist sweep: every key currently in the schema-rejected set gets
+    // deleted. With ALLOWED empty, the resulting `accounts.<id>` is `{}`,
+    // which the OpenClaw validator accepts.
     for (const key of Object.keys(acct)) {
       if (!ALLOWED_OPENCLAW_KEYS.has(key)) {
         delete acct[key];

@@ -112,7 +112,7 @@ export async function GET(req: NextRequest) {
     for (const [id, acct] of Object.entries(accountsRaw)) {
       const token = typeof acct.token === "string" ? acct.token.trim() : "";
       const hasToken = !!token && token !== "configured_mock_token";
-      const phoneNumber = typeof acct.phoneNumber === "string" ? acct.phoneNumber.trim() : null;
+      const legacyPhoneNumber = typeof acct.phoneNumber === "string" ? acct.phoneNumber.trim() : "";
 
       let diagnostics: AccountOut["diagnostics"] = null;
       let sessionStatus: AccountOut["sessionStatus"] = "disconnected";
@@ -151,6 +151,7 @@ export async function GET(req: NextRequest) {
       const localData = getWhatsappAccountLocal(id);
       const localChatId = localData.chatId;
       const localDmPolicy = localData.dmPolicy;
+      const localPhoneNumber = localData.phoneNumber;
       const legacyChatId = typeof acct.chatId === "string" && acct.chatId.trim() ? acct.chatId.trim() : null;
       const legacyDmPolicy = typeof acct.dmPolicy === "string" && acct.dmPolicy.trim() ? acct.dmPolicy.trim() : null;
 
@@ -159,7 +160,7 @@ export async function GET(req: NextRequest) {
         hasToken,
         tokenMasked: hasToken ? maskToken(token) : "",
         token: hasToken && revealToken ? token : null,
-        phoneNumber,
+        phoneNumber: localPhoneNumber || legacyPhoneNumber || null,
         chatId: localChatId || legacyChatId,
         dmPolicy: (localDmPolicy || legacyDmPolicy || wa.dmPolicy || "pairing") as DmPolicy,
         sessionStatus,
@@ -243,30 +244,24 @@ export async function PUT(req: NextRequest) {
       for (const [id, patch] of Object.entries(body.accounts)) {
         const cleanId = id.trim();
         if (!cleanId) continue;
-        const existing = (wa.accounts[cleanId] || {}) as WhatsappAccountConfig;
 
-        // Build the account from a whitelist instead of mutating the existing
-        // object. Mutation leaves stale fields (chatId, qr, sessionPath, etc.)
-        // intact, which the OpenClaw v2026.5.12+ schema validator rejects with
-        // "must NOT have additional properties" — and that kills the gateway
-        // at startup. Reading only known keys from the prior state guarantees
-        // the written object has no extras.
-        const next: WhatsappAccountConfig = {};
+        // OpenClaw 2026.5.12+ rejects every field we used to write inside
+        // channels.whatsapp.accounts.<id> (token/phoneNumber/chatId/dmPolicy)
+        // with "must NOT have additional properties", killing the gateway
+        // and blocking `channels login` from generating a QR code. We keep
+        // the account entry as an empty `{}` so OpenClaw knows the ID
+        // exists, and route every UI-managed field to local storage.
         if (typeof patch.phoneNumber === "string") {
-          next.phoneNumber = patch.phoneNumber.trim();
-        } else if (typeof existing.phoneNumber === "string") {
-          next.phoneNumber = existing.phoneNumber;
+          setWhatsappAccountLocal(cleanId, { phoneNumber: patch.phoneNumber });
         }
         if (typeof patch.dmPolicy === "string") {
           setWhatsappAccountLocal(cleanId, { dmPolicy: patch.dmPolicy });
         }
-
-        // chatId is an AtlasDeck-only field — never write to openclaw.json.
         if (typeof patch.chatId === "string") {
           setWhatsappAccountLocal(cleanId, { chatId: patch.chatId });
         }
 
-        wa.accounts[cleanId] = next;
+        wa.accounts[cleanId] = {};
       }
     }
 

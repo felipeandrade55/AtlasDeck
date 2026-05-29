@@ -14,6 +14,7 @@ import {
   Power,
   Settings as SettingsIcon,
   Trash2,
+  Wrench,
 } from "lucide-react";
 
 type CheckStatus = "pass" | "warn" | "fail" | "skip";
@@ -25,7 +26,8 @@ interface FixHint {
     | "restart-gateway"
     | "open-setup"
     | "runbook"
-    | "retry";
+    | "retry"
+    | "repair-config";
   label: string;
   accountId?: string;
   destructive?: boolean;
@@ -137,6 +139,24 @@ export function WhatsappDoctor({ open, onClose, onChanged }: Props) {
             onChanged?.();
           } else {
             log(false, json.error || "Falha ao reiniciar gateway");
+          }
+        } else if (fix.action === "repair-config") {
+          const res = await fetch("/api/integrations/whatsapp/repair", { method: "POST" });
+          const json = (await res.json()) as {
+            ok?: boolean;
+            error?: string;
+            sweep?: { changedWhatsapp?: boolean; changedTelegram?: boolean };
+            validate?: { ok?: boolean | null; output?: string };
+          };
+          if (res.ok && json.ok) {
+            const moved: string[] = [];
+            if (json.sweep?.changedWhatsapp) moved.push("WhatsApp limpo");
+            if (json.sweep?.changedTelegram) moved.push("Telegram limpo");
+            log(true, `Config reparado ✓ ${moved.length ? `(${moved.join(", ")})` : ""}`);
+            setTimeout(() => void runDiagnose(false), 1500);
+            onChanged?.();
+          } else {
+            log(false, json.error || json.validate?.output || "Reparo falhou — schema ainda inválido");
           }
         } else if (fix.action === "retry") {
           await runDiagnose(true);
@@ -445,6 +465,8 @@ function fixIconFor(action?: FixHint["action"]) {
       return { Comp: SettingsIcon };
     case "retry":
       return { Comp: RefreshCw };
+    case "repair-config":
+      return { Comp: Wrench };
     default:
       return null;
   }

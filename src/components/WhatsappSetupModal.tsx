@@ -21,6 +21,7 @@ import {
   Plus,
   FileText,
   Power,
+  Wrench,
 } from "lucide-react";
 import { RestartStatusBanner } from "./RestartStatusBanner";
 import {
@@ -108,6 +109,13 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
   const [pairingOutput, setPairingOutput] = useState<string>("");
   const [pairingExited, setPairingExited] = useState<boolean>(false);
   const [pairingLoading, setPairingLoading] = useState<boolean>(false);
+
+  const [repairing, setRepairing] = useState(false);
+  const [repairResult, setRepairResult] = useState<{
+    ok: boolean;
+    summary: string;
+    detail: string;
+  } | null>(null);
 
   useEffect(() => {
     setAutoRestart(getAutoRestartPref());
@@ -343,6 +351,51 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
     }
   };
 
+  const repairConfig = async () => {
+    setRepairing(true);
+    setRepairResult(null);
+    try {
+      const res = await fetch("/api/integrations/whatsapp/repair", { method: "POST" });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+
+      const sweep = json.sweep || {};
+      const validate = json.validate || {};
+      const movedBits: string[] = [];
+      if (sweep.changedWhatsapp) movedBits.push("WhatsApp limpo");
+      if (sweep.changedTelegram) movedBits.push("Telegram limpo");
+      if (movedBits.length === 0) movedBits.push("nada a migrar");
+
+      const detail = (validate.output || "").trim() || "(validator não respondeu)";
+      const ok = validate.ok === true || (sweep.ran && validate.ok !== false);
+
+      setRepairResult({
+        ok,
+        summary: ok
+          ? `Reparo aplicado: ${movedBits.join(" · ")}. Schema OK.`
+          : `Schema ainda rejeita após reparo: ${movedBits.join(" · ")}.`,
+        detail,
+      });
+
+      await refresh();
+      if (autoRestart && ok) {
+        setRestarting(true);
+        setRestartResult(null);
+        const result = await restartGatewayClient();
+        setRestartResult(result);
+        setRestarting(false);
+      }
+    } catch (e) {
+      setRepairResult({
+        ok: false,
+        summary: "Falha ao reparar config",
+        detail: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setRepairing(false);
+    }
+  };
+
   const copy = async (key: string, value: string) => {
     try {
       await navigator.clipboard.writeText(value);
@@ -383,6 +436,24 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
           </div>
           <div className="flex items-center gap-2">
             <button
+              onClick={() => void repairConfig()}
+              disabled={repairing}
+              className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg disabled:opacity-50"
+              style={{
+                backgroundColor: "rgba(234,179,8,0.10)",
+                color: "#fbbf24",
+                border: "1px solid rgba(234,179,8,0.35)",
+              }}
+              title="Sanitiza channels.whatsapp.accounts em ~/.openclaw/openclaw.json e revalida o schema (use quando o pareamento via QR falha com 'must NOT have additional properties')"
+            >
+              {repairing ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Wrench className="w-3.5 h-3.5" />
+              )}
+              Reparar config
+            </button>
+            <button
               onClick={() => refresh()}
               disabled={loading}
               className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg disabled:opacity-50"
@@ -417,6 +488,42 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
             <div className="flex items-center gap-2 text-sm" style={{ color: "var(--text-muted)" }}>
               <Loader2 className="w-4 h-4 animate-spin" />
               Carregando configuração e diagnósticos…
+            </div>
+          )}
+
+          {repairResult && (
+            <div
+              className="rounded-lg p-3 text-sm"
+              style={{
+                backgroundColor: repairResult.ok
+                  ? "rgba(16,185,129,0.08)"
+                  : "rgba(234,179,8,0.08)",
+                border: `1px solid ${repairResult.ok ? "rgba(16,185,129,0.35)" : "rgba(234,179,8,0.35)"}`,
+                color: repairResult.ok ? "#6ee7b7" : "#fbbf24",
+              }}
+            >
+              <div className="flex items-start gap-2">
+                {repairResult.ok ? (
+                  <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
+                ) : (
+                  <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium">{repairResult.summary}</div>
+                  {repairResult.detail && (
+                    <pre className="text-[11px] mt-1 font-mono whitespace-pre-wrap" style={{ color: "var(--text-secondary)" }}>
+                      {repairResult.detail}
+                    </pre>
+                  )}
+                </div>
+                <button
+                  onClick={() => setRepairResult(null)}
+                  className="text-[11px] px-1.5 py-0.5 rounded"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  Fechar
+                </button>
+              </div>
             </div>
           )}
 

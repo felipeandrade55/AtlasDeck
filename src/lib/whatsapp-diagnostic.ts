@@ -3,7 +3,8 @@
  * Modeled after telegram-diagnostic to provide identical levels of support.
  */
 import { readFileSync, existsSync } from "fs";
-import { resolveOpenClawAgentsConfigPath } from "./openclaw-config";
+import { spawnSync } from "child_process";
+import { resolveOpenClawAgentsConfigPath, readOpenClawConfig } from "./openclaw-config";
 import { getWhatsappAccountLocal } from "./whatsapp-accounts-local";
 import { waCall, looksLikePhoneNumber, hasWhatsappSessionLocal } from "./whatsapp-api";
 import { detectGatewayRuntime } from "./gateway-control";
@@ -17,7 +18,8 @@ export interface FixHint {
     | "restart-gateway"
     | "open-setup"
     | "runbook"
-    | "retry";
+    | "retry"
+    | "repair-config";
   label: string;
   accountId?: string;
   destructive?: boolean;
@@ -134,8 +136,9 @@ export async function runDiagnose(opts: RunDiagnoseOptions): Promise<DiagnoseRes
     const acct = accountsRaw[id] || {};
     const token = (acct.token ?? "").trim();
     const hasToken = token.length > 0 && token !== "configured_mock_token";
-    const phoneNumber = (acct.phoneNumber ?? "").trim();
-    const localChatId = getWhatsappAccountLocal(id).chatId;
+    const local = getWhatsappAccountLocal(id);
+    const phoneNumber = (local.phoneNumber || acct.phoneNumber || "").trim();
+    const localChatId = local.chatId;
     const legacyChatId = (acct.chatId ?? "").trim();
     const chatId = localChatId || legacyChatId || "";
 
@@ -322,6 +325,68 @@ export async function runDiagnose(opts: RunDiagnoseOptions): Promise<DiagnoseRes
       label: "Gateway OpenClaw",
       status: "skip",
       detail: `Não consegui inspecionar o runtime: ${e instanceof Error ? e.message : String(e)}`,
+    });
+  }
+
+  // openclaw config validate — exposes the canonical schema errors (which
+  // property is offending) that the gateway hides behind a truncated
+  // "must NOT have additional properties" line. When validation fails the
+  // gateway refuses to boot and `channels login` can't generate the QR.
+  try {
+    const { openclawBin, openclawDir } = readOpenClawConfig();
+    const result = spawnSync(openclawBin, ["config", "validate"], {
+      cwd: openclawDir,
+      env: process.env,
+      encoding: "utf-8",
+      timeout: 8000,
+    });
+    const output = `${result.stdout || ""}${result.stderr || ""}`.trim();
+
+    if (result.error) {
+      checks.push({
+        id: "openclaw-config",
+        category: "openclaw",
+        label: "Validação do openclaw.json",
+        status: "skip",
+        detail: `Não consegui rodar \`openclaw config validate\`: ${result.error.message}`,
+      });
+    } else if ((result.status ?? 1) === 0) {
+      checks.push({
+        id: "openclaw-config",
+        category: "openclaw",
+        label: "Validação do openclaw.json",
+        status: "pass",
+        detail: "Schema do OpenClaw aceito — gateway pode bootar e pareamento via QR consegue rodar.",
+      });
+    } else {
+      const lines = output.split("\n").map((l) => l.trim()).filter(Boolean);
+      const offending = lines.find((l) =>
+        /channels\.whatsapp.*additional propert|additionalProperty|must NOT have additional/i.test(l),
+      ) || lines.find((l) => /channels\.whatsapp/i.test(l));
+      checks.push({
+        id: "openclaw-config",
+        category: "openclaw",
+        label: "Validação do openclaw.json",
+        status: "fail",
+        detail:
+          (offending
+            ? `Validator do OpenClaw rejeita: ${offending}`
+            : "Schema do OpenClaw rejeitou a config — pareamento via QR vai falhar até reparar.") +
+          " Clique em Reparar pra mover campos AtlasDeck-only para o storage local e deixar accounts.<id> vazio.",
+        fix: {
+          action: "repair-config",
+          label: "Reparar config OpenClaw",
+          runbook: lines.slice(0, 10),
+        },
+      });
+    }
+  } catch (e) {
+    checks.push({
+      id: "openclaw-config",
+      category: "openclaw",
+      label: "Validação do openclaw.json",
+      status: "skip",
+      detail: `Não consegui validar o openclaw.json: ${e instanceof Error ? e.message : String(e)}`,
     });
   }
 
