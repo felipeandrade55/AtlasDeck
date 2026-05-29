@@ -36,6 +36,7 @@ interface DiagPayload {
   health: { ok: boolean; summary: { fail: number; warn: number; headline: string } } | null;
   watchdog: { started: boolean; circuitOpen: boolean; restartInFlight: boolean };
   watcher: { started: boolean };
+  agentFailure: { detected: boolean; summary: string; hint: string } | null;
 }
 
 /**
@@ -71,6 +72,17 @@ function evaluate(d: DiagPayload): BannerPayload {
       severity: "fail",
       headline: "openclaw.json com erro",
       details: [d.config.error],
+    };
+  }
+
+  if (d.agentFailure?.detected) {
+    // Different from a stuck channel — this is the agent (Codex / GPT) giving
+    // up on a long conversation. Restart won't fix it; we tell the user
+    // exactly that and what to try instead.
+    return {
+      severity: "fail",
+      headline: "Bot não está respondendo",
+      details: [d.agentFailure.summary, d.agentFailure.hint],
     };
   }
 

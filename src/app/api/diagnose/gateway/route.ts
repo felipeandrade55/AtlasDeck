@@ -109,6 +109,51 @@ async function readGatewayPidUptime(): Promise<Array<{ pid: number; startedAt: s
   }
 }
 
+/**
+ * Scan recent journalctl lines for known Codex/agent failure patterns and
+ * summarise them. The user-visible failure of today (29/05/2026) was the
+ * Telegram bot going silent because the Codex agent hit a token-overflow
+ * timeout, compaction failed with provider_error_4xx, and the failover
+ * surfaced an error instead of falling back. The gateway itself was
+ * healthy — no signal in our existing checks. This adds a dedicated
+ * signal so the doctor can tell the user "your bot is silent because
+ * the agent gave up on a long conversation, not because the channel
+ * died".
+ *
+ * Heuristic patterns are pulled from the actual journalctl output we
+ * observed; extend the list as new failure modes surface.
+ */
+async function detectAgentFailures(logs: string | null): Promise<{
+  detected: boolean;
+  patterns: string[];
+  summary: string;
+  hint: string;
+} | null> {
+  if (!logs) return null;
+  const text = logs.toLowerCase();
+  const patterns: Array<{ match: string; label: string }> = [
+    { match: "codex app-server startup aborted", label: "Codex app-server abortou no boot" },
+    { match: "codex app-server turn idle timed out", label: "Codex teve timeout em turno (provavelmente token overflow)" },
+    { match: "high prompt token usage", label: "Prompt do agente perto do limite de tokens" },
+    { match: "compaction did not reduce context", label: "Compaction de contexto falhou" },
+    { match: "embedded run failover decision", label: "Failover entre provedores deu erro" },
+    { match: "agents/harness] codex agent harness failed", label: "Harness do Codex falhou" },
+  ];
+  const hits = patterns.filter((p) => text.includes(p.match)).map((p) => p.label);
+  if (hits.length === 0) return null;
+  const tokenOverflow = hits.some((h) => /token|compaction|idle timed out/i.test(h));
+  return {
+    detected: true,
+    patterns: hits,
+    summary: tokenOverflow
+      ? "Conversa muito longa fez o modelo dar timeout. Não é o canal Telegram travado — é o agente desistindo de responder."
+      : "Detectei falha recente no agente OpenClaw nos logs do gateway.",
+    hint: tokenOverflow
+      ? "Abra uma conversa NOVA com o bot (sem histórico longo). Se persistir, considere reduzir a janela de contexto ou trocar de modelo."
+      : "Veja os incidents e o journalctl pra entender a causa raiz. Auto-restart do gateway não resolve falha de agente.",
+  };
+}
+
 async function readRecentIncidents(limit = 5): Promise<Array<{ file: string; modifiedAt: string; reason: string; preview: string }>> {
   try {
     const files = await readdir(INCIDENTS_DIR).catch(() => [] as string[]);
@@ -151,7 +196,7 @@ export async function GET() {
   const [runtime, pids, logs, incidents] = await Promise.all([
     detectGatewayRuntime(),
     readGatewayPidUptime(),
-    gatewayLogs({ lines: 80, errorsOnly: false }).catch(() => null),
+    gatewayLogs({ lines: 200, errorsOnly: false }).catch(() => null),
     readRecentIncidents(5),
   ]);
 
@@ -159,6 +204,7 @@ export async function GET() {
   const lastHealth = getLastHealth();
   const watchdog = getWatchdogState();
   const watcher = getOpenClawConfigWatcherStats();
+  const agentFailure = await detectAgentFailures(logs?.output ?? null);
 
   return NextResponse.json({
     timestamp: new Date().toISOString(),
@@ -191,5 +237,6 @@ export async function GET() {
       : null,
     watchdog,
     watcher,
+    agentFailure,
   });
 }

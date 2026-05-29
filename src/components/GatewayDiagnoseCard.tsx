@@ -60,6 +60,12 @@ interface DiagnoseResponse {
     lastTickAt: number;
   };
   watcher: { started: boolean; sweepsRun: number; sweepsThatChanged: number };
+  agentFailure: {
+    detected: boolean;
+    patterns: string[];
+    summary: string;
+    hint: string;
+  } | null;
 }
 
 type Severity = "ok" | "warn" | "fail";
@@ -138,6 +144,24 @@ function deriveSignals(d: DiagnoseResponse): DerivedSignal[] {
       ? `Ativo · ${d.watcher.sweepsRun} sweep${d.watcher.sweepsRun === 1 ? "" : "s"} (${d.watcher.sweepsThatChanged} com limpeza)`
       : "Não iniciou — restart manual em campos rejeitados",
   });
+
+  // Agent failure scan (Codex / embedded run). Surfaces the "bot silent
+  // because the agent gave up" case that no other signal catches.
+  if (d.agentFailure?.detected) {
+    signals.push({
+      key: "agent",
+      label: "Agente OpenClaw",
+      severity: "fail",
+      detail: d.agentFailure.summary,
+    });
+  } else {
+    signals.push({
+      key: "agent",
+      label: "Agente OpenClaw",
+      severity: "ok",
+      detail: "Sem falhas recentes detectadas no journalctl",
+    });
+  }
 
   return signals;
 }
