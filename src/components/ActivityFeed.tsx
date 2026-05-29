@@ -87,6 +87,7 @@ async function fetchActivitiesWithTimeout(limit: number, timeoutMs = 8000): Prom
   try {
     const res = await fetch(`/api/activities?limit=${limit}&sort=newest`, {
       signal: controller.signal,
+      cache: 'no-store',
     });
     const data = await res.json().catch(() => null) as ActivitiesResponse | null;
     if (!res.ok) {

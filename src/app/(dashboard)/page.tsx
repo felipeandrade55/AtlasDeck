@@ -56,8 +56,8 @@ export default function DashboardPage() {
     const fetchData = async () => {
       try {
         const [actStats, agentsData] = await Promise.all([
-          fetch("/api/activities/stats").then(r => r.json()),
-          fetch("/api/agents").then(r => r.json()),
+          fetch("/api/activities/stats", { cache: "no-store" }).then(r => r.json()),
+          fetch("/api/agents", { cache: "no-store" }).then(r => r.json()),
         ]);
         setStats({
           total:   actStats.total             || 0,

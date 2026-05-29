@@ -52,9 +52,9 @@ export default function AboutPage() {
 
   useEffect(() => {
     Promise.allSettled([
-      fetch("/api/activities").then((r) => r.json()),
-      fetch("/api/skills").then((r) => r.json()),
-      fetch("/api/cron").then((r) => r.json()),
+      fetch("/api/activities", { cache: "no-store" }).then((r) => r.json()),
+      fetch("/api/skills", { cache: "no-store" }).then((r) => r.json()),
+      fetch("/api/cron", { cache: "no-store" }).then((r) => r.json()),
     ]).then(([activitiesResult, skillsResult, cronResult]) => {
       const activities =
         activitiesResult.status === "fulfilled" ? activitiesResult.value : { activities: [] };

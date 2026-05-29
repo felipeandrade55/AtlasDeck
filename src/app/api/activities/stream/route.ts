@@ -6,6 +6,8 @@
 import { NextRequest } from 'next/server';
 import { getActivities } from '@/lib/activities-db';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(request: NextRequest) {
   const encoder = new TextEncoder();
   let lastId: string | null = null;

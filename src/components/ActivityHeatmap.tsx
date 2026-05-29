@@ -32,7 +32,7 @@ export function ActivityHeatmap() {
   const [tooltip, setTooltip] = useState<{ day: string; count: number; x: number; y: number } | null>(null);
 
   useEffect(() => {
-    fetch("/api/activities/stats")
+    fetch("/api/activities/stats", { cache: "no-store" })
       .then((r) => r.json())
       .then((data) => { setStats(data); setLoading(false); })
       .catch(() => setLoading(false));

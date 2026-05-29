@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { logActivity, getActivities, getActivityStats, getAgents } from '@/lib/activities-db';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -34,6 +36,7 @@ export async function GET(request: NextRequest) {
         headers: {
           'Content-Type': 'text/csv',
           'Content-Disposition': `attachment; filename="activities-${new Date().toISOString().split('T')[0]}.csv"`,
+          'Cache-Control': 'no-store, max-age=0, must-revalidate',
         },
       });
     }
@@ -64,10 +67,22 @@ export async function GET(request: NextRequest) {
       };
     }
 
-    return NextResponse.json(response);
+    return NextResponse.json(response, {
+      headers: {
+        'Cache-Control': 'no-store, max-age=0, must-revalidate',
+      },
+    });
   } catch (error) {
     console.error('Failed to get activities:', error);
-    return NextResponse.json({ error: 'Failed to get activities' }, { status: 500 });
+    return NextResponse.json(
+      { error: 'Failed to get activities' },
+      {
+        status: 500,
+        headers: {
+          'Cache-Control': 'no-store, max-age=0, must-revalidate',
+        },
+      }
+    );
   }
 }
 

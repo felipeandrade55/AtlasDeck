@@ -8,6 +8,8 @@ import { getActivityStats } from '@/lib/activities-db';
 import Database from 'better-sqlite3';
 import path from 'path';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   try {
     const stats = getActivityStats();
@@ -53,9 +55,21 @@ export async function GET() {
       heatmap: heatmapRows,
       trend: trendRows,
       hourly: hourRows,
+    }, {
+      headers: {
+        'Cache-Control': 'no-store, max-age=0, must-revalidate',
+      },
     });
   } catch (error) {
     console.error('[activities/stats] Error:', error);
-    return NextResponse.json({ error: 'Failed to get stats' }, { status: 500 });
+    return NextResponse.json(
+      { error: 'Failed to get stats' },
+      {
+        status: 500,
+        headers: {
+          'Cache-Control': 'no-store, max-age=0, must-revalidate',
+        },
+      }
+    );
   }
 }

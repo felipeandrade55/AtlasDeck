@@ -192,7 +192,9 @@ export default function ActivityPage() {
       params.set("offset", currentOffset.toString());
       if (!append) params.set("withStats", "true");
 
-      const res = await fetch(`/api/activities?${params.toString()}`);
+      const res = await fetch(`/api/activities?${params.toString()}`, {
+        cache: 'no-store',
+      });
       const data: ActivitiesResponse = await res.json();
       
       if (append) {
