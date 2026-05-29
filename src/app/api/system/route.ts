@@ -80,20 +80,25 @@ function getIntegrationStatus() {
     detail: telegramEnabled ? `${telegramAccounts} bots configured` : null,
   });
 
-  // Twitter (bird CLI) - check TOOLS.md for configuration
-  let twitterConfigured = false;
+  // WhatsApp — read from openclaw.json (channels.whatsapp)
+  let whatsappEnabled = false;
+  let whatsappAccounts = 0;
   try {
-    const toolsPath = path.join(WORKSPACE_PATH, 'TOOLS.md');
-    const toolsContent = fs.readFileSync(toolsPath, 'utf-8');
-    twitterConfigured = toolsContent.includes('bird') && toolsContent.includes('auth_token');
+    const openclawConfigPath = path.join(readOpenClawConfig().openclawDir, 'openclaw.json');
+    const openclawConfig = JSON.parse(fs.readFileSync(openclawConfigPath, 'utf-8'));
+    const whatsappConfig = openclawConfig?.channels?.whatsapp;
+    whatsappEnabled = !!(whatsappConfig?.enabled);
+    if (whatsappConfig?.accounts) {
+      whatsappAccounts = Object.keys(whatsappConfig.accounts).length;
+    }
   } catch {}
   integrations.push({
-    id: 'twitter',
-    name: 'Twitter (bird CLI)',
-    status: twitterConfigured ? 'configured' : 'not_configured',
-    icon: 'Twitter',
-    lastActivity: null,
-    detail: null,
+    id: 'whatsapp',
+    name: 'WhatsApp',
+    status: whatsappEnabled ? 'connected' : 'disconnected',
+    icon: 'MessageSquare',
+    lastActivity: whatsappEnabled ? lastSessionTime : null,
+    detail: whatsappEnabled ? `${whatsappAccounts} accounts configured` : null,
   });
 
   // Google (gog/google-gemini-cli-auth) — check openclaw.json plugins

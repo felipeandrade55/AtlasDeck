@@ -1,5 +1,3 @@
-"use client";
-
 import { useEffect, useState } from "react";
 import {
   MessageCircle,
@@ -12,12 +10,15 @@ import {
   Loader2,
   AlertTriangle,
   Stethoscope,
+  MessageSquare,
   type LucideIcon,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { TelegramSetupModal } from "./TelegramSetupModal";
 import { TelegramDoctor } from "./TelegramDoctor";
+import { WhatsappSetupModal } from "./WhatsappSetupModal";
+import { WhatsappDoctor } from "./WhatsappDoctor";
 
 interface Integration {
   id: string;
@@ -35,6 +36,7 @@ const iconMap: Record<string, LucideIcon> = {
   MessageCircle,
   Twitter,
   Mail,
+  MessageSquare,
 };
 
 const statusConfig = {
@@ -85,10 +87,36 @@ interface TelegramQuickStatus {
   error: string | null;
 }
 
+interface WhatsappQuickStatus {
+  loading: boolean;
+  enabled: boolean;
+  accounts: Array<{
+    id: string;
+    phoneNumber: string | null;
+    chatId: string | null;
+    sessionStatus: string;
+  }>;
+  healthy: boolean;
+  issueCount: number;
+  error: string | null;
+}
+
 export function IntegrationStatus({ integrations }: IntegrationStatusProps) {
   const [telegramOpen, setTelegramOpen] = useState(false);
   const [doctorOpen, setDoctorOpen] = useState(false);
+  const [whatsappOpen, setWhatsappOpen] = useState(false);
+  const [whatsappDoctorOpen, setWhatsappDoctorOpen] = useState(false);
+
   const [tg, setTg] = useState<TelegramQuickStatus>({
+    loading: true,
+    enabled: false,
+    accounts: [],
+    healthy: false,
+    issueCount: 0,
+    error: null,
+  });
+
+  const [wa, setWa] = useState<WhatsappQuickStatus>({
     loading: true,
     enabled: false,
     accounts: [],
@@ -130,15 +158,39 @@ export function IntegrationStatus({ integrations }: IntegrationStatusProps) {
     }
   };
 
+  const fetchWhatsapp = async () => {
+    try {
+      const res = await fetch("/api/integrations/whatsapp?live=1", { cache: "no-store" });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      setWa({
+        loading: false,
+        enabled: !!json.config?.enabled,
+        accounts: (json.accounts || []).map((a: {
+          id: string;
+          phoneNumber?: string | null;
+          chatId?: string | null;
+          sessionStatus: string;
+        }) => ({
+          id: a.id,
+          phoneNumber: a.phoneNumber ?? null,
+          chatId: a.chatId ?? null,
+          sessionStatus: a.sessionStatus,
+        })),
+        healthy: !!json.summary?.healthy,
+        issueCount: (json.summary?.issues || []).length,
+        error: null,
+      });
+    } catch (e) {
+      setWa((prev) => ({ ...prev, loading: false, error: e instanceof Error ? e.message : String(e) }));
+    }
+  };
+
   useEffect(() => {
     fetchTelegram();
-    // refresh quick status whenever the modal closes (changes might have been saved)
+    fetchWhatsapp();
   }, []);
 
-  // Deep-link from bell notification: /settings?openDoctor=1 opens the
-  // doctor automatically and then strips the param so a refresh doesn't
-  // re-trigger it. Uses window.location to avoid Suspense boundary issues
-  // with useSearchParams in nested client components.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
@@ -153,10 +205,15 @@ export function IntegrationStatus({ integrations }: IntegrationStatusProps) {
 
   useEffect(() => {
     if (!telegramOpen) {
-      // refresh after closing to reflect saved edits
       fetchTelegram();
     }
   }, [telegramOpen]);
+
+  useEffect(() => {
+    if (!whatsappOpen) {
+      fetchWhatsapp();
+    }
+  }, [whatsappOpen]);
 
   if (!integrations) {
     return (
@@ -188,6 +245,7 @@ export function IntegrationStatus({ integrations }: IntegrationStatusProps) {
             const status = statusConfig[integration.status];
             const StatusIcon = status.icon;
             const isTelegram = integration.id === "telegram";
+            const isWhatsapp = integration.id === "whatsapp";
 
             return (
               <div
@@ -242,6 +300,38 @@ export function IntegrationStatus({ integrations }: IntegrationStatusProps) {
                             backgroundColor: "rgba(139,92,246,0.15)",
                             color: "#c4b5fd",
                             border: "1px solid rgba(139,92,246,0.35)",
+                          }}
+                          title="Abrir configuração"
+                        >
+                          <SettingsIcon className="w-3 h-3" />
+                          Setup
+                        </button>
+                      </>
+                    )}
+                    {isWhatsapp && (
+                      <>
+                        <button
+                          onClick={() => setWhatsappDoctorOpen(true)}
+                          className="flex items-center gap-1 px-2 py-1 rounded text-xs"
+                          style={{
+                            backgroundColor: wa.healthy
+                              ? "rgba(16,185,129,0.12)"
+                              : "rgba(250,204,21,0.15)",
+                            color: wa.healthy ? "#86efac" : "#fde047",
+                            border: `1px solid ${wa.healthy ? "rgba(16,185,129,0.35)" : "rgba(250,204,21,0.35)"}`,
+                          }}
+                          title="Rodar diagnóstico completo + mandar teste"
+                        >
+                          <Stethoscope className="w-3 h-3" />
+                          Diagnosticar
+                        </button>
+                        <button
+                          onClick={() => setWhatsappOpen(true)}
+                          className="flex items-center gap-1 px-2 py-1 rounded text-xs"
+                          style={{
+                            backgroundColor: "rgba(16,185,129,0.15)",
+                            color: "#86efac",
+                            border: "1px solid rgba(16,185,129,0.35)",
                           }}
                           title="Abrir configuração"
                         >
@@ -327,6 +417,67 @@ export function IntegrationStatus({ integrations }: IntegrationStatusProps) {
                     )}
                   </div>
                 )}
+
+                {/* WhatsApp detail row */}
+                {isWhatsapp && (
+                  <div className="px-4 pb-3 text-xs space-y-1" style={{ color: "var(--text-secondary)" }}>
+                    {wa.loading && (
+                      <div className="flex items-center gap-1.5" style={{ color: "var(--text-muted)" }}>
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        Coletando detalhes do WhatsApp…
+                      </div>
+                    )}
+                    {!wa.loading && wa.error && (
+                      <div className="flex items-center gap-1.5" style={{ color: "#fca5a5" }}>
+                        <XCircle className="w-3 h-3" />
+                        {wa.error}
+                      </div>
+                    )}
+                    {!wa.loading && !wa.error && (
+                      <>
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                          <span>
+                            Canal:{" "}
+                            <strong style={{ color: wa.enabled ? "#34d399" : "#facc15" }}>
+                              {wa.enabled ? "habilitado" : "desabilitado"}
+                            </strong>
+                          </span>
+                          <span>
+                            Saúde:{" "}
+                            <strong style={{ color: wa.healthy ? "#34d399" : "#facc15" }}>
+                              {wa.healthy ? "ok" : `${wa.issueCount} alerta(s)`}
+                            </strong>
+                          </span>
+                          <span>
+                            Contas:{" "}
+                            <strong style={{ color: "var(--text-primary)" }}>{wa.accounts.length}</strong>
+                          </span>
+                        </div>
+                        {wa.accounts.length === 0 && (
+                          <div style={{ color: "var(--text-muted)" }}>
+                            Nenhuma conta configurada em <code>channels.whatsapp.accounts</code>.
+                          </div>
+                        )}
+                        {wa.accounts.map((a) => (
+                          <div key={a.id} className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                            <span className="font-mono" style={{ color: "var(--text-primary)" }}>{a.id}</span>
+                            <span>
+                              número: <strong style={{ color: "#34d399" }}>{a.phoneNumber || "?"}</strong>
+                            </span>
+                            <span>
+                              chat: <span style={{ color: a.chatId ? "var(--text-primary)" : "#facc15" }}>{a.chatId || "não definido"}</span>
+                            </span>
+                            {a.sessionStatus === "connected" ? (
+                              <span style={{ color: "#34d399" }}>sessão ativa</span>
+                            ) : (
+                              <span style={{ color: "#facc15" }}>desconectado</span>
+                            )}
+                          </div>
+                        ))}
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -339,6 +490,14 @@ export function IntegrationStatus({ integrations }: IntegrationStatusProps) {
         onClose={() => setDoctorOpen(false)}
         onChanged={fetchTelegram}
       />
+
+      <WhatsappSetupModal open={whatsappOpen} onClose={() => setWhatsappOpen(false)} />
+      <WhatsappDoctor
+        open={whatsappDoctorOpen}
+        onClose={() => setWhatsappDoctorOpen(false)}
+        onChanged={fetchWhatsapp}
+      />
     </>
   );
 }
+
