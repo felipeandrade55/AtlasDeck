@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { spawn, ChildProcess } from "child_process";
-import { readOpenClawConfig } from "@/lib/openclaw-config";
+import { readOpenClawConfig, resolveOpenClawAgentsConfigPath } from "@/lib/openclaw-config";
+import { migrateWhatsappAccountsFromConfig } from "@/lib/whatsapp-accounts-local";
 import fs from "fs";
 import path from "path";
 
@@ -71,6 +72,19 @@ export async function POST(req: NextRequest) {
 
       const config = readOpenClawConfig();
       const command = `${config.openclawBin} channels login --channel whatsapp --account ${accountId}`;
+      
+      // Sanitize openclaw.json before spawning CLI to prevent schema validation errors
+      try {
+        const { path: configPath } = resolveOpenClawAgentsConfigPath();
+        if (fs.existsSync(configPath)) {
+          const rawConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+          if (migrateWhatsappAccountsFromConfig(rawConfig)) {
+            fs.writeFileSync(configPath, JSON.stringify(rawConfig, null, 2), "utf-8");
+          }
+        }
+      } catch (err) {
+        console.error("Failed to auto-sanitize openclaw.json before pairing:", err);
+      }
       
       // Scan for NVM node binary paths dynamically on Linux VPS
       const currentPath = process.env.PATH || "";
