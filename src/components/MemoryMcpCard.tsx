@@ -87,6 +87,13 @@ interface DiagnoseReport {
     } | null;
     acpxBridgeEnabled: boolean | null;
     detectedAt: "mcp.servers" | "mcp_servers" | "agents-inline" | "none";
+    codexBlock?: {
+      present: boolean;
+      agentsList: string[] | null;
+      blocksMain: boolean;
+    };
+    mainAgentModel?: string | null;
+    mainAgentLikelyRuntime?: "codex" | "acpx" | "unknown";
   };
   memoryMd?: {
     path: string;
@@ -122,6 +129,7 @@ type Phase =
   | "diagnosing"
   | "disabling"
   | "enabling-bridge"
+  | "cleaning-codex"
   | "restarting"
   | "error";
 
@@ -291,6 +299,57 @@ export function MemoryMcpCard() {
       setBanner({
         kind: "error",
         text: "Falha ao reiniciar gateway.",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }, []);
+
+  const cleanCodexBlock = useCallback(async () => {
+    setPhase("cleaning-codex");
+    setBanner({
+      kind: "info",
+      text: "Removendo bloco codex do entry…",
+    });
+    try {
+      const res = await fetch(
+        "/api/openclaw/memory-mcp/clean-codex-block",
+        { method: "POST" },
+      );
+      const json = (await res.json()) as {
+        ok: boolean;
+        changed: boolean;
+        removed?: unknown;
+        message?: string;
+        error?: string;
+      };
+      // Auto-refresh diagnose to reflect the new state.
+      const diagRes = await fetch(
+        "/api/openclaw/memory-mcp/diagnose?agentId=main",
+        { cache: "no-store" },
+      );
+      const diagJson = (await diagRes.json()) as DiagnoseReport;
+      setDiagnose(diagJson);
+      setPhase("idle");
+      if (!json.ok) {
+        setBanner({
+          kind: "error",
+          text: "Falha ao limpar bloco codex.",
+          detail: json.error,
+        });
+        return;
+      }
+      setBanner({
+        kind: "success",
+        text: json.changed
+          ? "Bloco codex removido. Reinicie o gateway e abra uma conversa NOVA no Telegram."
+          : (json.message ?? "Nada a fazer."),
+        detail: json.removed ? `removido: ${JSON.stringify(json.removed)}` : undefined,
+      });
+    } catch (err) {
+      setPhase("error");
+      setBanner({
+        kind: "error",
+        text: "Falha ao limpar bloco codex.",
         detail: err instanceof Error ? err.message : String(err),
       });
     }
@@ -883,6 +942,67 @@ export function MemoryMcpCard() {
                   </button>
                 )}
               </div>
+              {diagnose.openclawJson.mainAgentModel && (
+                <div>
+                  Agent main:{" "}
+                  <span className="font-mono">{diagnose.openclawJson.mainAgentModel}</span>{" "}
+                  → runtime:{" "}
+                  <strong
+                    style={{
+                      color:
+                        diagnose.openclawJson.mainAgentLikelyRuntime === "codex"
+                          ? "#7dd3fc"
+                          : diagnose.openclawJson.mainAgentLikelyRuntime === "acpx"
+                          ? "#fde047"
+                          : "var(--text-muted)",
+                    }}
+                  >
+                    {diagnose.openclawJson.mainAgentLikelyRuntime}
+                  </strong>
+                </div>
+              )}
+              {diagnose.openclawJson.codexBlock && (
+                <div>
+                  Bloco codex no entry:{" "}
+                  <strong
+                    style={{
+                      color: diagnose.openclawJson.codexBlock.blocksMain
+                        ? "#fca5a5"
+                        : diagnose.openclawJson.codexBlock.present
+                        ? "#fde047"
+                        : "#34d399",
+                    }}
+                  >
+                    {diagnose.openclawJson.codexBlock.blocksMain
+                      ? "BLOQUEIA main"
+                      : diagnose.openclawJson.codexBlock.present
+                      ? "presente (inclui main)"
+                      : "ausente (projeção global)"}
+                  </strong>
+                  {diagnose.openclawJson.codexBlock.agentsList &&
+                    diagnose.openclawJson.codexBlock.agentsList.length > 0 && (
+                      <span style={{ color: "var(--text-muted)" }}>
+                        {" "}
+                        — codex.agents = [
+                        {diagnose.openclawJson.codexBlock.agentsList.join(", ")}]
+                      </span>
+                    )}
+                  {diagnose.openclawJson.codexBlock.present && (
+                    <button
+                      onClick={cleanCodexBlock}
+                      disabled={phase === "cleaning-codex"}
+                      className="ml-2 px-2 py-0.5 rounded text-xs"
+                      style={{
+                        backgroundColor: "rgba(248,113,113,0.18)",
+                        color: "#fca5a5",
+                        border: "1px solid rgba(248,113,113,0.4)",
+                      }}
+                    >
+                      {phase === "cleaning-codex" ? "limpando…" : "Limpar bloco codex"}
+                    </button>
+                  )}
+                </div>
+              )}
               {diagnose.openclawJson.atlasdeckMemoryEntry && (
                 <div className="mt-1">
                   Entry: {diagnose.openclawJson.atlasdeckMemoryEntry.command}{" "}

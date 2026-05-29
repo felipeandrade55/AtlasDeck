@@ -66,6 +66,20 @@ export interface DiagnoseReport {
      *  other location (e.g. legacy `mcp_servers` at root, or inside
      *  agents.list[].mcp_servers) means the daemon won't read it. */
     detectedAt: "mcp.servers" | "mcp_servers" | "agents-inline" | "none";
+    /** mcp.servers.<name>.codex sub-block — present means there's a
+     *  per-server Codex projection filter. codex.agents=[] OR a list
+     *  that excludes "main" blocks the server from reaching the
+     *  main agent. Absent = global projection (what we want). */
+    codexBlock: {
+      present: boolean;
+      agentsList: string[] | null;
+      blocksMain: boolean;
+    };
+    /** agents.list[id=main] runtime resolution. openai/* models route
+     *  to Codex harness by default — ACPX bridge is irrelevant for
+     *  them. */
+    mainAgentModel: string | null;
+    mainAgentLikelyRuntime: "codex" | "acpx" | "unknown";
   };
   memoryMd: {
     path: string;
@@ -305,6 +319,9 @@ async function inspectOpenClawJson(): Promise<{
   atlasdeckMemoryEntry: McpEntrySnapshot | null;
   acpxBridgeEnabled: boolean | null;
   detectedAt: "mcp.servers" | "mcp_servers" | "agents-inline" | "none";
+  codexBlock: { present: boolean; agentsList: string[] | null; blocksMain: boolean };
+  mainAgentModel: string | null;
+  mainAgentLikelyRuntime: "codex" | "acpx" | "unknown";
 }> {
   const filePath = path.join(getOpenClawDir(), "openclaw.json");
   const empty = {
@@ -316,6 +333,13 @@ async function inspectOpenClawJson(): Promise<{
     atlasdeckMemoryEntry: null,
     acpxBridgeEnabled: null,
     detectedAt: "none" as const,
+    codexBlock: {
+      present: false,
+      agentsList: null,
+      blocksMain: false,
+    } as { present: boolean; agentsList: string[] | null; blocksMain: boolean },
+    mainAgentModel: null,
+    mainAgentLikelyRuntime: "unknown" as "codex" | "acpx" | "unknown",
   };
   let raw: string;
   try {
@@ -398,6 +422,58 @@ async function inspectOpenClawJson(): Promise<{
       }
     : null;
 
+  // Codex projection sub-block. If present with codex.agents not
+  // containing "main", the server is hidden from the main agent —
+  // even though everything else looks correct. This is one of the
+  // last subtle blockers in OpenClaw 2026.5+.
+  const entryRecord = entry as Record<string, unknown> | null;
+  const codexSub =
+    entryRecord && typeof entryRecord === "object"
+      ? (entryRecord.codex as Record<string, unknown> | undefined)
+      : undefined;
+  let codexAgentsList: string[] | null = null;
+  let codexBlocksMain = false;
+  const codexPresent = !!codexSub;
+  if (codexSub && Array.isArray(codexSub.agents)) {
+    codexAgentsList = (codexSub.agents as unknown[]).map((x) => String(x));
+    codexBlocksMain =
+      codexAgentsList.length === 0 || !codexAgentsList.includes("main");
+  }
+
+  // Identify the runtime of the "main" agent so we report whether
+  // the ACPX bridge is even relevant. OpenAI models route to Codex
+  // by default; setting acpx bridge for them is harmless but won't
+  // help (Codex has its own MCP projection path).
+  let mainAgentModel: string | null = null;
+  let mainAgentLikelyRuntime: "codex" | "acpx" | "unknown" = "unknown";
+  for (const a of list) {
+    if (a?.id !== "main") continue;
+    const model = a.model as
+      | string
+      | { primary?: string }
+      | undefined;
+    const m =
+      typeof model === "string"
+        ? model
+        : typeof model?.primary === "string"
+        ? model.primary
+        : null;
+    mainAgentModel = m;
+    if (m) {
+      if (m.startsWith("openai/") || m.startsWith("oai/") || m.includes("gpt")) {
+        mainAgentLikelyRuntime = "codex";
+      } else if (
+        m.startsWith("anthropic/") ||
+        m.startsWith("claude") ||
+        m.startsWith("google/") ||
+        m.startsWith("gemini")
+      ) {
+        mainAgentLikelyRuntime = "acpx";
+      }
+    }
+    break;
+  }
+
   return {
     path: filePath,
     exists: true,
@@ -407,6 +483,13 @@ async function inspectOpenClawJson(): Promise<{
     atlasdeckMemoryEntry,
     acpxBridgeEnabled,
     detectedAt,
+    codexBlock: {
+      present: codexPresent,
+      agentsList: codexAgentsList,
+      blocksMain: codexBlocksMain,
+    },
+    mainAgentModel,
+    mainAgentLikelyRuntime,
   };
 }
 
@@ -583,6 +666,9 @@ export async function diagnoseMemoryMcp(opts: {
         atlasdeckMemoryEntry: null,
         acpxBridgeEnabled: null,
         detectedAt: "none",
+        codexBlock: { present: false, agentsList: null, blocksMain: false },
+        mainAgentModel: null,
+        mainAgentLikelyRuntime: "unknown",
       },
     );
   }
@@ -757,30 +843,69 @@ export async function diagnoseMemoryMcp(opts: {
     });
   }
 
-  // ─── 6c. ACPX bridge — second blocker per OpenClaw docs ───────
+  // ─── 6c. Agent runtime — ACPX bridge vs Codex harness ────────
   if (openclawJson.parseable) {
-    if (openclawJson.acpxBridgeEnabled === true) {
+    const runtime = openclawJson.mainAgentLikelyRuntime;
+    const model = openclawJson.mainAgentModel ?? "(desconhecido)";
+    if (runtime === "codex") {
       checks.push({
-        id: "acpx-bridge",
+        id: "agent-runtime",
         level: "ok",
-        title: "ACPX bridge habilitado",
-        detail: "plugins.entries.acpx.config.pluginToolsMcpBridge = true — MCP tools alcançam o agente.",
+        title: `Agent main usa Codex harness (modelo ${model})`,
+        detail: "Modelos OpenAI rodam via Codex app-server. MCP tools chegam pela projeção do Codex (não pelo ACPX bridge — esse é irrelevante pra este caso).",
       });
-    } else if (openclawJson.acpxBridgeEnabled === false) {
+    } else if (runtime === "acpx") {
+      // Only here ACPX bridge actually matters
+      if (openclawJson.acpxBridgeEnabled === true) {
+        checks.push({
+          id: "agent-runtime",
+          level: "ok",
+          title: `Agent main usa ACPX (modelo ${model}) — bridge ativo`,
+          detail: "MCP tools alcançam o agente via plugins.entries.acpx.config.pluginToolsMcpBridge=true.",
+        });
+      } else {
+        checks.push({
+          id: "agent-runtime",
+          level: "fail",
+          title: `Agent main usa ACPX (modelo ${model}) mas bridge NÃO está ativo`,
+          detail: `acpxBridgeEnabled=${openclawJson.acpxBridgeEnabled}. Esse runtime exige o bridge pra ver MCP tools.`,
+          fix: "Clique em 'Habilitar ACPX bridge' no card.",
+        });
+      }
+    } else {
       checks.push({
-        id: "acpx-bridge",
+        id: "agent-runtime",
+        level: "warn",
+        title: `Agent main com runtime indeterminado (modelo ${model})`,
+        detail: "Não consegui inferir se é Codex ou ACPX a partir do nome do modelo. Verifique manualmente em openclaw.json → agents.list[main].runtime.",
+      });
+    }
+  }
+
+  // ─── 6d. Codex projection block (the likely culprit now) ──────
+  if (openclawJson.parseable && openclawJson.atlasdeckMemoryEntry) {
+    const cb = openclawJson.codexBlock;
+    if (!cb.present) {
+      checks.push({
+        id: "codex-projection",
+        level: "ok",
+        title: "Sem bloco codex no entry → projeção global",
+        detail: "mcp.servers.atlasdeck-memory.codex ausente significa que o server é projetado em TODOS os agentes Codex (incluindo main).",
+      });
+    } else if (cb.blocksMain) {
+      checks.push({
+        id: "codex-projection",
         level: "fail",
-        title: "ACPX bridge desabilitado — MCP tools não vão chegar ao agente",
-        detail: "plugins.entries.acpx.config.pluginToolsMcpBridge = false. Por padrão, ACPX não expõe tools de MCP servers globais ao harness do agente.",
-        fix: "Rode na VPS: `openclaw config set plugins.entries.acpx.config.pluginToolsMcpBridge true` e reinicie o gateway.",
+        title: "codex.agents BLOQUEIA o agent main",
+        detail: `mcp.servers.atlasdeck-memory.codex.agents = [${cb.agentsList?.map((x) => `"${x}"`).join(", ") ?? ""}]. O agent "main" não está na lista — Codex omite o server pra ele. ESSE é o motivo do Jarvis ignorar as tools.`,
+        fix: "Clique em 'Limpar bloco codex' pra remover essa restrição.",
       });
     } else {
       checks.push({
-        id: "acpx-bridge",
-        level: "warn",
-        title: "ACPX bridge não configurado",
-        detail: "plugins.entries.acpx.config.pluginToolsMcpBridge não definido. Se o agent main rodar via ACPX (não Codex-native), MCP tools não vão chegar nele.",
-        fix: "Se Jarvis continuar ignorando memory_*, rode: `openclaw config set plugins.entries.acpx.config.pluginToolsMcpBridge true`.",
+        id: "codex-projection",
+        level: "ok",
+        title: "codex.agents inclui main",
+        detail: `Lista atual: [${cb.agentsList?.join(", ")}]. Server é projetado pro main.`,
       });
     }
   }
