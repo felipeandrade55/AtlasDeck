@@ -158,6 +158,71 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
     return { qr, rest };
   }, [pairingOutput]);
 
+  // Convert the ASCII QR (█ + spaces) into a binary matrix, then draw it as
+  // a pixel-perfect PNG via Canvas. Unicode block chars in monospace fonts
+  // don't line up to square cells (vertical padding, kerning), which makes
+  // the rendered QR look rectangular and breaks phone-camera autofocus +
+  // QR decoders. Drawing it on a canvas eliminates ALL that — clean black
+  // squares on white, square cells, any size we want.
+  const pairingQrDataUrl = useMemo(() => {
+    if (!pairingQrBlock) return null;
+    if (typeof document === "undefined") return null;
+
+    const lines = pairingQrBlock.split("\n");
+
+    // Trim leading-space prefix shared by every line so the QR is left-aligned.
+    let leadingTrim = Infinity;
+    for (const l of lines) {
+      if (l.trim().length === 0) continue;
+      const m = l.match(/^ */);
+      if (m) leadingTrim = Math.min(leadingTrim, m[0].length);
+    }
+    if (!Number.isFinite(leadingTrim)) leadingTrim = 0;
+
+    // Each QR module is 2 chars wide × 1 line tall in qrcode npm's terminal
+    // output (small:false). A module is "dark" when its 2 chars are █.
+    const matrix: boolean[][] = [];
+    let maxCols = 0;
+    for (const line of lines) {
+      const trimmed = line.slice(leadingTrim);
+      if (trimmed.trim().length === 0 && matrix.length === 0) continue;
+      const row: boolean[] = [];
+      for (let i = 0; i + 1 < trimmed.length; i += 2) {
+        const c = trimmed[i];
+        row.push(c === "█");
+      }
+      if (row.length > 0) {
+        matrix.push(row);
+        if (row.length > maxCols) maxCols = row.length;
+      }
+    }
+    if (matrix.length === 0 || maxCols === 0) return null;
+
+    // Pad ragged rows so the canvas grid is uniform.
+    for (const row of matrix) {
+      while (row.length < maxCols) row.push(false);
+    }
+
+    // Render at integer-pixel cell size so the QR stays crisp at any zoom.
+    const cellPx = 8;
+    const w = maxCols * cellPx;
+    const h = matrix.length * cellPx;
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = "#000000";
+    for (let r = 0; r < matrix.length; r++) {
+      for (let c = 0; c < matrix[r].length; c++) {
+        if (matrix[r][c]) ctx.fillRect(c * cellPx, r * cellPx, cellPx, cellPx);
+      }
+    }
+    return canvas.toDataURL("image/png");
+  }, [pairingQrBlock]);
+
   const [repairing, setRepairing] = useState(false);
   const [repairResult, setRepairResult] = useState<{
     ok: boolean;
@@ -922,28 +987,30 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
                                   </div>
                                 )}
 
-                                {pairingQrBlock && (
-                                  <div className="flex justify-center">
-                                    <pre
-                                      className="font-mono bg-white text-black rounded-md select-none"
+                                {pairingQrDataUrl && (
+                                  <div className="flex flex-col items-center gap-2">
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img
+                                      src={pairingQrDataUrl}
+                                      alt="QR Code WhatsApp Web"
+                                      className="bg-white rounded-md"
                                       style={{
-                                        fontSize: "5px",
-                                        lineHeight: "5px",
+                                        width: "min(320px, 80vw)",
+                                        height: "min(320px, 80vw)",
+                                        imageRendering: "pixelated",
                                         padding: "12px",
-                                        letterSpacing: "0px",
-                                        whiteSpace: "pre",
-                                        width: "fit-content",
                                         border: "1px solid rgba(255,255,255,0.15)",
                                       }}
-                                    >
-                                      {pairingQrBlock}
-                                    </pre>
+                                    />
+                                    <span className="text-[11px] text-gray-500">
+                                      QR renderizado a partir do output do CLI (cells: pixel-perfect)
+                                    </span>
                                   </div>
                                 )}
 
-                                <details open={!pairingQrBlock}>
+                                <details open={!pairingQrDataUrl}>
                                   <summary className="text-[10px] text-gray-400 cursor-pointer select-none mb-1">
-                                    {pairingQrBlock ? "Mostrar logs do terminal" : "Logs do terminal (aguardando QR…)"}
+                                    {pairingQrDataUrl ? "Mostrar logs do terminal" : "Logs do terminal (aguardando QR…)"}
                                   </summary>
                                   <pre
                                     ref={pairingPanelRef}
