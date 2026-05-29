@@ -38,6 +38,11 @@ export interface ActivateOptions {
   skipWait?: boolean;
   /** TCP-probe timeout, in milliseconds. Default 15s. */
   waitTimeoutMs?: number;
+  /** Restart even when nothing changed in config — needed when the
+   *  user already-correct files need to be re-read by a running
+   *  gateway (e.g. ACPX bridge was flipped via separate endpoint).
+   *  Default true (Reverificar UX expects "always restart"). */
+  forceRestart?: boolean;
 }
 
 export interface ActivateResult {
@@ -89,14 +94,16 @@ export async function activateMemoryMcp(
     }
   }
 
-  // Restart if EITHER the mcp.json changed OR the MEMORY.md changed.
-  // Previously we only checked install.written — that left a hole:
-  // when the user clicked Reverificar after we'd shipped a new
-  // TOOL_GUIDANCE block, the config was already up to date but the
-  // freshly-rewritten MEMORY.md was never reread by the running
-  // gateway, so the agent kept ignoring the memory tools.
+  // Restart policy: when forceRestart is true (default, since the
+  // user clicking Reverificar expects the gateway to actually reload),
+  // we always restart — even if nothing changed in disk. This covers
+  // the case where another endpoint (ACPX bridge toggle, openclaw
+  // doctor, manual edit) updated files the running gateway hasn't
+  // reread yet. Set forceRestart:false when only the config write
+  // matters and the caller doesn't want to interrupt a live session.
   const injectionChanged = "changed" in inject && inject.changed;
-  const needsRestart = install.written || injectionChanged;
+  const forceRestart = opts.forceRestart !== false;
+  const needsRestart = forceRestart || install.written || injectionChanged;
   let restart: RestartResult | { skipped: true };
   if (opts.skipRestart || !needsRestart) {
     restart = { skipped: true };

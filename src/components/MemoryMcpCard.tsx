@@ -122,6 +122,7 @@ type Phase =
   | "diagnosing"
   | "disabling"
   | "enabling-bridge"
+  | "restarting"
   | "error";
 
 interface Banner {
@@ -248,6 +249,48 @@ export function MemoryMcpCard() {
       setBanner({
         kind: "error",
         text: "Falha ao rodar diagnóstico.",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }, []);
+
+  const restartGateway = useCallback(async () => {
+    setPhase("restarting");
+    setBanner({
+      kind: "info",
+      text: "Reiniciando o gateway do OpenClaw…",
+    });
+    try {
+      const res = await fetch("/api/openclaw/memory-mcp/restart-gateway", {
+        method: "POST",
+      });
+      const json = (await res.json()) as {
+        ok: boolean;
+        restart: { success: boolean; runtime: string; output: string };
+        wait: { skipped: true } | { ready: boolean; elapsedMs: number };
+        summary: string;
+      };
+      // Refresh diagnose to show updated session list once new
+      // sessions land.
+      const diagRes = await fetch(
+        "/api/openclaw/memory-mcp/diagnose?agentId=main",
+        { cache: "no-store" },
+      );
+      const diagJson = (await diagRes.json()) as DiagnoseReport;
+      setDiagnose(diagJson);
+      setPhase("idle");
+      setBanner({
+        kind: json.ok ? "success" : "warn",
+        text: json.ok
+          ? "Gateway reiniciado. Abra uma conversa NOVA no Telegram pra o LLM ler o system prompt com as tools."
+          : "Reinício teve problemas — veja detalhe.",
+        detail: json.summary,
+      });
+    } catch (err) {
+      setPhase("error");
+      setBanner({
+        kind: "error",
+        text: "Falha ao reiniciar gateway.",
         detail: err instanceof Error ? err.message : String(err),
       });
     }
@@ -538,6 +581,25 @@ export function MemoryMcpCard() {
             <Stethoscope className="w-4 h-4" />
           )}
           Diagnosticar
+        </button>
+
+        <button
+          onClick={restartGateway}
+          disabled={phase !== "idle" && phase !== "loading"}
+          className="flex items-center gap-2 px-3 py-2 rounded-lg transition-colors disabled:opacity-50 text-sm"
+          style={{
+            backgroundColor: "rgba(56,189,248,0.12)",
+            color: "#7dd3fc",
+            border: "1px solid rgba(56,189,248,0.35)",
+          }}
+          title="Força reload do gateway sem tocar config — necessário após mexer no openclaw.json fora do Reverificar"
+        >
+          {phase === "restarting" ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <RefreshCw className="w-4 h-4" />
+          )}
+          Reiniciar gateway
         </button>
 
         {status?.installed && (
