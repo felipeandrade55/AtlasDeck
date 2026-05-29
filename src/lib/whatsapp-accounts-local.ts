@@ -15,6 +15,7 @@ const LOCAL_PATH = path.join(process.cwd(), "data", "whatsapp-accounts.json");
 
 export interface WhatsappAccountLocal {
   chatId?: string;
+  dmPolicy?: string;
 }
 
 function readAll(): Record<string, WhatsappAccountLocal> {
@@ -47,6 +48,14 @@ export function setWhatsappAccountLocal(id: string, patch: WhatsappAccountLocal)
       next.chatId = trimmed;
     } else {
       delete next.chatId;
+    }
+  }
+  if (typeof patch.dmPolicy === "string") {
+    const trimmed = patch.dmPolicy.trim();
+    if (trimmed) {
+      next.dmPolicy = trimmed;
+    } else {
+      delete next.dmPolicy;
     }
   }
   if (Object.keys(next).length === 0) {
@@ -82,7 +91,6 @@ export function deleteWhatsappAccountLocal(id: string): void {
 const ALLOWED_OPENCLAW_KEYS = new Set([
   "token",
   "phoneNumber",
-  "dmPolicy",
 ]);
 
 export function migrateWhatsappAccountsFromConfig(config: unknown): boolean {
@@ -100,6 +108,11 @@ export function migrateWhatsappAccountsFromConfig(config: unknown): boolean {
     // Preserve chatId in local storage before stripping it (legacy migration).
     if (typeof acct.chatId === "string" && acct.chatId.trim()) {
       setWhatsappAccountLocal(id, { chatId: acct.chatId.trim() });
+    }
+
+    // Preserve dmPolicy in local storage before stripping it (legacy migration).
+    if (typeof acct.dmPolicy === "string" && acct.dmPolicy.trim()) {
+      setWhatsappAccountLocal(id, { dmPolicy: acct.dmPolicy.trim() });
     }
 
     // Whitelist sweep: any key OpenClaw doesn't accept gets deleted.

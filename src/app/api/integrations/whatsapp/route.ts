@@ -148,8 +148,11 @@ export async function GET(req: NextRequest) {
         }
       }
 
-      const localChatId = getWhatsappAccountLocal(id).chatId;
+      const localData = getWhatsappAccountLocal(id);
+      const localChatId = localData.chatId;
+      const localDmPolicy = localData.dmPolicy;
       const legacyChatId = typeof acct.chatId === "string" && acct.chatId.trim() ? acct.chatId.trim() : null;
+      const legacyDmPolicy = typeof acct.dmPolicy === "string" && acct.dmPolicy.trim() ? acct.dmPolicy.trim() : null;
 
       accounts.push({
         id,
@@ -158,7 +161,7 @@ export async function GET(req: NextRequest) {
         token: hasToken && revealToken ? token : null,
         phoneNumber,
         chatId: localChatId || legacyChatId,
-        dmPolicy: (acct.dmPolicy as DmPolicy) ?? null,
+        dmPolicy: (localDmPolicy || legacyDmPolicy || wa.dmPolicy || "pairing") as DmPolicy,
         sessionStatus,
         diagnostics,
       });
@@ -259,10 +262,8 @@ export async function PUT(req: NextRequest) {
         } else if (typeof existing.phoneNumber === "string") {
           next.phoneNumber = existing.phoneNumber;
         }
-        if (typeof patch.dmPolicy === "string" && patch.dmPolicy) {
-          next.dmPolicy = patch.dmPolicy;
-        } else if (typeof existing.dmPolicy === "string") {
-          next.dmPolicy = existing.dmPolicy;
+        if (typeof patch.dmPolicy === "string") {
+          setWhatsappAccountLocal(cleanId, { dmPolicy: patch.dmPolicy });
         }
 
         // chatId is an AtlasDeck-only field — never write to openclaw.json.
