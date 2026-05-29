@@ -72,6 +72,17 @@ export function deleteTelegramAccountLocal(id: string): void {
 }
 
 /**
+ * Whitelist of keys OpenClaw v2026.5.12+ accepts inside
+ * channels.telegram.accounts.<id>. See whatsapp-accounts-local for the
+ * same defense — extra keys here cause "must NOT have additional properties"
+ * at gateway startup and the daemon won't boot at all.
+ */
+const ALLOWED_OPENCLAW_KEYS = new Set([
+  "botToken",
+  "dmPolicy",
+]);
+
+/**
  * Strip AtlasDeck-only fields from channels.telegram.accounts in openclaw.json
  * (in-place) and move them to local storage. Returns true if the openclaw.json
  * must be persisted because something was migrated. Idempotent.
@@ -87,13 +98,18 @@ export function migrateTelegramAccountsFromConfig(config: unknown): boolean {
   let changed = false;
   for (const [id, acct] of Object.entries(accounts)) {
     if (!acct || typeof acct !== "object") continue;
-    if ("chatId" in acct) {
-      const chatId = typeof acct.chatId === "string" ? acct.chatId : undefined;
-      if (chatId && chatId.trim()) {
-        setTelegramAccountLocal(id, { chatId: chatId.trim() });
+
+    // Preserve chatId in local storage before sweep (legacy migration).
+    if (typeof acct.chatId === "string" && acct.chatId.trim()) {
+      setTelegramAccountLocal(id, { chatId: acct.chatId.trim() });
+    }
+
+    // Whitelist sweep: any key OpenClaw doesn't accept gets deleted.
+    for (const key of Object.keys(acct)) {
+      if (!ALLOWED_OPENCLAW_KEYS.has(key)) {
+        delete acct[key];
+        changed = true;
       }
-      delete acct.chatId;
-      changed = true;
     }
   }
   return changed;

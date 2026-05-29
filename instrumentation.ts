@@ -23,6 +23,38 @@ export async function register(): Promise<void> {
     console.warn("[instrumentation] failed to start metrics scheduler:", err);
   }
 
+  // openclaw.json schema sweep — strip AtlasDeck-only / unknown fields from
+  // channels.{telegram,whatsapp}.accounts.<id>. OpenClaw v2026.5.12+ rejects
+  // extra keys with "must NOT have additional properties" and the daemon
+  // refuses to boot, taking the Telegram bot down with it. We do this BEFORE
+  // the health monitor starts so a restart attempt finds a clean config.
+  try {
+    const { existsSync, readFileSync, writeFileSync } = await import("fs");
+    const { resolveOpenClawAgentsConfigPath } = await import(
+      "@/lib/openclaw-config"
+    );
+    const { migrateTelegramAccountsFromConfig } = await import(
+      "@/lib/telegram-accounts-local"
+    );
+    const { migrateWhatsappAccountsFromConfig } = await import(
+      "@/lib/whatsapp-accounts-local"
+    );
+    const { path: configPath } = resolveOpenClawAgentsConfigPath();
+    if (existsSync(configPath)) {
+      const raw = JSON.parse(readFileSync(configPath, "utf-8"));
+      const changedTg = migrateTelegramAccountsFromConfig(raw);
+      const changedWa = migrateWhatsappAccountsFromConfig(raw);
+      if (changedTg || changedWa) {
+        writeFileSync(configPath, JSON.stringify(raw, null, 2), "utf-8");
+        console.log(
+          `[instrumentation] openclaw.json schema sweep wrote changes (telegram=${changedTg} whatsapp=${changedWa})`,
+        );
+      }
+    }
+  } catch (err) {
+    console.warn("[instrumentation] openclaw.json schema sweep failed:", err);
+  }
+
   // Telegram + OpenClaw watchdog. Boots here so auto-restart kicks in even
   // when the dashboard tab is closed (the bell GET would otherwise be the
   // only thing booting it).

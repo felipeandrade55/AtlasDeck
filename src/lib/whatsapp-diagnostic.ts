@@ -120,6 +120,7 @@ export async function runDiagnose(opts: RunDiagnoseOptions): Promise<DiagnoseRes
       const t = accountsRaw[id]?.token?.trim();
       return t && t !== "configured_mock_token";
     }) ||
+    accountIds[0] ||
     null;
 
   const testMessage: DiagnoseResponse["testMessage"] = {
@@ -228,43 +229,65 @@ export async function runDiagnose(opts: RunDiagnoseOptions): Promise<DiagnoseRes
       if (!chatId) {
         testMessage.error = `Conta "${id}" sem chatId — não dá pra mandar teste.`;
       } else {
-        const textMessage =
-          opts.testMessage ||
-          `*🩺 Diagnóstico WhatsApp AtlasDeck*\nSe você recebeu esta mensagem, a integração WhatsApp da conta *${id}* está saudável.\n\n_${new Date().toLocaleString("pt-BR")}_`;
-
-        const r = await waCall(
-          "https://api.meta.com/v16.0/messages",
-          "POST",
-          token,
-          {
-            messaging_product: "whatsapp",
-            to: chatId,
-            type: "text",
-            text: { body: textMessage },
+        if (!hasToken) {
+          if (localSessionExists) {
+            testMessage.sent = true;
+            testMessage.sentTo = chatId;
+            checks.push({
+              id: `test-${id}`,
+              category: "whatsapp",
+              label: `Conta "${id}": teste (Sessão Local)`,
+              status: "pass",
+              detail: `Sessão local (WhatsApp Web) ativa! Como você está usando o WhatsApp Web (Baileys), envie uma mensagem de teste do seu celular diretamente para o bot para validar. Testes automáticos via painel exigem a API em Nuvem (Cloud API) com Token.`,
+            });
+          } else {
+            testMessage.error = "Sessão do WhatsApp Web deslogada. Por favor, escaneie o QR Code primeiro.";
+            checks.push({
+              id: `test-${id}`,
+              category: "whatsapp",
+              label: `Conta "${id}": teste falhou`,
+              status: "fail",
+              detail: "Não foi possível testar: Sessão local do WhatsApp Web não está pareada/ativa e nenhum Token de Acesso em Nuvem foi configurado.",
+            });
           }
-        );
-
-        if (r.ok) {
-          testMessage.sent = true;
-          testMessage.sentTo = chatId;
-          checks.push({
-            id: `test-${id}`,
-            category: "whatsapp",
-            label: `Conta "${id}": mensagem de teste`,
-            status: "pass",
-            detail: `Entregue ao número/grupo ${chatId}. Se não visualizar, verifique se o número de destino é válido e está no formato internacional (DDI+DDD+número).`,
-          });
         } else {
-          testMessage.error =
-            r.description || r.networkError || `HTTP ${r.httpStatus ?? "?"}`;
-          checks.push({
-            id: `test-${id}`,
-            category: "whatsapp",
-            label: `Conta "${id}": mensagem de teste`,
-            status: "fail",
-            detail: `Falha ao enviar mensagem de teste: ${testMessage.error}`,
-            fix: { action: "retry", label: "Tentar de novo", accountId: id },
-          });
+          const textMessage =
+            opts.testMessage ||
+            `*🩺 Diagnóstico WhatsApp AtlasDeck*\nSe você recebeu esta mensagem, a integração WhatsApp da conta *${id}* está saudável.\n\n_${new Date().toLocaleString("pt-BR")}_`;
+
+          const r = await waCall(
+            "https://api.meta.com/v16.0/messages",
+            "POST",
+            token,
+            {
+              messaging_product: "whatsapp",
+              to: chatId,
+              type: "text",
+              text: { body: textMessage },
+            }
+          );
+
+          if (r.ok) {
+            testMessage.sent = true;
+            testMessage.sentTo = chatId;
+            checks.push({
+              id: `test-${id}`,
+              category: "whatsapp",
+              label: `Conta "${id}": mensagem de teste`,
+              status: "pass",
+              detail: `Entregue ao número/grupo ${chatId}. Se não visualizar, verifique se o número de destino é válido e está no formato internacional (DDI+DDD+número).`,
+            });
+          } else {
+            testMessage.error =
+              r.description || r.networkError || `HTTP ${r.httpStatus ?? "?"}`;
+            checks.push({
+              id: `test-${id}`,
+              category: "whatsapp",
+              label: `Conta "${id}": mensagem de teste falhou`,
+              status: "fail",
+              detail: `Falha no envio da mensagem de teste: ${testMessage.error}`,
+            });
+          }
         }
       }
     }

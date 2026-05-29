@@ -240,22 +240,37 @@ export async function PUT(req: NextRequest) {
       for (const [id, patch] of Object.entries(body.accounts)) {
         const cleanId = id.trim();
         if (!cleanId) continue;
-        const cur = (wa.accounts[cleanId] || {}) as WhatsappAccountConfig;
+        const existing = (wa.accounts[cleanId] || {}) as WhatsappAccountConfig;
 
+        // Build the account from a whitelist instead of mutating the existing
+        // object. Mutation leaves stale fields (chatId, qr, sessionPath, etc.)
+        // intact, which the OpenClaw v2026.5.12+ schema validator rejects with
+        // "must NOT have additional properties" — and that kills the gateway
+        // at startup. Reading only known keys from the prior state guarantees
+        // the written object has no extras.
+        const next: WhatsappAccountConfig = {};
         if (typeof patch.token === "string") {
-          cur.token = patch.token.trim();
+          next.token = patch.token.trim();
+        } else if (typeof existing.token === "string") {
+          next.token = existing.token;
         }
         if (typeof patch.phoneNumber === "string") {
-          cur.phoneNumber = patch.phoneNumber.trim();
+          next.phoneNumber = patch.phoneNumber.trim();
+        } else if (typeof existing.phoneNumber === "string") {
+          next.phoneNumber = existing.phoneNumber;
         }
+        if (typeof patch.dmPolicy === "string" && patch.dmPolicy) {
+          next.dmPolicy = patch.dmPolicy;
+        } else if (typeof existing.dmPolicy === "string") {
+          next.dmPolicy = existing.dmPolicy;
+        }
+
+        // chatId is an AtlasDeck-only field — never write to openclaw.json.
         if (typeof patch.chatId === "string") {
           setWhatsappAccountLocal(cleanId, { chatId: patch.chatId });
         }
-        if ("chatId" in cur) delete cur.chatId;
-        if (typeof patch.dmPolicy === "string" && patch.dmPolicy) {
-          cur.dmPolicy = patch.dmPolicy;
-        }
-        wa.accounts[cleanId] = cur;
+
+        wa.accounts[cleanId] = next;
       }
     }
 
@@ -298,13 +313,7 @@ export async function POST(req: NextRequest) {
     const bodyToken = typeof body.token === "string" ? body.token.trim() : "";
     const savedToken = typeof acct?.token === "string" ? acct.token.trim() : "";
     const token = bodyToken || savedToken;
-
-    if (!token || token === "configured_mock_token") {
-      return NextResponse.json(
-        { error: `Conta "${accountId}" sem token de acesso` },
-        { status: 400 },
-      );
-    }
+    const hasToken = !!token && token !== "configured_mock_token";
 
     if (action === "test") {
       const localChatId = getWhatsappAccountLocal(accountId).chatId;
@@ -316,6 +325,23 @@ export async function POST(req: NextRequest) {
           { status: 400 },
         );
       }
+
+      if (!hasToken) {
+        if (hasWhatsappSessionLocal(accountId)) {
+          return NextResponse.json({
+            success: true,
+            sentTo: chatId,
+            isLocal: true,
+            message: "Sessão local do WhatsApp Web (Baileys) está ativa e conectada! Como você está usando uma sessão local, envie uma mensagem diretamente para o seu bot pelo WhatsApp para testar a conversa (o envio automático a partir do painel é exclusivo para a API em Nuvem com Token).",
+          });
+        } else {
+          return NextResponse.json(
+            { error: `Sessão local do WhatsApp Web deslogada. Por favor, acesse as configurações e escaneie o QR Code primeiro.` },
+            { status: 400 },
+          );
+        }
+      }
+
       const message =
         body.message ||
         `*✅ Teste do WhatsApp AtlasDeck*\nSe você está lendo isto, a conexão WhatsApp da conta *${accountId}* está funcionando.\n\n_${new Date().toLocaleString("pt-BR")}_`;
@@ -341,10 +367,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, sentTo: chatId });
     }
 
-    return NextResponse.json(
-      { error: `Ação desconhecida: "${action}". Use ?action=test` },
-      { status: 400 },
-    );
+    if (!hasToken) {
+      return NextResponse.json(
+        { error: `Conta "${accountId}" sem token de acesso` },
+        { status: 400 },
+      );
+    }
   } catch (e) {
     return NextResponse.json(
       { error: e instanceof Error ? e.message : String(e) },

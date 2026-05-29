@@ -69,6 +69,22 @@ export function deleteWhatsappAccountLocal(id: string): void {
   }
 }
 
+/**
+ * Whitelist of keys OpenClaw v2026.5.12+ accepts inside
+ * channels.whatsapp.accounts.<id>. Anything outside this set causes
+ * "must NOT have additional properties" at startup, taking the gateway
+ * down hard (we burned an evening on this — see project memory).
+ *
+ * Keep this list narrow: every entry here must be a key OpenClaw's
+ * runtime actually reads. UI-only or AtlasDeck-only fields belong in
+ * data/whatsapp-accounts.json via setWhatsappAccountLocal.
+ */
+const ALLOWED_OPENCLAW_KEYS = new Set([
+  "token",
+  "phoneNumber",
+  "dmPolicy",
+]);
+
 export function migrateWhatsappAccountsFromConfig(config: unknown): boolean {
   if (!config || typeof config !== "object") return false;
   const root = config as {
@@ -80,13 +96,20 @@ export function migrateWhatsappAccountsFromConfig(config: unknown): boolean {
   let changed = false;
   for (const [id, acct] of Object.entries(accounts)) {
     if (!acct || typeof acct !== "object") continue;
-    if ("chatId" in acct) {
-      const chatId = typeof acct.chatId === "string" ? acct.chatId : undefined;
-      if (chatId && chatId.trim()) {
-        setWhatsappAccountLocal(id, { chatId: chatId.trim() });
+
+    // Preserve chatId in local storage before stripping it (legacy migration).
+    if (typeof acct.chatId === "string" && acct.chatId.trim()) {
+      setWhatsappAccountLocal(id, { chatId: acct.chatId.trim() });
+    }
+
+    // Whitelist sweep: any key OpenClaw doesn't accept gets deleted.
+    // This is the defense against schema drift — if OpenClaw added/removed
+    // fields between versions, we strip whatever isn't in ALLOWED.
+    for (const key of Object.keys(acct)) {
+      if (!ALLOWED_OPENCLAW_KEYS.has(key)) {
+        delete acct[key];
+        changed = true;
       }
-      delete acct.chatId;
-      changed = true;
     }
   }
   return changed;

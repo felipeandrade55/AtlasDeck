@@ -90,9 +90,14 @@ export function hasWhatsappSessionLocal(accountId: string): boolean {
   try {
     const config = readOpenClawConfig();
     const credsPath = path.join(config.openclawDir, "credentials", "whatsapp", accountId, "creds.json");
-    return fs.existsSync(credsPath);
+    if (!fs.existsSync(credsPath)) return false;
+    const raw = fs.readFileSync(credsPath, "utf8");
+    const parsed = JSON.parse(raw);
+    const me = parsed.me || parsed.creds?.me;
+    return !!me && typeof me.id === "string" && me.id.length > 0;
   } catch {
     return false;
   }
 }
+
 
