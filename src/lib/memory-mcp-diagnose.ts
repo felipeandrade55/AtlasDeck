@@ -30,6 +30,12 @@ import {
 // reason the SQLite counter stays at 0.
 const GUIDANCE_MARKER = "Ferramentas de memória persistente — USE ATIVAMENTE";
 
+export interface McpEntrySnapshot {
+  command: string;
+  args: string[];
+  envKeys: string[];
+}
+
 export type DiagnoseLevel = "ok" | "warn" | "fail";
 
 export interface DiagnoseCheck {
@@ -47,6 +53,20 @@ export interface DiagnoseReport {
   checks: DiagnoseCheck[];
   spawnProbe: SpawnProbeResult;
   summary: { ok: number; warn: number; fail: number };
+  openclawJson: {
+    path: string;
+    exists: boolean;
+    parseable: boolean;
+    sizeBytes: number;
+    mcpServersFound: string[];
+    atlasdeckMemoryEntry: McpEntrySnapshot | null;
+    acpxBridgeEnabled: boolean | null;
+    /** Path-resolved-via shows which TOP-level key holds the MCP
+     *  registration. OpenClaw 2026.5.x expects `mcp.servers`; any
+     *  other location (e.g. legacy `mcp_servers` at root, or inside
+     *  agents.list[].mcp_servers) means the daemon won't read it. */
+    detectedAt: "mcp.servers" | "mcp_servers" | "agents-inline" | "none";
+  };
   memoryMd: {
     path: string;
     pathSource: "openclaw.json" | "atlasdeck-config" | "fallback";
@@ -267,6 +287,135 @@ async function scanRecentMemoryToolCalls(): Promise<{
   return result;
 }
 
+/**
+ * Open openclaw.json, walk to known paths, and report what's actually
+ * there. This is the diagnostic equivalent of `cat openclaw.json | jq`
+ * — gives us ground truth without asking the user to SSH.
+ *
+ * We look in three locations because OpenClaw doc says `mcp.servers`
+ * is the canonical store, but some versions also accept legacy
+ * `mcp_servers` at root and per-agent inline arrays.
+ */
+async function inspectOpenClawJson(): Promise<{
+  path: string;
+  exists: boolean;
+  parseable: boolean;
+  sizeBytes: number;
+  mcpServersFound: string[];
+  atlasdeckMemoryEntry: McpEntrySnapshot | null;
+  acpxBridgeEnabled: boolean | null;
+  detectedAt: "mcp.servers" | "mcp_servers" | "agents-inline" | "none";
+}> {
+  const filePath = path.join(getOpenClawDir(), "openclaw.json");
+  const empty = {
+    path: filePath,
+    exists: false,
+    parseable: false,
+    sizeBytes: 0,
+    mcpServersFound: [],
+    atlasdeckMemoryEntry: null,
+    acpxBridgeEnabled: null,
+    detectedAt: "none" as const,
+  };
+  let raw: string;
+  try {
+    raw = await fsAsync.readFile(filePath, "utf-8");
+  } catch {
+    return empty;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {
+      ...empty,
+      exists: true,
+      parseable: false,
+      sizeBytes: Buffer.byteLength(raw, "utf-8"),
+    };
+  }
+  const root = parsed as Record<string, unknown>;
+  const sizeBytes = Buffer.byteLength(raw, "utf-8");
+
+  // Canonical: mcp.servers.<name>
+  const mcp = root.mcp as Record<string, unknown> | undefined;
+  const canonicalServers = mcp?.servers as
+    | Record<string, McpServerLike>
+    | undefined;
+  // Legacy/migration: mcp_servers.<name>
+  const legacyServers = root.mcp_servers as
+    | Record<string, McpServerLike>
+    | undefined;
+  // Per-agent inline: agents.list[].mcp_servers[]
+  let inlineFound: McpServerLike | null = null;
+  const agents = (root.agents as Record<string, unknown> | undefined) ?? {};
+  const list = (agents.list as Array<Record<string, unknown>> | undefined) ?? [];
+  for (const a of list) {
+    if (a?.id !== "main") continue;
+    const inlineArr = a.mcp_servers as Array<McpServerLike & { name?: string }> | undefined;
+    if (!Array.isArray(inlineArr)) continue;
+    inlineFound = inlineArr.find((e) => e?.name === "atlasdeck-memory") ?? null;
+    if (inlineFound) break;
+  }
+
+  let detectedAt: "mcp.servers" | "mcp_servers" | "agents-inline" | "none" = "none";
+  let entry: McpServerLike | null = null;
+  let serversFound: string[] = [];
+  if (canonicalServers?.["atlasdeck-memory"]) {
+    detectedAt = "mcp.servers";
+    entry = canonicalServers["atlasdeck-memory"];
+    serversFound = Object.keys(canonicalServers);
+  } else if (legacyServers?.["atlasdeck-memory"]) {
+    detectedAt = "mcp_servers";
+    entry = legacyServers["atlasdeck-memory"];
+    serversFound = Object.keys(legacyServers);
+  } else if (inlineFound) {
+    detectedAt = "agents-inline";
+    entry = inlineFound;
+    serversFound = ["atlasdeck-memory"];
+  } else {
+    serversFound = Object.keys(canonicalServers ?? legacyServers ?? {});
+  }
+
+  // ACPX bridge: required when the main agent runs via the ACPX
+  // harness rather than codex-native. False/absent = MCP tools never
+  // reach the LLM even if mcp.servers is correct.
+  const plugins = root.plugins as Record<string, unknown> | undefined;
+  const entries = (plugins?.entries as Record<string, unknown> | undefined) ?? {};
+  const acpx = (entries.acpx as Record<string, unknown> | undefined) ?? {};
+  const acpxConfig = (acpx.config as Record<string, unknown> | undefined) ?? {};
+  const bridgeValue = acpxConfig.pluginToolsMcpBridge;
+  const acpxBridgeEnabled =
+    typeof bridgeValue === "boolean" ? bridgeValue : null;
+
+  const atlasdeckMemoryEntry: McpEntrySnapshot | null = entry
+    ? {
+        command: String(entry.command ?? ""),
+        args: Array.isArray(entry.args) ? entry.args.map(String) : [],
+        envKeys: entry.env
+          ? Object.keys(entry.env as Record<string, string>)
+          : [],
+      }
+    : null;
+
+  return {
+    path: filePath,
+    exists: true,
+    parseable: true,
+    sizeBytes,
+    mcpServersFound: serversFound,
+    atlasdeckMemoryEntry,
+    acpxBridgeEnabled,
+    detectedAt,
+  };
+}
+
+interface McpServerLike {
+  command?: unknown;
+  args?: unknown;
+  env?: unknown;
+}
+
 async function exists(p: string): Promise<boolean> {
   try {
     await fsAsync.access(p, fs.constants.F_OK);
@@ -425,6 +574,16 @@ export async function diagnoseMemoryMcp(opts: {
         sessionsWithToolListing: 0,
         sessions: [],
       },
+      {
+        path: "",
+        exists: false,
+        parseable: false,
+        sizeBytes: 0,
+        mcpServersFound: [],
+        atlasdeckMemoryEntry: null,
+        acpxBridgeEnabled: null,
+        detectedAt: "none",
+      },
     );
   }
 
@@ -545,6 +704,85 @@ export async function diagnoseMemoryMcp(opts: {
       detail: err instanceof Error ? err.message : String(err),
       fix: "Corrija as permissões do diretório data/.",
     });
+  }
+
+  // ─── 6b. Read openclaw.json and confirm registration shape ────
+  const openclawJson = await inspectOpenClawJson();
+  if (!openclawJson.exists) {
+    checks.push({
+      id: "openclaw-json-shape",
+      level: "fail",
+      title: "openclaw.json não pode ser lido",
+      detail: `Arquivo em ${openclawJson.path} não acessível ou ausente.`,
+      fix: "Confirme que OpenClaw foi iniciado pelo menos uma vez nessa máquina.",
+    });
+  } else if (!openclawJson.parseable) {
+    checks.push({
+      id: "openclaw-json-shape",
+      level: "fail",
+      title: "openclaw.json existe mas não é JSON válido",
+      detail: `Arquivo em ${openclawJson.path} (${openclawJson.sizeBytes} bytes) — o daemon não vai conseguir carregar.`,
+      fix: "Restaure de um backup ou rode `openclaw doctor`.",
+    });
+  } else if (openclawJson.detectedAt === "mcp.servers") {
+    checks.push({
+      id: "openclaw-json-shape",
+      level: "ok",
+      title: "Entry em openclaw.json/mcp.servers (formato canônico)",
+      detail: `Encontrado em "mcp.servers.atlasdeck-memory". Servers registrados: [${openclawJson.mcpServersFound.join(", ") || "(nenhum)"}].`,
+    });
+  } else if (openclawJson.detectedAt === "mcp_servers") {
+    checks.push({
+      id: "openclaw-json-shape",
+      level: "warn",
+      title: "Entry em local legado (mcp_servers no root)",
+      detail: 'Está em "mcp_servers" (root), formato legado do importer de Hermes. OpenClaw 2026.5+ espera "mcp.servers" (note o ponto).',
+      fix: 'Reverificar pra mover pro formato canônico.',
+    });
+  } else if (openclawJson.detectedAt === "agents-inline") {
+    checks.push({
+      id: "openclaw-json-shape",
+      level: "warn",
+      title: "Entry em agents.list[].mcp_servers (não canônico)",
+      detail: "Encontrado dentro de agents.list inline. OpenClaw 2026.5+ prefere o registro global em mcp.servers.",
+      fix: "Reverificar pra mover pro formato canônico.",
+    });
+  } else {
+    checks.push({
+      id: "openclaw-json-shape",
+      level: "fail",
+      title: "atlasdeck-memory NÃO está registrado em openclaw.json",
+      detail: `Procurei em mcp.servers, mcp_servers root, e agents.list[main].mcp_servers — nenhum encontrou. Outros servers MCP no arquivo: [${openclawJson.mcpServersFound.join(", ") || "(nenhum)"}].`,
+      fix: 'Clique em "Reverificar" pra registrar.',
+    });
+  }
+
+  // ─── 6c. ACPX bridge — second blocker per OpenClaw docs ───────
+  if (openclawJson.parseable) {
+    if (openclawJson.acpxBridgeEnabled === true) {
+      checks.push({
+        id: "acpx-bridge",
+        level: "ok",
+        title: "ACPX bridge habilitado",
+        detail: "plugins.entries.acpx.config.pluginToolsMcpBridge = true — MCP tools alcançam o agente.",
+      });
+    } else if (openclawJson.acpxBridgeEnabled === false) {
+      checks.push({
+        id: "acpx-bridge",
+        level: "fail",
+        title: "ACPX bridge desabilitado — MCP tools não vão chegar ao agente",
+        detail: "plugins.entries.acpx.config.pluginToolsMcpBridge = false. Por padrão, ACPX não expõe tools de MCP servers globais ao harness do agente.",
+        fix: "Rode na VPS: `openclaw config set plugins.entries.acpx.config.pluginToolsMcpBridge true` e reinicie o gateway.",
+      });
+    } else {
+      checks.push({
+        id: "acpx-bridge",
+        level: "warn",
+        title: "ACPX bridge não configurado",
+        detail: "plugins.entries.acpx.config.pluginToolsMcpBridge não definido. Se o agent main rodar via ACPX (não Codex-native), MCP tools não vão chegar nele.",
+        fix: "Se Jarvis continuar ignorando memory_*, rode: `openclaw config set plugins.entries.acpx.config.pluginToolsMcpBridge true`.",
+      });
+    }
   }
 
   // ─── 7. MEMORY.md tool guidance present ─────────────────────────
@@ -706,7 +944,7 @@ export async function diagnoseMemoryMcp(opts: {
     });
   }
 
-  return finalize(checks, status, probe, memoryMdInfo, toolUseScan);
+  return finalize(checks, status, probe, memoryMdInfo, toolUseScan, openclawJson);
 }
 
 function finalize(
@@ -715,6 +953,7 @@ function finalize(
   spawnResult: SpawnProbeResult,
   memoryMd: DiagnoseReport["memoryMd"],
   toolUseScan: DiagnoseReport["toolUseScan"],
+  openclawJson: DiagnoseReport["openclawJson"],
 ): DiagnoseReport {
   const summary = {
     ok: checks.filter((c) => c.level === "ok").length,
@@ -728,6 +967,7 @@ function finalize(
     checks,
     spawnProbe: spawnResult,
     summary,
+    openclawJson,
     memoryMd,
     toolUseScan,
   };

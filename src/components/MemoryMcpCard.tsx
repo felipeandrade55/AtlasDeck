@@ -74,6 +74,20 @@ interface DiagnoseReport {
     durationMs: number;
   };
   summary: { ok: number; warn: number; fail: number };
+  openclawJson?: {
+    path: string;
+    exists: boolean;
+    parseable: boolean;
+    sizeBytes: number;
+    mcpServersFound: string[];
+    atlasdeckMemoryEntry: {
+      command: string;
+      args: string[];
+      envKeys: string[];
+    } | null;
+    acpxBridgeEnabled: boolean | null;
+    detectedAt: "mcp.servers" | "mcp_servers" | "agents-inline" | "none";
+  };
   memoryMd?: {
     path: string;
     pathSource?: "openclaw.json" | "atlasdeck-config" | "fallback";
@@ -101,7 +115,14 @@ interface DiagnoseReport {
   };
 }
 
-type Phase = "idle" | "loading" | "activating" | "diagnosing" | "disabling" | "error";
+type Phase =
+  | "idle"
+  | "loading"
+  | "activating"
+  | "diagnosing"
+  | "disabling"
+  | "enabling-bridge"
+  | "error";
 
 interface Banner {
   kind: "success" | "warn" | "error" | "info";
@@ -227,6 +248,51 @@ export function MemoryMcpCard() {
       setBanner({
         kind: "error",
         text: "Falha ao rodar diagnóstico.",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }, []);
+
+  const enableAcpxBridge = useCallback(async () => {
+    setPhase("enabling-bridge");
+    setBanner({
+      kind: "info",
+      text: "Habilitando ACPX bridge (deixa MCP tools alcançarem o agente)…",
+    });
+    try {
+      const res = await fetch("/api/openclaw/memory-mcp/acpx-bridge", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabled: true }),
+      });
+      const json = (await res.json()) as {
+        ok: boolean;
+        changed: boolean;
+        before: unknown;
+        after: boolean;
+        error?: string;
+      };
+      setPhase("idle");
+      if (!json.ok) {
+        setBanner({
+          kind: "error",
+          text: "Não consegui editar o openclaw.json.",
+          detail: json.error,
+        });
+        return;
+      }
+      setBanner({
+        kind: "success",
+        text: json.changed
+          ? "ACPX bridge ativado. Rode Reverificar pra reiniciar o gateway."
+          : "ACPX bridge já estava ativo.",
+        detail: `before=${JSON.stringify(json.before)} · after=${json.after}`,
+      });
+    } catch (err) {
+      setPhase("error");
+      setBanner({
+        kind: "error",
+        text: "Falha ao habilitar ACPX bridge.",
         detail: err instanceof Error ? err.message : String(err),
       });
     }
@@ -657,6 +723,86 @@ export function MemoryMcpCard() {
                         </li>
                       ))}
                   </ul>
+                </div>
+              )}
+            </div>
+          )}
+          {diagnose.openclawJson && (
+            <div
+              className="rounded-lg p-3 text-xs"
+              style={{
+                backgroundColor: "var(--card-elevated, rgba(255,255,255,0.03))",
+                border: "1px solid var(--border)",
+                color: "var(--text-secondary)",
+              }}
+            >
+              <div className="font-medium mb-1" style={{ color: "var(--text-primary)" }}>
+                openclaw.json (fonte autoritativa)
+              </div>
+              <div className="font-mono break-all">{diagnose.openclawJson.path}</div>
+              <div>
+                {diagnose.openclawJson.exists
+                  ? `${diagnose.openclawJson.sizeBytes} bytes`
+                  : "ausente"}{" "}
+                · servidores MCP: {diagnose.openclawJson.mcpServersFound.length || 0}{" "}
+                {diagnose.openclawJson.mcpServersFound.length > 0 &&
+                  `(${diagnose.openclawJson.mcpServersFound.join(", ")})`}
+              </div>
+              <div>
+                Entry detectado em:{" "}
+                <strong
+                  style={{
+                    color:
+                      diagnose.openclawJson.detectedAt === "mcp.servers"
+                        ? "#34d399"
+                        : diagnose.openclawJson.detectedAt === "none"
+                        ? "#fca5a5"
+                        : "#facc15",
+                  }}
+                >
+                  {diagnose.openclawJson.detectedAt}
+                </strong>
+              </div>
+              <div>
+                ACPX bridge:{" "}
+                <strong
+                  style={{
+                    color:
+                      diagnose.openclawJson.acpxBridgeEnabled === true
+                        ? "#34d399"
+                        : diagnose.openclawJson.acpxBridgeEnabled === false
+                        ? "#fca5a5"
+                        : "#facc15",
+                  }}
+                >
+                  {diagnose.openclawJson.acpxBridgeEnabled === true
+                    ? "ativo"
+                    : diagnose.openclawJson.acpxBridgeEnabled === false
+                    ? "desativado"
+                    : "não configurado"}
+                </strong>{" "}
+                {diagnose.openclawJson.acpxBridgeEnabled !== true && (
+                  <button
+                    onClick={enableAcpxBridge}
+                    disabled={phase === "enabling-bridge"}
+                    className="ml-2 px-2 py-0.5 rounded text-xs"
+                    style={{
+                      backgroundColor: "rgba(139,92,246,0.18)",
+                      color: "#c4b5fd",
+                      border: "1px solid rgba(139,92,246,0.4)",
+                    }}
+                  >
+                    {phase === "enabling-bridge" ? "ativando…" : "Habilitar ACPX bridge"}
+                  </button>
+                )}
+              </div>
+              {diagnose.openclawJson.atlasdeckMemoryEntry && (
+                <div className="mt-1">
+                  Entry: {diagnose.openclawJson.atlasdeckMemoryEntry.command}{" "}
+                  {diagnose.openclawJson.atlasdeckMemoryEntry.args.join(" ")}
+                  <br />
+                  env keys: [
+                  {diagnose.openclawJson.atlasdeckMemoryEntry.envKeys.join(", ")}]
                 </div>
               )}
             </div>
