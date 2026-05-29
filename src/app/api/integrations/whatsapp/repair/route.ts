@@ -105,6 +105,47 @@ export async function POST() {
       validateOutput = e instanceof Error ? e.message : String(e);
     }
 
+    // 5. Inspect runtime — proves whatsapp_login is REALLY registered in the
+    //    live gateway (vs just being in cold config). If this fails the user
+    //    sees the actual reason (channel-config validation, missing dep, etc).
+    let runtimeOk: boolean | null = null;
+    let runtimeOutput = "";
+    let runtimeToolRegistered: boolean | null = null;
+    try {
+      const { openclawBin, openclawDir } = readOpenClawConfig();
+      const result = spawnSync(
+        openclawBin,
+        ["plugins", "inspect", "whatsapp", "--runtime", "--json"],
+        {
+          cwd: openclawDir,
+          env: process.env,
+          encoding: "utf-8",
+          timeout: 10000,
+        },
+      );
+      runtimeOutput = `${result.stdout || ""}${result.stderr || ""}`.trim();
+      runtimeOk = result.error ? null : (result.status ?? 1) === 0;
+      if (runtimeOk) {
+        try {
+          const parsed = JSON.parse(result.stdout || "{}");
+          const tools = parsed?.runtime?.tools || parsed?.tools || [];
+          runtimeToolRegistered = Array.isArray(tools)
+            ? tools.some((t: unknown) => {
+                if (typeof t === "string") return t === "whatsapp_login";
+                if (t && typeof t === "object" && "name" in t) {
+                  return (t as { name?: unknown }).name === "whatsapp_login";
+                }
+                return false;
+              })
+            : null;
+        } catch {
+          runtimeToolRegistered = null;
+        }
+      }
+    } catch (e) {
+      runtimeOutput = e instanceof Error ? e.message : String(e);
+    }
+
     const allInstallsOk = installs.every((i) => i.ok);
     const ok = sweep.ran && allInstallsOk && validateOk !== false;
 
@@ -114,6 +155,11 @@ export async function POST() {
       sweep,
       restart: { ok: restartOk, message: restartMessage },
       validate: { ok: validateOk, output: validateOutput },
+      runtime: {
+        ok: runtimeOk,
+        toolRegistered: runtimeToolRegistered,
+        outputTail: tailLines(runtimeOutput, 20),
+      },
     });
   } catch (e) {
     return NextResponse.json(

@@ -411,13 +411,26 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
       if (Array.isArray(sweep.changedPluginsEnabled) && sweep.changedPluginsEnabled.length > 0) {
         bits.push(`plugins enabled: ${sweep.changedPluginsEnabled.join(", ")}`);
       }
+      if (sweep.changedWhatsappChannelDefaults) {
+        bits.push("channels.whatsapp recebeu defaults obrigatórios");
+      }
       if (restart.ok === true) bits.push(restart.message || "gateway reiniciado");
       else if (restart.ok === false) bits.push(`restart falhou (${restart.message ?? ""})`);
 
+      const runtime = json.runtime || {};
+      if (runtime.toolRegistered === true) {
+        bits.push("whatsapp_login registrado no runtime ✓");
+      } else if (runtime.toolRegistered === false) {
+        bits.push("⚠ whatsapp_login NÃO registrado (veja detalhe)");
+      }
+
       if (bits.length === 0) bits.push("config já estava OK");
 
-      const detail = (validate.output || "").trim() || "(validator não respondeu)";
-      const ok = !!json.ok;
+      const detail =
+        runtime.toolRegistered === false && runtime.outputTail
+          ? `Runtime inspect (whatsapp):\n${runtime.outputTail}\n\nValidate:\n${validate.output || "(sem output)"}`
+          : (validate.output || "").trim() || "(validator não respondeu)";
+      const ok = !!json.ok && runtime.toolRegistered !== false;
 
       setRepairResult({
         ok,

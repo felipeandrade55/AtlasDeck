@@ -24,6 +24,7 @@ export interface SweepResult {
   changedWhatsapp: boolean;
   changedGatewayToolsAllow: boolean;
   changedPluginsEnabled: string[];
+  changedWhatsappChannelDefaults: boolean;
   configPath: string;
   error?: string;
 }
@@ -57,6 +58,44 @@ function ensureGatewayToolsAllow(raw: Record<string, unknown>, required: string[
       allow: Array.from(allow),
     },
   };
+  return true;
+}
+
+/**
+ * @openclaw/whatsapp's channelConfigs.whatsapp.schema declares
+ *   required: ["dmPolicy", "groupPolicy", "debounceMs", "mediaMaxMb"]
+ * Without all four, the WhatsApp plugin fails its channel-config
+ * validation at load time and never registers its agent tools
+ * (notably whatsapp_login). `openclaw config validate` only runs the
+ * top-level schema and won't catch this — the plugin's own validator
+ * runs at gateway boot and silently drops the channel runtime.
+ *
+ * We backfill missing fields with the schema defaults so an existing
+ * config that only had `dmPolicy` gets promoted to a fully-loadable
+ * channel definition.
+ */
+function ensureWhatsappChannelDefaults(raw: Record<string, unknown>): boolean {
+  const channels = (raw.channels && typeof raw.channels === "object" ? raw.channels : {}) as Record<string, unknown>;
+  const wa = (channels.whatsapp && typeof channels.whatsapp === "object" ? channels.whatsapp : {}) as Record<string, unknown>;
+
+  const defaults: Record<string, unknown> = {
+    dmPolicy: "pairing",
+    groupPolicy: "allowlist",
+    debounceMs: 0,
+    mediaMaxMb: 50,
+  };
+
+  let changed = false;
+  const next: Record<string, unknown> = { ...wa };
+  for (const [key, value] of Object.entries(defaults)) {
+    if (next[key] === undefined || next[key] === null) {
+      next[key] = value;
+      changed = true;
+    }
+  }
+  if (!changed) return false;
+
+  raw.channels = { ...channels, whatsapp: next };
   return true;
 }
 
@@ -100,6 +139,7 @@ export function sweepOpenClawConfig(): SweepResult {
       changedWhatsapp: false,
       changedGatewayToolsAllow: false,
       changedPluginsEnabled: [],
+      changedWhatsappChannelDefaults: false,
       configPath,
     };
   }
@@ -115,11 +155,18 @@ export function sweepOpenClawConfig(): SweepResult {
     // "Tool not available: whatsapp_login".
     const changedPluginsEnabled = ensurePluginsEnabled(raw, ["whatsapp", "acpx"]);
 
+    // Backfill required channels.whatsapp fields so the plugin's own
+    // channel-config validator passes at load time (it runs INSIDE the
+    // plugin's onLoad, not the top-level openclaw config validate, so
+    // missing fields silently drop the runtime).
+    const changedWhatsappChannelDefaults = ensureWhatsappChannelDefaults(raw);
+
     if (
       changedTelegram ||
       changedWhatsapp ||
       changedGatewayToolsAllow ||
-      changedPluginsEnabled.length > 0
+      changedPluginsEnabled.length > 0 ||
+      changedWhatsappChannelDefaults
     ) {
       writeFileSync(configPath, JSON.stringify(raw, null, 2), "utf-8");
     }
@@ -129,6 +176,7 @@ export function sweepOpenClawConfig(): SweepResult {
       changedWhatsapp,
       changedGatewayToolsAllow,
       changedPluginsEnabled,
+      changedWhatsappChannelDefaults,
       configPath,
     };
   } catch (err) {
@@ -138,6 +186,7 @@ export function sweepOpenClawConfig(): SweepResult {
       changedWhatsapp: false,
       changedGatewayToolsAllow: false,
       changedPluginsEnabled: [],
+      changedWhatsappChannelDefaults: false,
       configPath,
       error: err instanceof Error ? err.message : String(err),
     };
