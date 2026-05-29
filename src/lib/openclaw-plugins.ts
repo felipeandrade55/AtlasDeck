@@ -100,7 +100,32 @@ export function listInstalledPlugins(): InstalledPluginsResult {
   }
 }
 
+/**
+ * Filesystem check is the source of truth: `openclaw plugins install`
+ * unpacks into `<openclawDir>/npm/node_modules/<pkg>`, and that's exactly
+ * what the runtime requires/imports. Parsing `openclaw plugins list` is
+ * unreliable across versions (column layout changes, "(not installed)"
+ * vs warning lines, etc.) and would let us re-trigger install loops.
+ *
+ * Returns rawOutput from the CLI only as best-effort diagnostic context.
+ */
 export function isPluginInstalled(pkg: string): { installed: boolean; rawOutput: string; error?: string } {
+  try {
+    const { openclawDir } = readOpenClawConfig();
+    const pluginDir = path.join(openclawDir, "npm", "node_modules", ...pkg.split("/"));
+    const pkgJsonPath = path.join(pluginDir, "package.json");
+    if (fs.existsSync(pkgJsonPath)) {
+      return { installed: true, rawOutput: `[fs] ${pluginDir} present` };
+    }
+  } catch (e) {
+    // Fall through to CLI parse — fs probe failure shouldn't kill detection.
+    const err = e instanceof Error ? e.message : String(e);
+    const r = listInstalledPlugins();
+    return { installed: r.packages.includes(pkg), rawOutput: r.rawOutput, error: err };
+  }
+
+  // Filesystem says no — confirm with the CLI in case OpenClaw uses a
+  // different layout in some setup.
   const r = listInstalledPlugins();
   if (!r.ran) {
     return { installed: false, rawOutput: r.rawOutput, error: r.error };
@@ -114,6 +139,18 @@ export interface InstallPluginResult {
   exitCode: number | null;
   output: string;
   durationMs: number;
+}
+
+/**
+ * "plugin already exists: ..." is technically an install failure (exit 1)
+ * but for our purpose it means we're done — the plugin is installed. Treat
+ * the same way for both sync and streaming installs.
+ */
+function classifyInstallOutput(exitCode: number | null, output: string, pkg: string): boolean {
+  if (exitCode === 0) return true;
+  if (/plugin already exists/i.test(output)) return true;
+  if (new RegExp(`${pkg.replace("/", "\\/")}.*already`, "i").test(output)) return true;
+  return false;
 }
 
 /**
@@ -133,7 +170,7 @@ export function installPluginSync(pkg: string, timeoutMs = 240_000): InstallPlug
   });
   const output = `${result.stdout || ""}${result.stderr || ""}`.trim();
   return {
-    ok: !result.error && (result.status ?? 1) === 0,
+    ok: !result.error && classifyInstallOutput(result.status, output, pkg),
     packageName: pkg,
     exitCode: result.status,
     output,
@@ -169,11 +206,12 @@ export function installPluginStreaming(
 
   const done = new Promise<InstallPluginResult>((resolve) => {
     child.on("exit", (code) => {
+      const output = collected.trim();
       resolve({
-        ok: code === 0,
+        ok: classifyInstallOutput(code, output, pkg),
         packageName: pkg,
         exitCode: code,
-        output: collected.trim(),
+        output,
         durationMs: Date.now() - start,
       });
     });

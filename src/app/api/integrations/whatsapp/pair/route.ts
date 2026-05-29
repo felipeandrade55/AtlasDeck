@@ -27,7 +27,15 @@ const activePairs: Map<string, PairState> = globalAny[globalKey] ?? new Map<stri
 globalAny[globalKey] = activePairs;
 
 function stripAnsi(str: string): string {
-  return str.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, "");
+  return str
+    // ANSI escape sequences (colors, cursor moves, clear screen, etc.).
+    .replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, "")
+    // PTY (`script -qfc`) emits \r\n line endings — normalize so the <pre>
+    // doesn't double-space, which would push the QR off-screen.
+    .replace(/\r\n/g, "\n")
+    // Standalone \r (line-overwrite, used by progress bars). Keep only the
+    // text after the last \r within a line so the final state shows.
+    .replace(/^.*\r(?!\n)/gm, "");
 }
 
 // ─── GET (poll current pairing state) ────────────────────────────────────
@@ -113,10 +121,29 @@ export async function POST(req: NextRequest) {
       activePairs.set(accountId, state);
 
       const spawnLogin = () => {
-        state.output += `$ ${command}\n\n`;
-        const child = spawn(command, {
+        // OpenClaw's `channels login --channel whatsapp` uses @clack/prompts
+        // and a terminal QR renderer that BOTH require a TTY. With plain
+        // `spawn(..., shell: true)` no PTY is allocated, clack falls back
+        // to non-interactive mode, and the QR is never printed — exactly
+        // the symptom we saw (terminal shows the command and nothing else).
+        //
+        // Wrap with `script -qfc <cmd> /dev/null` to allocate a PTY on
+        // Linux. Fallback to plain shell when `script` isn't available
+        // (e.g. minimal containers) — at least the install/error output
+        // still reaches the UI.
+        const hasScript = fs.existsSync("/usr/bin/script") || fs.existsSync("/bin/script");
+        const finalCommand = hasScript
+          ? `script -qfc ${JSON.stringify(command)} /dev/null`
+          : command;
+
+        state.output += `$ ${finalCommand}\n\n`;
+        const spawnEnv: NodeJS.ProcessEnv = {
+          ...childEnv,
+          TERM: process.env.TERM || "xterm-256color",
+        };
+        const child = spawn(finalCommand, {
           cwd: config.openclawDir,
-          env: childEnv,
+          env: spawnEnv,
           shell: true,
         });
         state.child = child;
