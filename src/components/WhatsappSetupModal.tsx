@@ -119,6 +119,45 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
     if (el) el.scrollTop = el.scrollHeight;
   }, [pairingOutput]);
 
+  // Detect the QR ASCII block in the pair output and split it off so we can
+  // render the QR in a dedicated compact white panel (so the camera can
+  // actually frame it) while the verbose logs stay in the dark terminal
+  // panel. A "QR line" is a non-empty line that contains only U+2588 (full
+  // block) characters and spaces — that's what qrAnsiBgToBlocks produces.
+  // We walk backwards to find the LATEST QR block (Baileys refreshes the QR
+  // every ~20s so older blocks are stale).
+  const { qr: pairingQrBlock, rest: pairingLogText } = useMemo(() => {
+    const lines = pairingOutput.split("\n");
+    if (lines.length === 0) return { qr: null as string | null, rest: pairingOutput };
+    const isQrLine = (l: string) => l.length > 0 && l.replace(/[ █]/g, "") === "";
+
+    let end = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (isQrLine(lines[i])) {
+        end = i + 1;
+        break;
+      }
+      // stop searching after a few non-QR lines past the end
+      if (end === -1 && lines.length - i > 80) break;
+    }
+    if (end === -1) return { qr: null as string | null, rest: pairingOutput };
+
+    let start = end;
+    while (start > 0 && (isQrLine(lines[start - 1]) || lines[start - 1].trim() === "")) {
+      start--;
+    }
+    if (end - start < 5) return { qr: null as string | null, rest: pairingOutput };
+
+    // Strip leading/trailing all-blank lines so the white panel hugs the QR.
+    const qrLines = lines.slice(start, end);
+    while (qrLines.length > 0 && qrLines[0].trim() === "") qrLines.shift();
+    while (qrLines.length > 0 && qrLines[qrLines.length - 1].trim() === "") qrLines.pop();
+    const qr = qrLines.join("\n");
+
+    const rest = [...lines.slice(0, start), ...lines.slice(end)].join("\n");
+    return { qr, rest };
+  }, [pairingOutput]);
+
   const [repairing, setRepairing] = useState(false);
   const [repairResult, setRepairResult] = useState<{
     ok: boolean;
@@ -875,25 +914,51 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
                                   </button>
                                 </div>
                                 <p className="text-[11px] text-gray-400">
-                                  Abra o WhatsApp no celular → <strong>Aparelhos Conectados</strong> → escaneie o QR abaixo (vem do terminal do gateway).
+                                  Abra o WhatsApp no celular → <strong>Aparelhos Conectados</strong> → escaneie o QR abaixo.
                                 </p>
                                 {pairingExited && (
                                   <div className="text-xs text-yellow-400 font-medium">
                                     Terminal encerrado. Se não conectou, tente Reparar config e iniciar de novo.
                                   </div>
                                 )}
-                                <pre
-                                  ref={pairingPanelRef}
-                                  className="font-mono bg-black text-white p-4 rounded-md overflow-auto text-[8px] leading-[8px] md:text-[10px] md:leading-[10px] tracking-[0px] text-center select-none"
-                                  style={{
-                                    maxHeight: "560px",
-                                    border: "1px solid rgba(255,255,255,0.15)",
-                                    display: "block",
-                                    whiteSpace: "pre",
-                                  }}
-                                >
-                                  {pairingOutput || "Aguardando geração do QR Code…"}
-                                </pre>
+
+                                {pairingQrBlock && (
+                                  <div className="flex justify-center">
+                                    <pre
+                                      className="font-mono bg-white text-black rounded-md select-none"
+                                      style={{
+                                        fontSize: "5px",
+                                        lineHeight: "5px",
+                                        padding: "12px",
+                                        letterSpacing: "0px",
+                                        whiteSpace: "pre",
+                                        width: "fit-content",
+                                        border: "1px solid rgba(255,255,255,0.15)",
+                                      }}
+                                    >
+                                      {pairingQrBlock}
+                                    </pre>
+                                  </div>
+                                )}
+
+                                <details open={!pairingQrBlock}>
+                                  <summary className="text-[10px] text-gray-400 cursor-pointer select-none mb-1">
+                                    {pairingQrBlock ? "Mostrar logs do terminal" : "Logs do terminal (aguardando QR…)"}
+                                  </summary>
+                                  <pre
+                                    ref={pairingPanelRef}
+                                    className="font-mono bg-black text-white p-3 rounded-md overflow-auto text-[10px] leading-[12px] tracking-[0px] select-text"
+                                    style={{
+                                      maxHeight: "240px",
+                                      border: "1px solid rgba(255,255,255,0.15)",
+                                      display: "block",
+                                      whiteSpace: "pre",
+                                      textAlign: "left",
+                                    }}
+                                  >
+                                    {pairingLogText || pairingOutput || "Aguardando saída do CLI…"}
+                                  </pre>
+                                </details>
                               </div>
                             )}
                           </div>
