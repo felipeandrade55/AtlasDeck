@@ -10,6 +10,7 @@ import { RecoveryPanel } from "@/components/RecoveryPanel";
 import { UpdatePanel } from "@/components/UpdatePanel";
 import { RestorePanel } from "@/components/RestorePanel";
 import { ResetOpenClawPanel } from "@/components/setup/ResetOpenClawPanel";
+import { GatewayDiagnoseCard } from "@/components/GatewayDiagnoseCard";
 
 interface SystemData {
   agent: {
@@ -129,6 +130,11 @@ export default function SettingsPage() {
         {/* Recovery Panel - Full width, prominent */}
         <div className="lg:col-span-2">
           <RecoveryPanel />
+        </div>
+
+        {/* Gateway diagnose — self-service inspection of OpenClaw + Telegram + watchdog */}
+        <div id="gateway-diagnose" className="lg:col-span-2 scroll-mt-24">
+          <GatewayDiagnoseCard />
         </div>
 
         {/* Memory MCP — agent-curated memory (Hermes-style) */}

@@ -3,6 +3,7 @@
 import { Dock, TopBar, StatusBar } from "@/components/AtlasDeck";
 import { ToastProvider } from "@/components/Toast";
 import { SetupGuard } from "@/components/setup/SetupGuard";
+import { GatewayHealthBanner } from "@/components/GatewayHealthBanner";
 
 export default function DashboardLayout({
   children,
@@ -25,6 +26,10 @@ export default function DashboardLayout({
             padding: "24px",
           }}
         >
+          {/* Health banner — invisible when everything's OK, becomes amber/red on
+              degraded state. Lives above page content so it's visible regardless
+              of which dashboard route the user is on. */}
+          <GatewayHealthBanner />
           {children}
         </main>
 
