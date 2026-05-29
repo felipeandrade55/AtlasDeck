@@ -248,7 +248,7 @@ export async function PUT(req: NextRequest) {
     if (body.deleteAccountIds && Array.isArray(body.deleteAccountIds)) {
       for (const id of body.deleteAccountIds) {
         if (typeof id === "string" && wa.accounts[id]) delete wa.accounts[id];
-        if (typeof id === "string") deleteTelegramAccountLocal(id);
+        if (typeof id === "string") deleteWhatsappAccountLocal(id);
       }
     }
 
