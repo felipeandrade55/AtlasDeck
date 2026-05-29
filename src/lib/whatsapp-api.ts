@@ -3,6 +3,10 @@
  * Supports Meta Cloud API credentials or self-hosted session servers,
  * providing both live diagnostics and clean mock fallbacks when offline.
  */
+import fs from "fs";
+import path from "path";
+import { readOpenClawConfig } from "./openclaw-config";
+
 
 const WA_TIMEOUT_MS = 6000;
 
@@ -81,3 +85,14 @@ export async function waCall<T = unknown>(
     clearTimeout(timer);
   }
 }
+
+export function hasWhatsappSessionLocal(accountId: string): boolean {
+  try {
+    const config = readOpenClawConfig();
+    const credsPath = path.join(config.openclawDir, "credentials", "whatsapp", accountId, "creds.json");
+    return fs.existsSync(credsPath);
+  } catch {
+    return false;
+  }
+}
+

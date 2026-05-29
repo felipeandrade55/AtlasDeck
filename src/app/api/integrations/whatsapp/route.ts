@@ -12,7 +12,7 @@ import {
   deleteWhatsappAccountLocal,
   migrateWhatsappAccountsFromConfig,
 } from "@/lib/whatsapp-accounts-local";
-import { waCall } from "@/lib/whatsapp-api";
+import { waCall, hasWhatsappSessionLocal } from "@/lib/whatsapp-api";
 
 export const dynamic = "force-dynamic";
 
@@ -117,6 +117,8 @@ export async function GET(req: NextRequest) {
       let diagnostics: AccountOut["diagnostics"] = null;
       let sessionStatus: AccountOut["sessionStatus"] = "disconnected";
 
+      const localSessionExists = hasWhatsappSessionLocal(id);
+
       if (includeLive && hasToken) {
         const check = await waCall<{ success: boolean; sessionStatus?: string }>(
           "https://api.meta.com/v16.0/me",
@@ -133,8 +135,17 @@ export async function GET(req: NextRequest) {
             error: check.description || check.networkError,
           };
         }
-      } else if (hasToken) {
-        sessionStatus = "connected"; // Assume active on cache/offline load
+      } else {
+        if (localSessionExists) {
+          sessionStatus = "connected";
+          diagnostics = { connected: true };
+        } else {
+          sessionStatus = "disconnected";
+          diagnostics = {
+            connected: false,
+            error: "Sessão do WhatsApp Web não iniciada (QR Code não escaneado)",
+          };
+        }
       }
 
       const localChatId = getWhatsappAccountLocal(id).chatId;
@@ -168,7 +179,10 @@ export async function GET(req: NextRequest) {
     if (!wa.enabled) issues.push("channels.whatsapp.enabled = false (canal desabilitado)");
     if (accounts.length === 0) issues.push("Nenhuma conta de WhatsApp configurada em channels.whatsapp.accounts");
     for (const a of accounts) {
-      if (!a.hasToken) issues.push(`Conta "${a.id}": token de acesso ausente ou placeholder`);
+      const localSessionExists = hasWhatsappSessionLocal(a.id);
+      if (!a.hasToken && !localSessionExists) {
+        issues.push(`Conta "${a.id}": token de acesso ou sessão local ausente`);
+      }
       if (!a.phoneNumber) issues.push(`Conta "${a.id}": número de telefone de origem não definido`);
       if (a.diagnostics && !a.diagnostics.connected) {
         issues.push(`Conta "${a.id}": falha ao conectar à API — ${a.diagnostics.error}`);

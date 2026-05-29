@@ -104,6 +104,11 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
   const [restarting, setRestarting] = useState(false);
   const [restartResult, setRestartResult] = useState<ClientRestartResult | null>(null);
 
+  const [pairingAccountId, setPairingAccountId] = useState<string | null>(null);
+  const [pairingOutput, setPairingOutput] = useState<string>("");
+  const [pairingExited, setPairingExited] = useState<boolean>(false);
+  const [pairingLoading, setPairingLoading] = useState<boolean>(false);
+
   useEffect(() => {
     setAutoRestart(getAutoRestartPref());
   }, []);
@@ -151,6 +156,78 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
       setActionMsg({});
     }
   }, [open, refresh]);
+
+  // Polling hook para pareamento via QR Code
+  useEffect(() => {
+    if (!pairingAccountId) return;
+
+    let timer: NodeJS.Timeout;
+    let isActive = true;
+
+    async function poll() {
+      try {
+        const res = await fetch(`/api/integrations/whatsapp/pair?accountId=${pairingAccountId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!isActive) return;
+
+        setPairingOutput(data.output);
+        setPairingExited(data.exited);
+
+        const lowerOut = data.output.toLowerCase();
+        if (lowerOut.includes("session connected") || lowerOut.includes("conectado") || data.exitCode === 0) {
+          void refresh();
+        }
+
+        if (!data.exited) {
+          timer = setTimeout(poll, 1500);
+        }
+      } catch (err) {
+        console.error("Erro no polling do QR Code:", err);
+      }
+    }
+
+    void poll();
+
+    return () => {
+      isActive = false;
+      clearTimeout(timer);
+    };
+  }, [pairingAccountId, refresh]);
+
+  const startPairing = async (accountId: string) => {
+    setPairingAccountId(accountId);
+    setPairingOutput("Iniciando terminal e gerando QR Code...");
+    setPairingExited(false);
+    setPairingLoading(true);
+    try {
+      const res = await fetch(`/api/integrations/whatsapp/pair?action=start&accountId=${accountId}`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (data.success) {
+        setPairingOutput(data.output || "Aguardando terminal...");
+      } else {
+        setPairingOutput(`Erro: ${data.error}`);
+      }
+    } catch (e) {
+      setPairingOutput(`Erro ao conectar à API: ${e}`);
+    } finally {
+      setPairingLoading(false);
+    }
+  };
+
+  const stopPairing = async (accountId: string) => {
+    try {
+      await fetch(`/api/integrations/whatsapp/pair?action=stop&accountId=${accountId}`, {
+        method: "POST",
+      });
+    } catch {}
+    setPairingAccountId(null);
+    setPairingOutput("");
+    setPairingExited(true);
+    void refresh();
+  };
 
   const addAccount = () => {
     const baseId = "whatsapp-acc";
@@ -608,21 +685,84 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
                           )}
 
                           {/* Per-account actions */}
-                          <div className="flex flex-wrap items-center gap-2">
-                            <button
-                              onClick={() => sendTest(d.id)}
-                              disabled={actionBusy !== null || !d.chatId}
-                              title={!d.chatId ? "Preencha o destinatário primeiro" : "Envia uma mensagem de teste agora"}
-                              className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded disabled:opacity-50"
-                              style={{ backgroundColor: "rgba(16,185,129,0.1)", color: "#6ee7b7", border: "1px solid rgba(16,185,129,0.3)" }}
-                            >
-                              {actionBusy === `test-${d.id}` ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-                              Enviar mensagem de teste
-                            </button>
-                            {msg && (
-                              <span className="text-[11px]" style={{ color: msg.kind === "ok" ? "#34d399" : "#fca5a5" }}>
-                                {msg.text}
-                              </span>
+                          <div className="flex flex-col gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <button
+                                onClick={() => sendTest(d.id)}
+                                disabled={actionBusy !== null || !d.chatId}
+                                title={!d.chatId ? "Preencha o destinatário primeiro" : "Envia uma mensagem de teste agora"}
+                                className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded disabled:opacity-50"
+                                style={{ backgroundColor: "rgba(16,185,129,0.1)", color: "#6ee7b7", border: "1px solid rgba(16,185,129,0.3)" }}
+                              >
+                                {actionBusy === `test-${d.id}` ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                                Enviar mensagem de teste
+                              </button>
+
+                              <button
+                                onClick={() => {
+                                  if (pairingAccountId === d.id) {
+                                    void stopPairing(d.id);
+                                  } else {
+                                    void startPairing(d.id);
+                                  }
+                                }}
+                                disabled={actionBusy !== null}
+                                className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded"
+                                style={{
+                                  backgroundColor: pairingAccountId === d.id ? "rgba(239,68,68,0.1)" : "rgba(139,92,246,0.1)",
+                                  color: pairingAccountId === d.id ? "#fca5a5" : "#c4b5fd",
+                                  border: `1px solid ${pairingAccountId === d.id ? "rgba(239,68,68,0.3)" : "rgba(139,92,246,0.3)"}`,
+                                }}
+                              >
+                                {pairingLoading && pairingAccountId === d.id ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <Smartphone className="w-3.5 h-3.5" />
+                                )}
+                                {pairingAccountId === d.id ? "Parar Pareamento" : "Parear via QR Code"}
+                              </button>
+
+                              {msg && (
+                                <span className="text-[11px]" style={{ color: msg.kind === "ok" ? "#34d399" : "#fca5a5" }}>
+                                  {msg.text}
+                                </span>
+                              )}
+                            </div>
+
+                            {pairingAccountId === d.id && (
+                              <div className="mt-2 p-3 rounded-lg border border-purple-500/30 bg-black/60 space-y-2">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-xs font-semibold text-purple-300 flex items-center gap-1.5">
+                                    <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
+                                    Painel de Login do WhatsApp Web
+                                  </span>
+                                  <button
+                                    onClick={() => stopPairing(d.id)}
+                                    className="text-[11px] px-2 py-0.5 rounded bg-red-950/40 hover:bg-red-900/40 text-red-300 border border-red-900/30"
+                                  >
+                                    Fechar
+                                  </button>
+                                </div>
+                                <p className="text-[11px] text-gray-400">
+                                  Abra o WhatsApp no seu celular, vá em &quot;Aparelhos Conectados&quot; e escaneie o código abaixo:
+                                </p>
+                                {pairingExited && (
+                                  <div className="text-xs text-yellow-400 font-medium">
+                                    Terminal encerrado. Se não conectou, tente iniciar o pareamento novamente.
+                                  </div>
+                                )}
+                                <pre
+                                  className="font-mono bg-black text-white p-4 rounded-md overflow-x-auto text-[7px] leading-[7px] md:text-[8px] md:leading-[8px] tracking-[0px] text-center select-none"
+                                  style={{
+                                    maxHeight: "380px",
+                                    border: "1px solid rgba(255,255,255,0.15)",
+                                    display: "block",
+                                    whiteSpace: "pre",
+                                  }}
+                                >
+                                  {pairingOutput || "Aguardando geração do QR Code..."}
+                                </pre>
+                              </div>
                             )}
                           </div>
                         </>

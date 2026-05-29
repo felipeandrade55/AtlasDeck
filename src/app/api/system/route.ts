@@ -6,6 +6,7 @@ import { execFileSync } from 'child_process';
 
 import { OPENCLAW_WORKSPACE, WORKSPACE_IDENTITY } from '@/lib/paths';
 import { readOpenClawConfig } from '@/lib/openclaw-config';
+import { hasWhatsappSessionLocal } from '@/lib/whatsapp-api';
 
 const WORKSPACE_PATH = OPENCLAW_WORKSPACE;
 const IDENTITY_PATH = WORKSPACE_IDENTITY;
@@ -83,22 +84,34 @@ function getIntegrationStatus() {
   // WhatsApp — read from openclaw.json (channels.whatsapp)
   let whatsappEnabled = false;
   let whatsappAccounts = 0;
+  let whatsappConnected = false;
   try {
     const openclawConfigPath = path.join(readOpenClawConfig().openclawDir, 'openclaw.json');
     const openclawConfig = JSON.parse(fs.readFileSync(openclawConfigPath, 'utf-8'));
     const whatsappConfig = openclawConfig?.channels?.whatsapp;
     whatsappEnabled = !!(whatsappConfig?.enabled);
     if (whatsappConfig?.accounts) {
-      whatsappAccounts = Object.keys(whatsappConfig.accounts).length;
+      const accountIds = Object.keys(whatsappConfig.accounts);
+      whatsappAccounts = accountIds.length;
+      if (whatsappEnabled && whatsappAccounts > 0) {
+        whatsappConnected = accountIds.some(id => {
+          const acct = whatsappConfig.accounts[id];
+          const token = typeof acct?.token === "string" ? acct.token.trim() : "";
+          const hasToken = token.length > 0 && token !== "configured_mock_token";
+          return hasWhatsappSessionLocal(id) || hasToken;
+        });
+      }
     }
   } catch {}
   integrations.push({
     id: 'whatsapp',
     name: 'WhatsApp',
-    status: whatsappEnabled ? 'connected' : 'disconnected',
+    status: (whatsappEnabled && whatsappConnected) ? 'connected' : 'disconnected',
     icon: 'MessageSquare',
     lastActivity: whatsappEnabled ? lastSessionTime : null,
-    detail: whatsappEnabled ? `${whatsappAccounts} accounts configured` : null,
+    detail: whatsappEnabled
+      ? `${whatsappAccounts} contas configuradas (${whatsappConnected ? 'online' : 'desconectada'})`
+      : null,
   });
 
   // Google (gog/google-gemini-cli-auth) — check openclaw.json plugins

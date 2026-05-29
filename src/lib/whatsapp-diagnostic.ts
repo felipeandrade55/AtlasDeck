@@ -5,7 +5,7 @@
 import { readFileSync, existsSync } from "fs";
 import { resolveOpenClawAgentsConfigPath } from "./openclaw-config";
 import { getWhatsappAccountLocal } from "./whatsapp-accounts-local";
-import { waCall, looksLikePhoneNumber } from "./whatsapp-api";
+import { waCall, looksLikePhoneNumber, hasWhatsappSessionLocal } from "./whatsapp-api";
 import { detectGatewayRuntime } from "./gateway-control";
 
 export type CheckStatus = "pass" | "warn" | "fail" | "skip";
@@ -138,16 +138,28 @@ export async function runDiagnose(opts: RunDiagnoseOptions): Promise<DiagnoseRes
     const legacyChatId = (acct.chatId ?? "").trim();
     const chatId = localChatId || legacyChatId || "";
 
+    const localSessionExists = hasWhatsappSessionLocal(id);
+
     if (!hasToken) {
-      checks.push({
-        id: `token-${id}`,
-        category: "config",
-        label: `Conta "${id}": token de acesso`,
-        status: "fail",
-        detail: "token de acesso ausente ou placeholder.",
-        fix: { action: "open-setup", label: "Inserir token", accountId: id },
-      });
-      continue;
+      if (localSessionExists) {
+        checks.push({
+          id: `token-${id}`,
+          category: "config",
+          label: `Conta "${id}": Método de conexão`,
+          status: "pass",
+          detail: "Conectado via WhatsApp Web (Baileys) local.",
+        });
+      } else {
+        checks.push({
+          id: `token-${id}`,
+          category: "config",
+          label: `Conta "${id}": token de acesso ou sessão`,
+          status: "fail",
+          detail: "Token de acesso ausente ou sessão WhatsApp Web não pareada.",
+          fix: { action: "open-setup", label: "Parear WhatsApp Web ou Inserir token", accountId: id },
+        });
+        continue;
+      }
     }
 
     if (!phoneNumber) {
@@ -162,14 +174,21 @@ export async function runDiagnose(opts: RunDiagnoseOptions): Promise<DiagnoseRes
       continue;
     }
 
-    // Call mock/live API to check health
-    const diagnostic = await waCall<{ success: boolean; sessionStatus?: string }>(
-      "https://api.meta.com/v16.0/me",
-      "GET",
-      token
-    );
+    let isConnected = false;
+    let diagnosticError = "";
 
-    const isConnected = diagnostic.ok;
+    if (hasToken) {
+      const diagnostic = await waCall<{ success: boolean; sessionStatus?: string }>(
+        "https://api.meta.com/v16.0/me",
+        "GET",
+        token
+      );
+      isConnected = diagnostic.ok;
+      diagnosticError = diagnostic.description || diagnostic.networkError || "Desconectado";
+    } else {
+      isConnected = localSessionExists;
+      diagnosticError = "Sessão do WhatsApp Web não iniciada (QR Code não escaneado)";
+    }
 
     checks.push({
       id: `session-${id}`,
@@ -177,11 +196,11 @@ export async function runDiagnose(opts: RunDiagnoseOptions): Promise<DiagnoseRes
       label: `Conta "${id}": sessão ativa`,
       status: isConnected ? "pass" : "fail",
       detail: isConnected
-        ? `Sessão conectada no telefone ${phoneNumber}`
-        : `Erro de conexão: ${diagnostic.description || diagnostic.networkError || "Desconectado"}`,
+        ? `Sessão conectada ${phoneNumber ? `no telefone ${phoneNumber}` : "via WhatsApp Web"}`
+        : `Erro de conexão: ${diagnosticError}`,
       fix: isConnected
         ? undefined
-        : { action: "open-setup", label: "Revisar credenciais", accountId: id },
+        : { action: "open-setup", label: "Revisar credenciais ou parear WhatsApp Web", accountId: id },
     });
 
     checks.push({
