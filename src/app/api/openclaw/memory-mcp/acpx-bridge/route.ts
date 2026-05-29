@@ -99,11 +99,32 @@ export async function POST(request: Request) {
   fs.writeFileSync(tmpPath, `${JSON.stringify(next, null, 2)}\n`, "utf-8");
   fs.renameSync(tmpPath, filePath);
 
+  // Verify the write actually stuck. If some other process (gateway
+  // watchdog, openclaw doctor) is racing us, we'll see the value
+  // already different on re-read. Worth surfacing — silent revert was
+  // the entire reason the user clicked the button twice without effect.
+  let persisted: boolean | null = null;
+  let persistedValue: unknown = null;
+  try {
+    const verifyRaw = fs.readFileSync(filePath, "utf-8");
+    const verify = JSON.parse(verifyRaw) as Record<string, unknown>;
+    const vp = verify.plugins as Record<string, unknown> | undefined;
+    const ve = (vp?.entries as Record<string, unknown> | undefined) ?? {};
+    const va = (ve.acpx as Record<string, unknown> | undefined) ?? {};
+    const vc = (va.config as Record<string, unknown> | undefined) ?? {};
+    persistedValue = vc.pluginToolsMcpBridge;
+    persisted = persistedValue === enabled;
+  } catch {
+    persisted = null;
+  }
+
   return NextResponse.json({
     ok: true,
     changed: true,
     before: before ?? null,
     after: enabled,
+    persisted,
+    persistedValue,
     reloadHint:
       "Reinicie o gateway pelo botão Reverificar pra mudança ter efeito.",
   });

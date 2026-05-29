@@ -270,10 +270,12 @@ export function MemoryMcpCard() {
         changed: boolean;
         before: unknown;
         after: boolean;
+        persisted: boolean | null;
+        persistedValue?: unknown;
         error?: string;
       };
-      setPhase("idle");
       if (!json.ok) {
+        setPhase("error");
         setBanner({
           kind: "error",
           text: "Não consegui editar o openclaw.json.",
@@ -281,13 +283,36 @@ export function MemoryMcpCard() {
         });
         return;
       }
-      setBanner({
-        kind: "success",
-        text: json.changed
-          ? "ACPX bridge ativado. Rode Reverificar pra reiniciar o gateway."
-          : "ACPX bridge já estava ativo.",
-        detail: `before=${JSON.stringify(json.before)} · after=${json.after}`,
-      });
+      // Auto-refresh the diagnose so the user sees the bridge flip from
+      // "não configurado" → "ativo" without an extra click. Without this
+      // the button stays visible (acpxBridgeEnabled stale) and the user
+      // thinks nothing happened.
+      const diagRes = await fetch(
+        "/api/openclaw/memory-mcp/diagnose?agentId=main",
+        { cache: "no-store" },
+      );
+      const diagJson = (await diagRes.json()) as DiagnoseReport;
+      setDiagnose(diagJson);
+      setPhase("idle");
+
+      if (json.persisted === false) {
+        setBanner({
+          kind: "warn",
+          text:
+            "Escrevi pluginToolsMcpBridge=true mas, ao reler o arquivo, " +
+            "o valor não persistiu — outro processo (gateway watchdog ou " +
+            "openclaw doctor) está revertendo. Veja detalhe.",
+          detail: `valor lido após write: ${JSON.stringify(json.persistedValue)}`,
+        });
+      } else {
+        setBanner({
+          kind: "success",
+          text: json.changed
+            ? "ACPX bridge ativado e confirmado em disco. Agora clique em Reverificar pra reiniciar o gateway."
+            : "ACPX bridge já estava ativo.",
+          detail: `before=${JSON.stringify(json.before)} · after=${json.after} · persistido=${json.persisted}`,
+        });
+      }
     } catch (err) {
       setPhase("error");
       setBanner({

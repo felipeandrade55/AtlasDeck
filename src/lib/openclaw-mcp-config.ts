@@ -48,6 +48,19 @@ export interface McpServerEntry {
 
 export interface OpenClawConfigShape {
   mcp?: { servers?: Record<string, McpServerEntry> };
+  plugins?: {
+    entries?: {
+      acpx?: {
+        config?: {
+          pluginToolsMcpBridge?: boolean;
+          [k: string]: unknown;
+        };
+        [k: string]: unknown;
+      };
+      [k: string]: unknown;
+    };
+    [k: string]: unknown;
+  };
   // Anything else in openclaw.json is preserved untouched.
   [k: string]: unknown;
 }
@@ -195,6 +208,10 @@ export interface InstallResult {
  * other entry under `mcp.servers`, and atomically replaces the file.
  * Creates a `.bak` next to the original if content actually changed.
  *
+ * Also sets `plugins.entries.acpx.config.pluginToolsMcpBridge = true`
+ * by default — without this the ACPX harness ignores MCP-registered
+ * tools (documented OpenClaw behavior) and registration is wasted.
+ *
  * Also cleans up `~/.openclaw/mcp.json` — the previous (wrong) target,
  * which OpenClaw never read. Keeping that file around just confuses
  * future debugging.
@@ -205,6 +222,8 @@ export function installMcpServer(opts: {
   configPathOverride?: string;
   /** Default true. Set false to keep the legacy mcp.json untouched. */
   cleanupLegacyMcpJson?: boolean;
+  /** Default true. Set false to skip toggling the ACPX bridge. */
+  enableAcpxBridge?: boolean;
 }): InstallResult {
   const filePath = getOpenClawConfigPath(opts.configPathOverride);
   const { config, exists } = readOpenClawJson(opts.configPathOverride);
@@ -221,7 +240,12 @@ export function installMcpServer(opts: {
     legacyRemoved = tryRemoveLegacyMcpJson();
   }
 
-  if (before && entriesEqual(before, expected)) {
+  const wantBridge = opts.enableAcpxBridge !== false;
+  const currentBridge = config.plugins?.entries?.acpx?.config?.pluginToolsMcpBridge;
+  const bridgeNeedsChange = wantBridge && currentBridge !== true;
+  const entryUnchanged = before && entriesEqual(before, expected);
+
+  if (entryUnchanged && !bridgeNeedsChange) {
     return {
       configPath: filePath,
       written: false,
@@ -242,6 +266,21 @@ export function installMcpServer(opts: {
         [SERVER_NAME]: expected,
       },
     },
+    plugins: wantBridge
+      ? {
+          ...(config.plugins ?? {}),
+          entries: {
+            ...(config.plugins?.entries ?? {}),
+            acpx: {
+              ...(config.plugins?.entries?.acpx ?? {}),
+              config: {
+                ...(config.plugins?.entries?.acpx?.config ?? {}),
+                pluginToolsMcpBridge: true,
+              },
+            },
+          },
+        }
+      : config.plugins,
   };
 
   const dir = path.dirname(filePath);
