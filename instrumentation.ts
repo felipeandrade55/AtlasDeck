@@ -28,28 +28,19 @@ export async function register(): Promise<void> {
   // extra keys with "must NOT have additional properties" and the daemon
   // refuses to boot, taking the Telegram bot down with it. We do this BEFORE
   // the health monitor starts so a restart attempt finds a clean config.
+  //
+  // Implementation lives in @/lib/openclaw-config-sweep so Turbopack's static
+  // analysis doesn't see Node-only `fs` imports in instrumentation.ts and
+  // surface a misleading Edge-runtime warning for routes that re-import this file.
   try {
-    const { existsSync, readFileSync, writeFileSync } = await import("fs");
-    const { resolveOpenClawAgentsConfigPath } = await import(
-      "@/lib/openclaw-config"
-    );
-    const { migrateTelegramAccountsFromConfig } = await import(
-      "@/lib/telegram-accounts-local"
-    );
-    const { migrateWhatsappAccountsFromConfig } = await import(
-      "@/lib/whatsapp-accounts-local"
-    );
-    const { path: configPath } = resolveOpenClawAgentsConfigPath();
-    if (existsSync(configPath)) {
-      const raw = JSON.parse(readFileSync(configPath, "utf-8"));
-      const changedTg = migrateTelegramAccountsFromConfig(raw);
-      const changedWa = migrateWhatsappAccountsFromConfig(raw);
-      if (changedTg || changedWa) {
-        writeFileSync(configPath, JSON.stringify(raw, null, 2), "utf-8");
-        console.log(
-          `[instrumentation] openclaw.json schema sweep wrote changes (telegram=${changedTg} whatsapp=${changedWa})`,
-        );
-      }
+    const { sweepOpenClawConfig } = await import("@/lib/openclaw-config-sweep");
+    const r = sweepOpenClawConfig();
+    if (r.ran && (r.changedTelegram || r.changedWhatsapp)) {
+      console.log(
+        `[instrumentation] openclaw.json schema sweep wrote changes (telegram=${r.changedTelegram} whatsapp=${r.changedWhatsapp})`,
+      );
+    } else if (r.error) {
+      console.warn("[instrumentation] openclaw.json schema sweep error:", r.error);
     }
   } catch (err) {
     console.warn("[instrumentation] openclaw.json schema sweep failed:", err);
