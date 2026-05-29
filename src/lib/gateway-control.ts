@@ -19,6 +19,7 @@ import { openSync } from "fs";
 import path from "path";
 
 import { OPENCLAW_DIR } from "./paths";
+import { sweepOpenClawConfig, type SweepResult } from "./openclaw-config-sweep";
 
 /**
  * Where we redirect stdout/stderr of any daemon we spawn detached. Without
@@ -219,6 +220,82 @@ export interface RestartResult {
   success: boolean;
   runtime: GatewayRuntime;
   output: string;
+  sweep?: SweepResult;
+}
+
+/**
+ * Run the openclaw.json schema sweep and push a human-readable line into the
+ * caller's log array. This MUST run before any `systemctl start/restart`
+ * because the gateway's strict schema rejects extra keys (e.g.
+ * channels.whatsapp.accounts.main.dmPolicy) with "must NOT have additional
+ * properties" → boot loop → systemd gives up → user has to manually
+ * intervene. Sources of dirty fields we've seen in production:
+ *   1. jarvis-dashboard (separate product sharing the same openclaw.json on
+ *      the user's VPS) writing WhatsApp account fields the new schema
+ *      rejects.
+ *   2. Gateway itself persisting session state during pairing flows.
+ *   3. Legacy AtlasDeck builds that wrote dmPolicy/chatId before the
+ *      whitelist sweep was added.
+ *
+ * Sweep is idempotent — when nothing needs to change it returns
+ * changed*=false and does NOT touch the file (so we don't fight the
+ * gateway's config-watcher with a spurious reload).
+ */
+function sweepBeforeRestart(log: string[]): SweepResult {
+  const sweep = sweepOpenClawConfig();
+  if (!sweep.ran) {
+    if (sweep.error) {
+      log.push(`⚠ sweep do openclaw.json falhou: ${sweep.error}`);
+    } else {
+      log.push(`ℹ sweep: ${sweep.configPath} não existe — pulando`);
+    }
+    return sweep;
+  }
+  const cleaned: string[] = [];
+  if (sweep.changedTelegram) cleaned.push("telegram");
+  if (sweep.changedWhatsapp) cleaned.push("whatsapp");
+  if (sweep.changedGatewayToolsAllow) cleaned.push("gateway.tools.allow");
+  if (sweep.changedPluginsEnabled?.length > 0) {
+    cleaned.push(`plugins.enabled (${sweep.changedPluginsEnabled.join("+")})`);
+  }
+  if (sweep.changedWhatsappChannelDefaults) cleaned.push("channels.whatsapp defaults");
+  if (cleaned.length > 0) {
+    log.push(`✓ sweep limpou campos em: ${cleaned.join(", ")} (config agora schema-valid)`);
+  } else {
+    log.push("✓ sweep: openclaw.json já estava limpo");
+  }
+  return sweep;
+}
+
+/**
+ * When systemd gives up because of `start-limit-hit` (the gateway boot-looped
+ * 3+ times faster than 30s — which is exactly what happens when openclaw.json
+ * has a schema-invalid field), `systemctl restart` becomes a no-op until we
+ * run `reset-failed`. Without this, a restart from the UI would silently fail
+ * and the user would have to SSH in.
+ */
+async function resetFailedIfStuck(scope: "user" | "system", log: string[]): Promise<void> {
+  const r = await safeExec(
+    `${systemctlCmd(scope, "show")} --property=ActiveState,SubState,Result 2>/dev/null`,
+    3000,
+  );
+  if (!r.ok) return;
+  const lines = r.stdout.split("\n");
+  const props: Record<string, string> = {};
+  for (const ln of lines) {
+    const i = ln.indexOf("=");
+    if (i > 0) props[ln.slice(0, i)] = ln.slice(i + 1).trim();
+  }
+  const failed =
+    props.ActiveState === "failed" ||
+    props.SubState === "failed" ||
+    /start-limit/i.test(props.Result || "");
+  if (failed) {
+    log.push(
+      `⚠ unit em estado failed (Active=${props.ActiveState}, Sub=${props.SubState}, Result=${props.Result}); rodando reset-failed`,
+    );
+    await safeExec(`${systemctlCmd(scope, "reset-failed")} 2>&1`, 3000);
+  }
 }
 
 /**
@@ -228,13 +305,14 @@ export interface RestartResult {
  */
 export async function startGateway(): Promise<RestartResult> {
   const log: string[] = [];
+  const sweep = sweepBeforeRestart(log);
 
   // First check: anything alive? Don't double-start
   const existing = await findGatewayPids();
   if (existing.length > 0) {
     log.push(`✓ Gateway já está rodando (PIDs ${existing.join(", ")})`);
     log.push("Para forçar reinício, use o botão 'Reiniciar Gateway'.");
-    return { success: true, runtime: "process", output: log.join("\n") };
+    return { success: true, runtime: "process", output: log.join("\n"), sweep };
   }
 
   // systemd takes precedence if available
@@ -242,6 +320,7 @@ export async function startGateway(): Promise<RestartResult> {
   if (scope !== null) {
     const scopeLabel = scope === "user" ? "systemd --user" : "systemd (system)";
     log.push(`→ ${scopeLabel} unit detectada — usando \`${systemctlCmd(scope, "start")}\``);
+    await resetFailedIfStuck(scope, log);
     const r = await safeExec(`${systemctlCmd(scope, "start")} 2>&1`, 15000);
     if (r.ok) {
       const check = await safeExec(
@@ -250,7 +329,7 @@ export async function startGateway(): Promise<RestartResult> {
       );
       const state = check.stdout.trim();
       log.push(`systemctl start: ok · is-active=${state}`);
-      return { success: state === "active", runtime: "systemd", output: log.join("\n") };
+      return { success: state === "active", runtime: "systemd", output: log.join("\n"), sweep };
     }
     log.push(`systemctl start falhou: ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
     log.push("Tentando bootstrap via CLI…");
@@ -262,6 +341,7 @@ export async function startGateway(): Promise<RestartResult> {
     success: boot.success,
     runtime: boot.success ? "process" : "unknown",
     output: log.join("\n"),
+    sweep,
   };
 }
 
@@ -326,12 +406,14 @@ async function tryStartDaemon(log: string[]): Promise<{ success: boolean }> {
 
 export async function restartGateway(): Promise<RestartResult> {
   const log: string[] = [];
+  const sweep = sweepBeforeRestart(log);
 
   // ─── Strategy 1: systemd ──────────────────────────────────────
   const scope = await detectSystemdScope();
   if (scope !== null) {
     const scopeLabel = scope === "user" ? "--user" : "(system)";
     log.push(`→ systemd unit detectada (openclaw-gateway.service ${scopeLabel})`);
+    await resetFailedIfStuck(scope, log);
     const r = await safeExec(`${systemctlCmd(scope, "restart")} 2>&1`, 15000);
     if (r.ok) {
       const check = await safeExec(
@@ -344,6 +426,7 @@ export async function restartGateway(): Promise<RestartResult> {
         success: state === "active",
         runtime: "systemd",
         output: log.join("\n"),
+        sweep,
       };
     }
     log.push(`systemctl restart falhou: ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
@@ -360,7 +443,7 @@ export async function restartGateway(): Promise<RestartResult> {
     const tail = (r.stdout || r.stderr).trim().split("\n").slice(-8).join("\n");
     log.push(tail);
     if (r.ok) {
-      return { success: true, runtime: "pm2", output: log.join("\n") };
+      return { success: true, runtime: "pm2", output: log.join("\n"), sweep };
     }
     log.push("PM2 restart falhou, tentando próxima estratégia…");
   } else {
@@ -376,7 +459,7 @@ export async function restartGateway(): Promise<RestartResult> {
     log.push("Sugestões:");
     log.push("  - macOS/Windows: rode o gateway via PM2 ou systemd");
     log.push("  - Linux real: este servidor pode estar dentro de um container sem /proc");
-    return { success: false, runtime: "unknown", output: log.join("\n") };
+    return { success: false, runtime: "unknown", output: log.join("\n"), sweep };
   }
 
   const pids = await findGatewayPids();
@@ -385,13 +468,13 @@ export async function restartGateway(): Promise<RestartResult> {
     log.push("→ Tentando bootstrap com `openclaw daemon start`…");
     const boot = await tryStartDaemon(log);
     if (boot.success) {
-      return { success: true, runtime: "process", output: log.join("\n") };
+      return { success: true, runtime: "process", output: log.join("\n"), sweep };
     }
     log.push("Sugestões manuais:");
     log.push("  - SSH no servidor e rode: `openclaw daemon start`");
     log.push("  - Confirme que `openclaw` está no PATH: `command -v openclaw`");
     log.push("  - Veja o output do start: `openclaw daemon start 2>&1 | head -40`");
-    return { success: false, runtime: "unknown", output: log.join("\n") };
+    return { success: false, runtime: "unknown", output: log.join("\n"), sweep };
   }
 
   log.push(`Candidatos detectados: ${pids.join(", ")}`);
@@ -416,7 +499,7 @@ export async function restartGateway(): Promise<RestartResult> {
         "rodando como outro usuário, ou XDG_RUNTIME_DIR ausente).",
     );
     log.push("Recomendado: reinicie via SSH com `systemctl --user restart openclaw-gateway`.");
-    return { success: false, runtime: "systemd", output: log.join("\n") };
+    return { success: false, runtime: "systemd", output: log.join("\n"), sweep };
   }
   if (supervisedPids.length > 0) {
     log.push(
@@ -522,12 +605,12 @@ export async function restartGateway(): Promise<RestartResult> {
       continue;
     }
     log.push(`✓ Gateway online (PIDs ${alive.join(", ")})`);
-    return { success: true, runtime: "process", output: log.join("\n") };
+    return { success: true, runtime: "process", output: log.join("\n"), sweep };
   }
 
   log.push(`✗ Todos os ${targetPids.length} PID(s) elegíveis falharam. Último erro: ${lastErr}`);
   log.push("Tente: `openclaw daemon start` ou veja `pgrep -af openclaw`.");
-  return { success: false, runtime: "process", output: log.join("\n") };
+  return { success: false, runtime: "process", output: log.join("\n"), sweep };
 }
 
 export interface LogsResult {

@@ -46,6 +46,19 @@ export async function register(): Promise<void> {
     console.warn("[instrumentation] openclaw.json schema sweep failed:", err);
   }
 
+  // openclaw.json file watcher. Re-runs the sweep with a 3s debounce
+  // whenever the file changes, so external writers (jarvis-dashboard, manual
+  // edits, the gateway persisting session state during WhatsApp pairing)
+  // can't leave the config in a state that would crash the gateway on its
+  // next restart. Boot-time sweep above covers the cold start; this covers
+  // everything after.
+  try {
+    const { startOpenClawConfigWatcher } = await import("@/lib/openclaw-config-watcher");
+    startOpenClawConfigWatcher();
+  } catch (err) {
+    console.warn("[instrumentation] failed to start openclaw.json watcher:", err);
+  }
+
   // Telegram + OpenClaw watchdog. Boots here so auto-restart kicks in even
   // when the dashboard tab is closed (the bell GET would otherwise be the
   // only thing booting it).

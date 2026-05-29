@@ -21,6 +21,29 @@ import path from "path";
 import { addNotification } from "./notifications";
 import { runDiagnose, type DiagnosticCheck, type DiagnoseResponse } from "./telegram-diagnostic";
 import { startGateway, restartGateway, gatewayLogs } from "./gateway-control";
+import type { SweepResult } from "./openclaw-config-sweep";
+
+/**
+ * Short human-readable suffix added to bell notifications when an
+ * auto-restart ran the sweep. Surfacing this to the user explains *why* we
+ * had to restart — not just that we did. When the user sees "limpou:
+ * whatsapp" repeatedly across incidents, they know the source of the
+ * dirty config writes is something they need to fix (e.g. another
+ * product writing to openclaw.json).
+ */
+function formatSweepNote(sweep: SweepResult | undefined): string {
+  if (!sweep || !sweep.ran) return "";
+  const cleaned: string[] = [];
+  if (sweep.changedTelegram) cleaned.push("telegram");
+  if (sweep.changedWhatsapp) cleaned.push("whatsapp");
+  if (sweep.changedGatewayToolsAllow) cleaned.push("gateway.tools.allow");
+  if (sweep.changedPluginsEnabled?.length > 0) {
+    cleaned.push(`plugins.enabled (${sweep.changedPluginsEnabled.join("+")})`);
+  }
+  if (sweep.changedWhatsappChannelDefaults) cleaned.push("channels.whatsapp defaults");
+  if (cleaned.length === 0) return "";
+  return ` Antes disso o sweep removeu campos inválidos em: ${cleaned.join(", ")}.`;
+}
 
 const INCIDENTS_DIR = path.join(process.cwd(), "data", "incidents");
 
@@ -41,10 +64,14 @@ const AUTO_RESTART_COOLDOWN_MS = 5 * 60 * 1000; // wait 5 min between attempts; 
 // pending_update_count growing across consecutive ticks while the gateway
 // process is alive means the Telegram adapter inside the gateway has hung
 // (typical cause: 409 Conflict recovery loop, NAT/socket timeout on the
-// long-poll). Require N consecutive non-draining ticks before firing so
-// transient spikes don't trigger restarts.
-const STUCK_POLLER_MIN_PENDING = 1;       // ignore zero-traffic ticks
-const STUCK_POLLER_CONSECUTIVE = 2;       // 2 ticks = 4 minutes of non-draining
+// long-poll). Require N consecutive *growing* ticks before firing so
+// active conversations (where pending oscillates around 1) don't trigger
+// false-positive restarts. Tightened on 2026-05-29 after we observed the
+// watchdog killing the gateway during active chat: pending=1 for two ticks
+// was enough to fire under the old threshold, but pending=1 is the normal
+// steady state for a single in-flight message.
+const STUCK_POLLER_MIN_PENDING = 3;       // ignore light traffic ticks
+const STUCK_POLLER_CONSECUTIVE = 3;       // 3 ticks = 6 minutes of strictly-growing backlog
 const STUCK_POLLER_QUIET_MS = 10 * 60 * 1000; // re-arm: wait 10 min after a stuck-restart before re-flagging
 
 interface CheckMemory {
@@ -253,7 +280,12 @@ async function maybeAutoRestartStuckPoller(
       lastStuckRestartAt: 0,
     };
 
-    if (r.pendingUpdates >= STUCK_POLLER_MIN_PENDING && r.pendingUpdates >= mem.lastPending) {
+    // Strictly growing AND above threshold. The previous "growing-or-equal"
+    // rule mistook normal conversation rhythm (where pending stays at 1
+    // while the gateway processes each message inside a tick) for a stuck
+    // poller. A truly stuck poller will see pending climb monotonically
+    // because messages arrive but no offset commit drains them.
+    if (r.pendingUpdates >= STUCK_POLLER_MIN_PENDING && r.pendingUpdates > mem.lastPending) {
       mem.consecutiveNonDraining++;
     } else {
       mem.consecutiveNonDraining = 0;
@@ -312,21 +344,33 @@ async function maybeAutoRestartStuckPoller(
         mem.lastPending = 0;
       }
     }
+    const sweepNote = formatSweepNote(r.sweep);
     if (r.success) {
       await safeAddNotification(
         "🔄 Telegram reanimado automaticamente",
-        `Detectei polling travado (mensagens acumulando sem o gateway processar) na(s) conta(s) ${accountsLabel}. Reiniciei o gateway via ${r.runtime}. O bot deve voltar em alguns segundos.`,
+        `Polling travado em ${accountsLabel} — reiniciei o gateway via ${r.runtime}.${sweepNote} O bot deve voltar em alguns segundos.`,
         "success",
         "/settings?openDoctor=1",
-        { runtime: r.runtime, attempt: state.restartAttempts.length, reason: "stuck-poller", accounts: stuck },
+        {
+          runtime: r.runtime,
+          attempt: state.restartAttempts.length,
+          reason: "stuck-poller",
+          accounts: stuck,
+          sweep: r.sweep,
+        },
       );
     } else {
       await safeAddNotification(
         "⚠️ Falha ao reanimar Telegram",
-        `Detectei polling travado mas o restart automático falhou (${r.runtime}). Abre o Doctor pra reiniciar manualmente.`,
+        `Polling travado em ${accountsLabel} mas o restart automático falhou (${r.runtime}).${sweepNote} Abre o Doctor pra investigar.`,
         "error",
         "/settings?openDoctor=1",
-        { runtime: r.runtime, output: r.output.slice(0, 500), reason: "stuck-poller" },
+        {
+          runtime: r.runtime,
+          output: r.output.slice(0, 500),
+          reason: "stuck-poller",
+          sweep: r.sweep,
+        },
       );
       console.warn(
         `[health-monitor] stuck-poller restart falhou (${r.runtime}):\n${r.output}`,
@@ -374,15 +418,32 @@ async function maybeAutoRestartGateway(now: number): Promise<void> {
   });
   try {
     const r = await startGateway();
+    const sweepNote = formatSweepNote(r.sweep);
     if (r.success) {
       await safeAddNotification(
         "🤖 Gateway reanimado automaticamente",
-        `Detectei que o gateway do OpenClaw tinha caído e iniciei ele de novo (via ${r.runtime}). O bot do Telegram deve voltar a responder em alguns segundos.`,
+        `Gateway estava caído — iniciei de novo via ${r.runtime}.${sweepNote} O Telegram deve voltar em alguns segundos.`,
         "success",
         "/settings?openDoctor=1",
-        { runtime: r.runtime, attempt: state.restartAttempts.length },
+        {
+          runtime: r.runtime,
+          attempt: state.restartAttempts.length,
+          sweep: r.sweep,
+        },
       );
     } else {
+      await safeAddNotification(
+        "⚠️ Restart automático do gateway falhou",
+        `Tentativa ${state.restartAttempts.length}/${AUTO_RESTART_MAX_ATTEMPTS} via ${r.runtime} não voltou.${sweepNote} Veja o incident log mais recente.`,
+        "error",
+        "/settings?openDoctor=1",
+        {
+          runtime: r.runtime,
+          output: r.output.slice(0, 500),
+          attempt: state.restartAttempts.length,
+          sweep: r.sweep,
+        },
+      );
       console.warn(
         `[health-monitor] auto-restart tentativa ${state.restartAttempts.length}/${AUTO_RESTART_MAX_ATTEMPTS} falhou (${r.runtime}):\n${r.output}`,
       );
@@ -469,4 +530,37 @@ export async function triggerHealthCheck(): Promise<DiagnoseResponse | null> {
 /** Last cached report — synchronous, returns null until first tick lands. */
 export function getLastHealth(): DiagnoseResponse | null {
   return state.lastDiagnose;
+}
+
+/**
+ * Snapshot of the auto-restart watchdog for the diagnose endpoint. We
+ * expose the raw attempt timestamps + circuit-breaker fields so the user
+ * can see how close we are to "giving up" without having to read code.
+ */
+export function getWatchdogState(): {
+  started: boolean;
+  lastTickAt: number;
+  restartAttempts: number[];
+  restartAttemptsCount: number;
+  restartLimit: number;
+  windowMs: number;
+  cooldownMs: number;
+  circuitOpen: boolean;
+  circuitOpenNotifiedAt: number;
+  restartInFlight: boolean;
+} {
+  const now = Date.now();
+  const recentAttempts = state.restartAttempts.filter((t) => now - t < AUTO_RESTART_WINDOW_MS);
+  return {
+    started: state.started,
+    lastTickAt: state.lastTickAt,
+    restartAttempts: state.restartAttempts,
+    restartAttemptsCount: recentAttempts.length,
+    restartLimit: AUTO_RESTART_MAX_ATTEMPTS,
+    windowMs: AUTO_RESTART_WINDOW_MS,
+    cooldownMs: AUTO_RESTART_COOLDOWN_MS,
+    circuitOpen: recentAttempts.length >= AUTO_RESTART_MAX_ATTEMPTS,
+    circuitOpenNotifiedAt: state.circuitOpenNotifiedAt,
+    restartInFlight: state.restartInFlight,
+  };
 }
