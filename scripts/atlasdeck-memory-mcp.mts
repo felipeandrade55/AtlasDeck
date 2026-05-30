@@ -854,6 +854,150 @@ server.registerTool(
   },
 );
 
+// ─── WhatsApp operation mode get/set ────────────────────────────────────
+// Lets the user say "muda o whatsapp pro modo passivo" via Telegram or
+// WhatsApp itself and the agent flips it without any UI/curl.
+server.registerTool(
+  "whatsapp_mode_get",
+  {
+    title: "Retorna o modo de operação atual do WhatsApp",
+    description:
+      "Use quando Felipe perguntar 'qual o modo do whatsapp', 'como o bot tá respondendo no whatsapp', 'tá passivo ou ativo'. Retorna o modo (passive/owner/assistant/open/pairing) + descrição do que ele faz + se o dono está cadastrado.",
+    inputSchema: {
+      accountId: z
+        .string()
+        .optional()
+        .describe("ID da conta WhatsApp (padrão: 'main')."),
+    },
+  },
+  async (args) => {
+    try {
+      const accountId = args.accountId || "main";
+      const res = await fetch(
+        `${ATLASDECK_BASE_URL.replace(/\/$/, "")}/api/integrations/whatsapp?live=0`,
+        { headers: { Accept: "application/json" } },
+      );
+      const json = (await res.json()) as {
+        config?: { enabled?: boolean; dmPolicy?: string };
+        accounts?: Array<{
+          id: string;
+          operationMode?: string;
+          phoneNumber?: string | null;
+          sessionStatus?: string;
+        }>;
+      };
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const account = json.accounts?.find((a) => a.id === accountId) || json.accounts?.[0];
+      const mode = account?.operationMode || "passive";
+      const describe: Record<string, string> = {
+        passive: "Bot conectado mas SILENCIOSO — não lê, não responde, não reage.",
+        owner: "Bot responde COMO Felipe (primeira pessoa, voz clonada em áudio).",
+        assistant:
+          "Bot responde como ASSESSOR do Felipe (terceira pessoa, anota recados, marca agenda).",
+        open: "Bot responde com a voz padrão do agente (sem persona).",
+        pairing:
+          "LEGADO — desconhecidos recebem código de pareamento (pode spammar contatos).",
+      };
+      // Also probe owner phone setup so the get returns enough context
+      // for the agent to give a complete status report in one shot.
+      const owner = memoryDb.getSettings().owner_whatsapp_number?.trim() || null;
+      return asJson({
+        ok: true,
+        mode,
+        description: describe[mode] ?? mode,
+        accountId: account?.id ?? accountId,
+        phoneNumber: account?.phoneNumber ?? null,
+        sessionStatus: account?.sessionStatus ?? "unknown",
+        channelEnabled: json.config?.enabled ?? false,
+        ownerPhoneConfigured: !!owner,
+        ownerPhone: owner,
+      });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
+server.registerTool(
+  "whatsapp_mode_set",
+  {
+    title: "Muda o modo de operação do WhatsApp",
+    description:
+      "Use quando Felipe pedir 'muda o whatsapp pro modo X', 'ativa modo assessor no whatsapp', 'desliga o bot do whatsapp' (=passive), 'tô ocupado, manda o assessor atender' (=assistant), 'volta a responder normal' (=owner ou open). SEMPRE confirme com Felipe ANTES de mudar pra um modo que faz o bot responder (owner/assistant/open) se ele estiver atualmente em passive — não queremos surpresas. Depois de mudar, o gateway precisa reiniciar (este tool faz isso automaticamente quando restart=true).",
+    inputSchema: {
+      mode: z
+        .enum(["passive", "owner", "assistant", "open", "pairing"])
+        .describe(
+          "passive=silencioso (default), owner=responde como Felipe, assistant=assessor, open=voz padrão do agente, pairing=legado.",
+        ),
+      restart: z
+        .boolean()
+        .optional()
+        .describe(
+          "Reinicia o gateway depois de salvar (padrão: true). Sem restart, a mudança não vale até o próximo reload.",
+        ),
+      accountId: z.string().optional().describe("ID da conta WhatsApp (padrão: 'main')."),
+    },
+  },
+  async (args) => {
+    try {
+      const res = await fetch(
+        `${ATLASDECK_BASE_URL.replace(/\/$/, "")}/api/integrations/whatsapp/mode`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: args.mode, accountId: args.accountId || "main" }),
+        },
+      );
+      const json = (await res.json()) as {
+        ok?: boolean;
+        applied?: Record<string, unknown>;
+        error?: string;
+      };
+      if (!res.ok || !json.ok) {
+        return asError(json.error || `HTTP ${res.status}`);
+      }
+
+      // Optional restart so the agent doesn't have to chain a second tool
+      // call after every mode change. Failure here is non-fatal — the
+      // config was saved either way, restart can happen later.
+      let restartOk: boolean | null = null;
+      let restartNote = "";
+      if (args.restart !== false) {
+        try {
+          const r = await fetch(
+            `${ATLASDECK_BASE_URL.replace(/\/$/, "")}/api/recovery/action`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "gateway-restart" }),
+            },
+          );
+          const rj = (await r.json()) as { success?: boolean; error?: string };
+          restartOk = r.ok && !!rj.success;
+          restartNote = restartOk ? "gateway reiniciado" : rj.error || "restart falhou";
+        } catch (e) {
+          restartOk = false;
+          restartNote = e instanceof Error ? e.message : String(e);
+        }
+      }
+
+      return asJson({
+        ok: true,
+        mode: args.mode,
+        applied: json.applied,
+        restart: { performed: args.restart !== false, ok: restartOk, note: restartNote },
+        hint:
+          args.mode === "passive"
+            ? "Modo passivo ativo. Bot não vai mais ler nem responder nada no WhatsApp."
+            : `Modo ${args.mode} aplicado. Bot vai começar a responder no próximo DM recebido.`,
+      });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
 server.registerTool(
   "get_owner_phone",
   {

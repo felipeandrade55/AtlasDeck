@@ -82,6 +82,14 @@ export async function POST(req: NextRequest) {
     wa.groupPolicy = applied.groupPolicy;
     if (applied.groupAllowFrom.length > 0) wa.groupAllowFrom = applied.groupAllowFrom;
     else delete wa.groupAllowFrom;
+
+    // Silence-level knobs (passive forces all off, active modes keep on).
+    wa.sendReadReceipts = applied.sendReadReceipts;
+    wa.reactionLevel = applied.reactionLevel;
+    wa.replyToMode = applied.replyToMode;
+    wa.ackReaction = applied.ackReaction;
+    wa.actions = applied.actions;
+
     raw.channels.whatsapp = wa;
 
     // Wire Fish-Audio cloned voice into agents.list[main].tts so OpenClaw's

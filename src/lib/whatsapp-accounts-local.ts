@@ -150,6 +150,29 @@ export interface OperationModeApplied {
    *  cloned Fish Audio voice. Only owner mode wants this — assistant stays
    *  text-only because the assessor speaks for Felipe, not AS Felipe. */
   wantsClonedVoiceReply: boolean;
+  /** Send WhatsApp "read receipts" (✓✓ blue ticks) to the sender. When
+   *  false, the sender literally cannot tell the bot saw their message
+   *  — true silent mode. Passive forces false; active modes leave true
+   *  so the human Felipe sees feedback that the bot is engaged. */
+  sendReadReceipts: boolean;
+  /** Emoji reactions the bot may add to inbound messages. "off" disables
+   *  all reactions — passive needs this so the bot doesn't accidentally
+   *  emoji someone's text. Active modes use "ack" for a subtle eye on
+   *  delivery, advanced modes use "extensive" for sentiment etc. */
+  reactionLevel: "off" | "ack" | "minimal" | "extensive";
+  /** "off" disables auto-replies entirely. "first" = reply to first msg
+   *  in a burst, "batched" = wait for the burst to settle then reply
+   *  once, "all" = noisy reply-to-every-message. Passive uses "off". */
+  replyToMode: "off" | "first" | "all" | "batched";
+  /** Ack-reaction sub-config (the small emoji the bot adds when it
+   *  "received" a message). Schema requires `direct` and `group` even
+   *  when reactionLevel is "off" — pass {direct:false, group:"never"}
+   *  for passive to be schema-compliant AND visually silent. */
+  ackReaction: { direct: boolean; group: "always" | "mentions" | "never"; emoji?: string };
+  /** Outbound action permissions. Passive disables ALL outbound actions
+   *  (no sendMessage, no reactions, no polls) as a hard safety net in
+   *  case some upstream code tries to push a message anyway. */
+  actions: { reactions: boolean; sendMessage: boolean; polls: boolean };
 }
 
 /**
@@ -199,6 +222,11 @@ export function operationModeToChannelConfig(mode: WhatsappOperationMode | undef
         // re-synthesized to Felipe's cloned voice when the inbound was
         // audio. The caller wires agents.list[main].tts.* from this flag.
         wantsClonedVoiceReply: true,
+        sendReadReceipts: true,
+        reactionLevel: "ack",
+        replyToMode: "batched",
+        ackReaction: { direct: true, group: "mentions", emoji: "👀" },
+        actions: { reactions: true, sendMessage: true, polls: false },
       };
     }
     case "assistant": {
@@ -244,6 +272,11 @@ export function operationModeToChannelConfig(mode: WhatsappOperationMode | undef
         // Assistant speaks FOR Felipe, not AS Felipe — keep text-only so
         // the voice never gets confused for the real person.
         wantsClonedVoiceReply: false,
+        sendReadReceipts: true,
+        reactionLevel: "ack",
+        replyToMode: "first",
+        ackReaction: { direct: true, group: "mentions", emoji: "📝" },
+        actions: { reactions: true, sendMessage: true, polls: false },
       };
     }
     case "open":
@@ -254,6 +287,11 @@ export function operationModeToChannelConfig(mode: WhatsappOperationMode | undef
         groupAllowFrom: [],
         messagePrefix: SHARED_RULES,
         wantsClonedVoiceReply: false,
+        sendReadReceipts: true,
+        reactionLevel: "ack",
+        replyToMode: "first",
+        ackReaction: { direct: true, group: "mentions" },
+        actions: { reactions: true, sendMessage: true, polls: true },
       };
     case "pairing":
       return {
@@ -263,12 +301,27 @@ export function operationModeToChannelConfig(mode: WhatsappOperationMode | undef
         groupAllowFrom: [],
         messagePrefix: "",
         wantsClonedVoiceReply: false,
+        sendReadReceipts: true,
+        reactionLevel: "ack",
+        replyToMode: "first",
+        ackReaction: { direct: true, group: "mentions" },
+        actions: { reactions: true, sendMessage: true, polls: true },
       };
     case "passive":
     default:
-      // Default-safe: bot is connected but never replies. Even if mode is
-      // undefined we land here — that's the whole point of having a sane
-      // default for users who haven't picked yet.
+      // TRUE SILENT MODE — every observable signal off. Gateway still
+      // receives messages over the Baileys socket (required for the
+      // session to stay alive), but does not:
+      //   • route them to the agent (dmPolicy + groupPolicy = disabled)
+      //   • mark them read on WhatsApp (sendReadReceipts = false →
+      //     senders see one gray ✓, NOT the double-blue ✓✓)
+      //   • emoji-react to them (reactionLevel + ackReaction)
+      //   • generate replies (replyToMode = off)
+      //   • allow any outbound action (actions.* = false — hard fence
+      //     even if some upstream code tries to push a message anyway)
+      // selfChatMode also off so commands from Felipe's own number
+      // arrive nowhere — he has to use Telegram or the AtlasDeck UI to
+      // leave passive mode.
       return {
         dmPolicy: "disabled",
         selfChatMode: false,
@@ -276,6 +329,11 @@ export function operationModeToChannelConfig(mode: WhatsappOperationMode | undef
         groupAllowFrom: [],
         messagePrefix: "",
         wantsClonedVoiceReply: false,
+        sendReadReceipts: false,
+        reactionLevel: "off",
+        replyToMode: "off",
+        ackReaction: { direct: false, group: "never" },
+        actions: { reactions: false, sendMessage: false, polls: false },
       };
   }
 }

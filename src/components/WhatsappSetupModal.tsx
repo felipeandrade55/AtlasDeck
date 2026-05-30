@@ -83,8 +83,8 @@ const OPERATION_MODES: Array<{
 }> = [
   {
     value: "passive",
-    label: "🔇 Passivo (recomendado — bot recebe mas não responde)",
-    hint: "DMs entregues à conta WhatsApp não são roteadas pro agente. Grupos também ignorados. Ninguém recebe resposta automática.",
+    label: "🔇 Passivo (recomendado — silêncio absoluto)",
+    hint: "Bot conectado mas INVISÍVEL: não roteia DMs nem grupos pro agente, NÃO envia read-receipts (sender não vê ✓✓ azul), NÃO reage com emoji, NÃO envia mensagem nenhuma. Pra sair do passivo, use Telegram, o modal aqui, ou peça pro bot via Telegram 'muda o whatsapp pra modo X'.",
   },
   {
     value: "owner",

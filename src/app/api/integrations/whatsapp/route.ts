@@ -299,6 +299,15 @@ export async function PUT(req: NextRequest) {
       if (applied.groupAllowFrom.length > 0) wa.groupAllowFrom = applied.groupAllowFrom;
       else delete wa.groupAllowFrom;
 
+      // Silence-level knobs. Passive forces ALL off so the bot is
+      // invisible (no read receipts, no reactions, no replies, no
+      // outbound). Active modes keep them on for normal UX.
+      wa.sendReadReceipts = applied.sendReadReceipts;
+      wa.reactionLevel = applied.reactionLevel;
+      wa.replyToMode = applied.replyToMode;
+      wa.ackReaction = applied.ackReaction;
+      wa.actions = applied.actions;
+
       // Agent-level TTS wire-up: only owner mode wants Fish-Audio cloned
       // voice on inbound-audio replies. Build the block from saved
       // settings; if user hasn't configured Fish Audio yet, applyAgentTtsBlock
