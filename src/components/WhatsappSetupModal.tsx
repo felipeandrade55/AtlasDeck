@@ -122,6 +122,11 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
   // Mode chosen at the channel level. Defaults to "passive" so a freshly-
   // configured WhatsApp instance never replies until the user picks a mode.
   const [globalOperationMode, setGlobalOperationMode] = useState<OperationMode>("passive");
+  // Owner WhatsApp number (allowlist for admin commands in Assessor mode).
+  // Loaded from /api/settings/owner-phone on open; auto-suggested from the
+  // first account's phoneNumber when the user hasn't set one yet.
+  const [ownerPhone, setOwnerPhone] = useState<string>("");
+  const [ownerPhoneLoaded, setOwnerPhoneLoaded] = useState<boolean>(false);
   const [drafts, setDrafts] = useState<AccountDraft[]>([]);
 
   const [saving, setSaving] = useState(false);
@@ -292,6 +297,25 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
       // for WhatsApp). Falls back to the channel-level inference.
       const firstMode = json.accounts[0]?.operationMode as OperationMode | undefined;
       setGlobalOperationMode(firstMode ?? fromChannel);
+
+      // Hydrate owner phone (best-effort — separate endpoint). If not set
+      // yet and the user has at least one account phoneNumber, suggest it
+      // so the modal nudges them to mark themselves as the owner.
+      try {
+        const owner = await fetch("/api/settings/owner-phone", { cache: "no-store" });
+        const ownerJson = (await owner.json()) as { ownerPhone?: string | null };
+        const stored = ownerJson.ownerPhone || "";
+        if (stored) {
+          setOwnerPhone(stored);
+        } else {
+          const suggested = json.accounts[0]?.phoneNumber || "";
+          setOwnerPhone(suggested);
+        }
+      } catch {
+        // ignore — field stays at whatever the user typed
+      } finally {
+        setOwnerPhoneLoaded(true);
+      }
       setDrafts(
         json.accounts.map((a) => ({
           id: a.id,
@@ -478,6 +502,20 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+
+      // Persist owner phone in parallel (separate endpoint so the WhatsApp
+      // PUT stays focused on channel/account fields). Failure here doesn't
+      // roll the whatsapp save back — the user can re-edit and resave.
+      try {
+        await fetch("/api/settings/owner-phone", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ownerPhone: ownerPhone.trim() || null }),
+        });
+      } catch (e) {
+        console.error("owner-phone save failed:", e);
+      }
+
       setSaveMsg({ kind: "ok", text: "Configuração salva" });
       await refresh();
       if (autoRestart) {
@@ -806,6 +844,26 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
                   </select>
                   <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
                     {OPERATION_MODES.find((m) => m.value === globalOperationMode)?.hint}
+                  </p>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-sm block" style={{ color: "var(--text-secondary)" }}>
+                    Telefone do dono (você) — allowlist de comandos administrativos
+                  </label>
+                  <input
+                    value={ownerPhone}
+                    onChange={(e) => setOwnerPhone(e.target.value.replace(/\D/g, ""))}
+                    placeholder="ex: 5564992224800 (DDI+DDD+número, só dígitos)"
+                    className="w-full rounded px-2 py-1.5 text-sm font-mono"
+                    style={{ backgroundColor: "rgba(0,0,0,0.3)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+                  />
+                  <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                    {ownerPhoneLoaded && !ownerPhone
+                      ? "Sem dono cadastrado: no modo Assessor o agente recusa TODOS os comandos administrativos por DM."
+                      : ownerPhone
+                        ? `Comandos admin (mudar config, reiniciar, etc) só são aceitos quando vêm de ${ownerPhone}@s.whatsapp.net. Outros números recebem 'isso é com o Felipe — vou avisar'.`
+                        : "Carregando…"}
                   </p>
                 </div>
               </div>

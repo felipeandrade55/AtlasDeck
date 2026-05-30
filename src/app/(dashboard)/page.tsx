@@ -7,6 +7,7 @@ import { ActivityFeed } from "@/components/ActivityFeed";
 import { WeatherWidget } from "@/components/WeatherWidget";
 import { CostWidget } from "@/components/CostWidget";
 import { Notepad } from "@/components/Notepad";
+import { BriefingCard } from "@/components/BriefingCard";
 import {
   Activity,
   CheckCircle,
@@ -144,9 +145,14 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Cost Summary */}
-      <div className="mb-4 md:mb-6">
-        <CostWidget />
+      {/* Cost Summary + Briefing side-by-side on wide screens */}
+      <div className="mb-4 md:mb-6 grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6">
+        <div className="lg:col-span-2">
+          <CostWidget />
+        </div>
+        <div className="lg:col-span-1">
+          <BriefingCard />
+        </div>
       </div>
 
       {/* Multi-Agent Status */}
