@@ -144,6 +144,12 @@ export interface OperationModeApplied {
    *  accepts inbound but the prompt enforces "respond only when mentioned". */
   groupPolicy: "open" | "disabled" | "allowlist";
   groupAllowFrom: string[];
+  /** Per the @openclaw/whatsapp uiHints, dmPolicy="open" ONLY actually
+   *  routes DMs when channels.whatsapp.allowFrom contains "*" (or specific
+   *  numbers). Without this the gateway accepts inbound but drops on the
+   *  filter — exactly the "6 inbound, 0 dispatch" symptom we hit. We set
+   *  ["*"] for every mode that wants the agent to see DMs. */
+  allowFrom: string[];
   messagePrefix: string;
   /** When true, the caller should write `agents.list[main].tts` so OpenClaw's
    *  dispatch auto-applies TTS to inbound-audio replies using the user's
@@ -214,6 +220,10 @@ export function operationModeToChannelConfig(mode: WhatsappOperationMode | undef
       ].join("\n");
       return {
         dmPolicy: "open",
+        // dmPolicy="open" + allowFrom=["*"] is the schema-required combo
+        // for "everyone can DM the bot" — without the allowFrom wildcard
+        // the gateway accepts inbound but filters them out silently.
+        allowFrom: ["*"],
         selfChatMode: true,
         groupPolicy: "allowlist",
         groupAllowFrom: ["*"],
@@ -265,6 +275,7 @@ export function operationModeToChannelConfig(mode: WhatsappOperationMode | undef
       ].join("\n");
       return {
         dmPolicy: "open",
+        allowFrom: ["*"],
         selfChatMode: true, // permite Felipe pedir briefing do próprio número
         groupPolicy: "allowlist",
         groupAllowFrom: ["*"],
@@ -282,6 +293,7 @@ export function operationModeToChannelConfig(mode: WhatsappOperationMode | undef
     case "open":
       return {
         dmPolicy: "open",
+        allowFrom: ["*"],
         selfChatMode: false,
         groupPolicy: "open",
         groupAllowFrom: [],
@@ -296,6 +308,9 @@ export function operationModeToChannelConfig(mode: WhatsappOperationMode | undef
     case "pairing":
       return {
         dmPolicy: "pairing",
+        // Pairing manages its own allowlist (per-sender approval flow).
+        // Leave allowFrom empty so the pairing system fully owns it.
+        allowFrom: [],
         selfChatMode: false,
         groupPolicy: "allowlist",
         groupAllowFrom: [],
@@ -324,6 +339,10 @@ export function operationModeToChannelConfig(mode: WhatsappOperationMode | undef
       // leave passive mode.
       return {
         dmPolicy: "disabled",
+        // Passive doesn't need allowFrom — dmPolicy=disabled already
+        // blocks every inbound at the channel layer. Empty array is
+        // safe; the schema doesn't require it.
+        allowFrom: [],
         selfChatMode: false,
         groupPolicy: "disabled",
         groupAllowFrom: [],

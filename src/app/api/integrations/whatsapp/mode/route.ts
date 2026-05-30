@@ -83,6 +83,11 @@ export async function POST(req: NextRequest) {
     if (applied.groupAllowFrom.length > 0) wa.groupAllowFrom = applied.groupAllowFrom;
     else delete wa.groupAllowFrom;
 
+    // dmPolicy="open" requires allowFrom=["*"] (plugin uiHint) — without
+    // it the gateway accepts DMs but filters them out (no dispatch).
+    if (applied.allowFrom.length > 0) wa.allowFrom = applied.allowFrom;
+    else delete wa.allowFrom;
+
     // Silence-level knobs (passive forces all off, active modes keep on).
     wa.sendReadReceipts = applied.sendReadReceipts;
     wa.reactionLevel = applied.reactionLevel;

@@ -57,6 +57,7 @@ function readWhatsappConfig(): Record<string, unknown> {
     return {
       enabled: wa.enabled,
       dmPolicy: wa.dmPolicy,
+      allowFrom: wa.allowFrom,
       groupPolicy: wa.groupPolicy,
       groupAllowFrom: wa.groupAllowFrom,
       selfChatMode: wa.selfChatMode,
@@ -163,6 +164,30 @@ export async function POST() {
         detail:
           "Você provavelmente está no modo Passivo. Mude pro modo Owner/Assistant/Open no dropdown e salve.",
       });
+    } else if (cfg.dmPolicy === "open") {
+      const allowFrom = Array.isArray(cfg.allowFrom) ? (cfg.allowFrom as string[]) : [];
+      if (allowFrom.length === 0) {
+        findings.push({
+          severity: "fail",
+          area: "config",
+          message:
+            'dmPolicy="open" MAS channels.whatsapp.allowFrom está vazio — o plugin do WhatsApp filtra TODOS os DMs nessa combinação. Inbound chega mas nada vai pro agente.',
+          detail:
+            "Salve o modo de novo (Owner/Assistant/Open) ou clique Reparar config — a versão atual da operationModeToChannelConfig adiciona allowFrom=['*'] automaticamente.",
+        });
+      } else if (allowFrom.includes("*")) {
+        findings.push({
+          severity: "ok",
+          area: "config",
+          message: `dmPolicy="open" + allowFrom=["*"] — qualquer pessoa pode mandar DM pro bot.`,
+        });
+      } else {
+        findings.push({
+          severity: "warn",
+          area: "config",
+          message: `dmPolicy="open" + allowFrom restrito a ${allowFrom.length} número(s). Apenas esses passam: ${allowFrom.slice(0, 5).join(", ")}${allowFrom.length > 5 ? "…" : ""}`,
+        });
+      }
     } else {
       findings.push({
         severity: "ok",

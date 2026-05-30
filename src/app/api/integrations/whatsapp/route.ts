@@ -299,6 +299,13 @@ export async function PUT(req: NextRequest) {
       if (applied.groupAllowFrom.length > 0) wa.groupAllowFrom = applied.groupAllowFrom;
       else delete wa.groupAllowFrom;
 
+      // dmPolicy="open" REQUIRES allowFrom=["*"] per the plugin uiHint —
+      // without it the gateway silently drops every DM (6 inbound, 0
+      // dispatch). For passive/pairing we leave allowFrom unset so the
+      // respective policy owns the allow list.
+      if (applied.allowFrom.length > 0) wa.allowFrom = applied.allowFrom;
+      else delete wa.allowFrom;
+
       // Silence-level knobs. Passive forces ALL off so the bot is
       // invisible (no read receipts, no reactions, no replies, no
       // outbound). Active modes keep them on for normal UX.
