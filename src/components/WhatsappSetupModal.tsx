@@ -946,13 +946,21 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
                           {/* Form */}
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                             <label className="block text-xs space-y-1">
-                              <span style={{ color: "var(--text-secondary)" }}>Número de Telefone de Origem (ID ou Número)</span>
+                              <span style={{ color: "var(--text-secondary)" }}>
+                                Número desta conta
+                                {live?.sessionStatus === "connected" && (
+                                  <span className="ml-1 text-[10px]" style={{ color: "#34d399" }}>
+                                    (detectado da sessão Baileys)
+                                  </span>
+                                )}
+                              </span>
                               <input
                                 value={d.phoneNumber}
                                 onChange={(e) => updateDraft(d.id, { phoneNumber: e.target.value })}
                                 placeholder="ex: 5511999999999"
                                 className="w-full rounded px-2 py-1.5 text-sm font-mono"
                                 style={{ backgroundColor: "rgba(0,0,0,0.3)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+                                title="Rótulo informativo desta conta. Depois do pareamento, o número real vem do creds.json do Baileys — este campo só é usado pra preencher 'Telefone do dono' automaticamente."
                               />
                             </label>
 
@@ -978,26 +986,53 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
                                   </button>
                                 )}
                               </div>
-                            </label>
-
-                            <label className="block text-xs space-y-1">
-                              <span style={{ color: "var(--text-secondary)" }}>Modo de operação desta conta</span>
-                              <select
-                                value={d.operationMode}
-                                onChange={(e) =>
-                                  updateDraft(d.id, { operationMode: e.target.value as OperationMode })
-                                }
-                                className="w-full rounded px-2 py-1.5 text-sm"
-                                style={{ backgroundColor: "rgba(0,0,0,0.3)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-                              >
-                                {OPERATION_MODES.map((m) => (
-                                  <option key={m.value} value={m.value}>{m.label}</option>
-                                ))}
-                              </select>
                               <span className="text-[10px] block" style={{ color: "var(--text-muted)" }}>
-                                {OPERATION_MODES.find((m) => m.value === d.operationMode)?.hint}
+                                Pra onde o bot manda alertas proativos (custo, briefing) sem você pedir.
                               </span>
                             </label>
+
+                            {/* Per-account mode override — only shown in MULTI-account
+                                setups. With one account it would just duplicate the
+                                global mode dropdown above. */}
+                            {drafts.filter((x) => !x.isNew || x.id === d.id).length > 1 ? (
+                              <label className="block text-xs space-y-1">
+                                <span style={{ color: "var(--text-secondary)" }}>
+                                  Modo desta conta (override do global)
+                                </span>
+                                <select
+                                  value={d.operationMode}
+                                  onChange={(e) =>
+                                    updateDraft(d.id, { operationMode: e.target.value as OperationMode })
+                                  }
+                                  className="w-full rounded px-2 py-1.5 text-sm"
+                                  style={{ backgroundColor: "rgba(0,0,0,0.3)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+                                >
+                                  {OPERATION_MODES.map((m) => (
+                                    <option key={m.value} value={m.value}>{m.label}</option>
+                                  ))}
+                                </select>
+                                <span className="text-[10px] block" style={{ color: "var(--text-muted)" }}>
+                                  {OPERATION_MODES.find((m) => m.value === d.operationMode)?.hint}
+                                </span>
+                              </label>
+                            ) : (
+                              <div
+                                className="text-[11px] flex items-center gap-1.5 p-2 rounded md:col-span-1"
+                                style={{
+                                  color: "var(--text-muted)",
+                                  backgroundColor: "rgba(255,255,255,0.02)",
+                                  border: "1px dashed var(--border)",
+                                }}
+                              >
+                                <span>
+                                  Modo: <strong style={{ color: "var(--text-secondary)" }}>{
+                                    OPERATION_MODES.find((m) => m.value === d.operationMode)?.label
+                                  }</strong>
+                                  <br />
+                                  Com 1 conta só, o modo desta conta segue o <strong>Modo global</strong> acima.
+                                </span>
+                              </div>
+                            )}
                           </div>
 
                           {/* Diagnostics Block */}
