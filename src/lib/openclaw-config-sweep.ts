@@ -82,12 +82,26 @@ function ensureWhatsappChannelDefaults(raw: Record<string, unknown>): boolean {
   const channels = (raw.channels && typeof raw.channels === "object" ? raw.channels : {}) as Record<string, unknown>;
   const wa = (channels.whatsapp && typeof channels.whatsapp === "object" ? channels.whatsapp : {}) as Record<string, unknown>;
 
+  // SAFE-BY-DEFAULT: dmPolicy=disabled means the bot stays connected but
+  // never replies. We used to default to "pairing", but that made every
+  // unknown sender receive the "OpenClaw: access not configured. Pairing
+  // code: …" message — which spams the owner's contacts. New accounts
+  // should be passive until the user explicitly opens them via the
+  // operation-mode dropdown in the WhatsApp modal.
   const defaults: Record<string, unknown> = {
-    dmPolicy: "pairing",
+    dmPolicy: "disabled",
     groupPolicy: "allowlist",
     debounceMs: 0,
     mediaMaxMb: 50,
   };
+
+  // Normalize legacy/invalid dmPolicy values. AtlasDeck UI used to ship
+  // an "off" option that isn't in OpenClaw's enum (pairing|allowlist|
+  // open|disabled) — the gateway silently fell back to "pairing", which
+  // is why the bot blasted pairing codes. Translate "off"→"disabled".
+  if (wa.dmPolicy === "off") {
+    wa.dmPolicy = "disabled";
+  }
 
   let changed = false;
   const next: Record<string, unknown> = { ...wa };
@@ -96,6 +110,10 @@ function ensureWhatsappChannelDefaults(raw: Record<string, unknown>): boolean {
       next[key] = value;
       changed = true;
     }
+  }
+  if (next.dmPolicy === "off") {
+    next.dmPolicy = "disabled";
+    changed = true;
   }
   if (!changed) return false;
 

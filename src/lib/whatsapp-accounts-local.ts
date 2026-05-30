@@ -18,10 +18,41 @@ import path from "path";
 
 const LOCAL_PATH = path.join(process.cwd(), "data", "whatsapp-accounts.json");
 
+/**
+ * High-level "operation mode" that maps onto OpenClaw's lower-level
+ * channel-config knobs (dmPolicy + messagePrefix) so the user thinks in
+ * intent ("modo passivo", "responde como você") instead of in plumbing.
+ *
+ *  - "passive"   → dmPolicy=disabled. Gateway accepts the message but
+ *                  never hands it to the agent — bot is connected and
+ *                  silent. This is the default for a freshly-paired
+ *                  account so the bot can't blast pairing codes at the
+ *                  user's WhatsApp contacts before they configure it.
+ *  - "owner"     → dmPolicy=open + messagePrefix injects a persona note
+ *                  telling the agent to answer in first person as the
+ *                  owner ("seja Felipe respondendo direto").
+ *  - "assistant" → dmPolicy=open + messagePrefix injects "responda como
+ *                  assessor do Felipe em terceira pessoa".
+ *  - "open"      → dmPolicy=open, no prefix. Bot replies in its default
+ *                  agent voice. Useful for sandboxes, not for personal
+ *                  WhatsApp numbers.
+ *  - "pairing"   → dmPolicy=pairing. Legacy behavior — sender gets a
+ *                  pairing code to forward to the bot owner. Exposed
+ *                  for users who actually want it, but NOT the default.
+ */
+export type WhatsappOperationMode =
+  | "passive"
+  | "owner"
+  | "assistant"
+  | "open"
+  | "pairing";
+
 export interface WhatsappAccountLocal {
   chatId?: string;
+  /** Legacy raw dmPolicy. Kept for read-side fallback during migration. */
   dmPolicy?: string;
   phoneNumber?: string;
+  operationMode?: WhatsappOperationMode;
 }
 
 function readAll(): Record<string, WhatsappAccountLocal> {
@@ -72,6 +103,12 @@ export function setWhatsappAccountLocal(id: string, patch: WhatsappAccountLocal)
       delete next.phoneNumber;
     }
   }
+  if (typeof patch.operationMode === "string") {
+    const v = patch.operationMode as WhatsappOperationMode;
+    if (v === "passive" || v === "owner" || v === "assistant" || v === "open" || v === "pairing") {
+      next.operationMode = v;
+    }
+  }
   if (Object.keys(next).length === 0) {
     if (id in all) {
       delete all[id];
@@ -81,6 +118,50 @@ export function setWhatsappAccountLocal(id: string, patch: WhatsappAccountLocal)
   }
   all[id] = next;
   writeAll(all);
+}
+
+/**
+ * Translate an operationMode into the OpenClaw channel-config it needs.
+ * The resulting object is what AtlasDeck writes into
+ * `channels.whatsapp` (channel-level) when the user picks a mode in the
+ * setup modal — so the runtime gateway sees the right dmPolicy and the
+ * agent receives the persona hint inline with every inbound DM.
+ *
+ * Note: the persona prefix is added on the CHANNEL-level messagePrefix
+ * (applies to every inbound DM/group message). When the user wants
+ * different personas per chat, override at `channels.whatsapp.direct.<id>`
+ * later — this is the "default voice" for the account.
+ */
+export interface OperationModeApplied {
+  dmPolicy: "disabled" | "open" | "pairing";
+  messagePrefix: string;
+}
+
+export function operationModeToChannelConfig(mode: WhatsappOperationMode | undefined): OperationModeApplied {
+  switch (mode) {
+    case "owner":
+      return {
+        dmPolicy: "open",
+        messagePrefix:
+          "[Modo Pessoal — responda em PRIMEIRA PESSOA como Felipe Andrade, em tom direto e casual. Não diga que é assistente nem bot. Use 'eu' naturalmente.] ",
+      };
+    case "assistant":
+      return {
+        dmPolicy: "open",
+        messagePrefix:
+          "[Modo Assessor — responda em TERCEIRA PESSOA como o assessor pessoal do Felipe Andrade. Apresente-se brevemente quando relevante ('Olá, sou o assessor do Felipe…'). Tom profissional e atencioso. Nunca finja ser o próprio Felipe.] ",
+      };
+    case "open":
+      return { dmPolicy: "open", messagePrefix: "" };
+    case "pairing":
+      return { dmPolicy: "pairing", messagePrefix: "" };
+    case "passive":
+    default:
+      // Default-safe: bot is connected but never replies. Even if mode is
+      // undefined we land here — that's the whole point of having a sane
+      // default for users who haven't picked yet.
+      return { dmPolicy: "disabled", messagePrefix: "" };
+  }
 }
 
 export function deleteWhatsappAccountLocal(id: string): void {

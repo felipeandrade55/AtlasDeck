@@ -11,6 +11,8 @@ import {
   setWhatsappAccountLocal,
   deleteWhatsappAccountLocal,
   migrateWhatsappAccountsFromConfig,
+  operationModeToChannelConfig,
+  type WhatsappOperationMode,
 } from "@/lib/whatsapp-accounts-local";
 import { waCall, hasWhatsappSessionLocal } from "@/lib/whatsapp-api";
 
@@ -100,11 +102,34 @@ export async function GET(req: NextRequest) {
       phoneNumber: string | null;
       chatId: string | null;
       dmPolicy: DmPolicy | null;
+      operationMode: WhatsappOperationMode;
       sessionStatus: "connected" | "disconnected" | "authenticating";
       diagnostics: null | {
         connected: boolean;
         error?: string;
       };
+    };
+
+    // Treat any account that hasn't picked a mode yet as "passive". Default
+    // matches what the sweep writes to channels.whatsapp.dmPolicy, so the UI
+    // and the gateway agree on the safe-by-default behavior.
+    const inferOperationMode = (
+      explicit: WhatsappOperationMode | undefined,
+      legacyDmPolicy: string | null | undefined,
+      channelDmPolicy: string | undefined,
+    ): WhatsappOperationMode => {
+      if (explicit) return explicit;
+      const effective = (legacyDmPolicy || channelDmPolicy || "disabled").toLowerCase();
+      switch (effective) {
+        case "open":
+          return "open";
+        case "pairing":
+          return "pairing";
+        case "disabled":
+        case "off":
+        default:
+          return "passive";
+      }
     };
 
     const accounts: AccountOut[] = [];
@@ -155,6 +180,12 @@ export async function GET(req: NextRequest) {
       const legacyChatId = typeof acct.chatId === "string" && acct.chatId.trim() ? acct.chatId.trim() : null;
       const legacyDmPolicy = typeof acct.dmPolicy === "string" && acct.dmPolicy.trim() ? acct.dmPolicy.trim() : null;
 
+      const operationMode = inferOperationMode(
+        localData.operationMode,
+        localDmPolicy ?? legacyDmPolicy,
+        typeof wa.dmPolicy === "string" ? wa.dmPolicy : undefined,
+      );
+
       accounts.push({
         id,
         hasToken,
@@ -162,7 +193,8 @@ export async function GET(req: NextRequest) {
         token: hasToken && revealToken ? token : null,
         phoneNumber: localPhoneNumber || legacyPhoneNumber || null,
         chatId: localChatId || legacyChatId,
-        dmPolicy: (localDmPolicy || legacyDmPolicy || wa.dmPolicy || "pairing") as DmPolicy,
+        dmPolicy: (localDmPolicy || legacyDmPolicy || wa.dmPolicy || "disabled") as DmPolicy,
+        operationMode,
         sessionStatus,
         diagnostics,
       });
@@ -221,7 +253,17 @@ export async function PUT(req: NextRequest) {
   let body: {
     enabled?: boolean;
     dmPolicy?: DmPolicy;
-    accounts?: Record<string, { token?: string; phoneNumber?: string; chatId?: string; dmPolicy?: DmPolicy }>;
+    operationMode?: WhatsappOperationMode;
+    accounts?: Record<
+      string,
+      {
+        token?: string;
+        phoneNumber?: string;
+        chatId?: string;
+        dmPolicy?: DmPolicy;
+        operationMode?: WhatsappOperationMode;
+      }
+    >;
     deleteAccountIds?: string[];
   };
   try {
@@ -233,12 +275,29 @@ export async function PUT(req: NextRequest) {
   try {
     const { path: configPath, raw } = readConfig();
     if (!raw.channels) raw.channels = {};
+    // Default skeleton is the SAFE one: dmPolicy=disabled so a brand-new
+    // channel.whatsapp.accounts.<id> never replies until the user explicitly
+    // promotes the operationMode in the modal.
     const wa = ((raw.channels.whatsapp as WhatsappChannelConfig | undefined) ||
-      ({ dmPolicy: "pairing", accounts: {} } as WhatsappChannelConfig));
+      ({ dmPolicy: "disabled", accounts: {} } as WhatsappChannelConfig));
     if (!wa.accounts) wa.accounts = {};
 
     if (typeof body.enabled === "boolean") wa.enabled = body.enabled;
-    if (typeof body.dmPolicy === "string" && body.dmPolicy) wa.dmPolicy = body.dmPolicy;
+
+    // operationMode is the new top-level lever — translate to dmPolicy +
+    // messagePrefix in one shot. Falls back to body.dmPolicy for callers
+    // that still POST the old shape.
+    let appliedFromMode = false;
+    if (body.operationMode) {
+      const applied = operationModeToChannelConfig(body.operationMode);
+      wa.dmPolicy = applied.dmPolicy;
+      if (applied.messagePrefix) wa.messagePrefix = applied.messagePrefix;
+      else delete wa.messagePrefix;
+      appliedFromMode = true;
+    }
+    if (!appliedFromMode && typeof body.dmPolicy === "string" && body.dmPolicy) {
+      wa.dmPolicy = body.dmPolicy === "off" ? "disabled" : body.dmPolicy;
+    }
 
     if (body.accounts) {
       for (const [id, patch] of Object.entries(body.accounts)) {
@@ -259,6 +318,17 @@ export async function PUT(req: NextRequest) {
         }
         if (typeof patch.chatId === "string") {
           setWhatsappAccountLocal(cleanId, { chatId: patch.chatId });
+        }
+        if (patch.operationMode) {
+          setWhatsappAccountLocal(cleanId, { operationMode: patch.operationMode });
+          // For single-account setups the per-account mode IS the channel
+          // mode — apply it to channels.whatsapp so the gateway honors it.
+          // Multi-account WhatsApp on the same gateway is rare today
+          // (Baileys + one number per process), so this collapse is safe.
+          const applied = operationModeToChannelConfig(patch.operationMode);
+          wa.dmPolicy = applied.dmPolicy;
+          if (applied.messagePrefix) wa.messagePrefix = applied.messagePrefix;
+          else delete wa.messagePrefix;
         }
 
         wa.accounts[cleanId] = {};

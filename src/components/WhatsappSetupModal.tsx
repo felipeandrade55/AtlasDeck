@@ -31,6 +31,8 @@ import {
   type ClientRestartResult,
 } from "@/lib/restart-gateway-client";
 
+type OperationMode = "passive" | "owner" | "assistant" | "open" | "pairing";
+
 interface WhatsappAccount {
   id: string;
   hasToken: boolean;
@@ -39,6 +41,7 @@ interface WhatsappAccount {
   phoneNumber: string | null;
   chatId: string | null;
   dmPolicy: string | null;
+  operationMode: OperationMode;
   sessionStatus: "connected" | "disconnected" | "authenticating";
   diagnostics: null | {
     connected: boolean;
@@ -68,15 +71,41 @@ interface AccountDraft {
   tokenTouched: boolean;
   phoneNumber: string;
   chatId: string;
-  dmPolicy: string;
+  operationMode: OperationMode;
   showToken: boolean;
   toDelete: boolean;
 }
 
-const DM_POLICIES = [
-  { value: "pairing", label: "pairing (recomendado — exige pareamento)" },
-  { value: "open", label: "open (qualquer um pode iniciar DM)" },
-  { value: "off", label: "off (DMs desabilitadas)" },
+const OPERATION_MODES: Array<{
+  value: OperationMode;
+  label: string;
+  hint: string;
+}> = [
+  {
+    value: "passive",
+    label: "🔇 Passivo (recomendado — bot recebe mas não responde)",
+    hint: "DMs entregues à conta WhatsApp não são roteadas pro agente. Ninguém recebe resposta automática.",
+  },
+  {
+    value: "owner",
+    label: "👤 Responder como você (primeira pessoa)",
+    hint: "Bot responde DMs como se fosse você — primeira pessoa, tom casual. Use só em contatos confiáveis.",
+  },
+  {
+    value: "assistant",
+    label: "🤝 Responder como seu assessor (terceira pessoa)",
+    hint: "Bot se apresenta como assessor pessoal e responde por você. Tom profissional, terceira pessoa.",
+  },
+  {
+    value: "open",
+    label: "🌐 Bot livre (responde com a personalidade do agente)",
+    hint: "Sem persona injetada. Bot responde com a voz padrão do agente. Útil pra sandbox/testes.",
+  },
+  {
+    value: "pairing",
+    label: "🔐 Pareamento manual (legado — envia código pra cada novo contato)",
+    hint: "Desconhecidos recebem código de pareamento pra você aprovar via CLI. Pode spammar contatos — só use se entender.",
+  },
 ];
 
 interface Props {
@@ -90,7 +119,9 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [enabled, setEnabled] = useState<boolean>(false);
-  const [globalDmPolicy, setGlobalDmPolicy] = useState<string>("pairing");
+  // Mode chosen at the channel level. Defaults to "passive" so a freshly-
+  // configured WhatsApp instance never replies until the user picks a mode.
+  const [globalOperationMode, setGlobalOperationMode] = useState<OperationMode>("passive");
   const [drafts, setDrafts] = useState<AccountDraft[]>([]);
 
   const [saving, setSaving] = useState(false);
@@ -248,7 +279,19 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
       if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
       setData(json);
       setEnabled(json.config.enabled);
-      setGlobalDmPolicy(json.config.dmPolicy || "pairing");
+      // Mirror the inference the backend does: any stored value other than
+      // open/pairing collapses to "passive" so an unconfigured / "off" /
+      // "disabled" account presents as passive in the UI.
+      const fromChannel: OperationMode =
+        json.config.dmPolicy === "open"
+          ? "open"
+          : json.config.dmPolicy === "pairing"
+            ? "pairing"
+            : "passive";
+      // Prefer the first account's operationMode (single-account is the norm
+      // for WhatsApp). Falls back to the channel-level inference.
+      const firstMode = json.accounts[0]?.operationMode as OperationMode | undefined;
+      setGlobalOperationMode(firstMode ?? fromChannel);
       setDrafts(
         json.accounts.map((a) => ({
           id: a.id,
@@ -258,7 +301,7 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
           tokenTouched: false,
           phoneNumber: a.phoneNumber ?? "",
           chatId: a.chatId ?? "",
-          dmPolicy: a.dmPolicy || json.config.dmPolicy || "pairing",
+          operationMode: (a.operationMode as OperationMode) || fromChannel,
           showToken: false,
           toDelete: false,
         })),
@@ -377,7 +420,9 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
         tokenTouched: true,
         phoneNumber: "",
         chatId: "",
-        dmPolicy: globalDmPolicy,
+        // New accounts inherit the channel-level mode. If the user is in
+        // the safe default (passive), the new account stays passive too.
+        operationMode: globalOperationMode,
         showToken: true,
         toDelete: false,
       },
@@ -392,7 +437,10 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
     setSaving(true);
     setSaveMsg(null);
     try {
-      const accounts: Record<string, { token?: string; phoneNumber?: string; chatId?: string; dmPolicy?: string }> = {};
+      const accounts: Record<
+        string,
+        { token?: string; phoneNumber?: string; chatId?: string; operationMode?: OperationMode }
+      > = {};
       const deleteAccountIds: string[] = [];
       for (const d of drafts) {
         if (d.toDelete && !d.isNew) {
@@ -403,10 +451,15 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
         if (!d.id.trim()) {
           throw new Error("ID da conta não pode ser vazio");
         }
-        const patch: { token?: string; phoneNumber?: string; chatId?: string; dmPolicy?: string } = {
+        const patch: {
+          token?: string;
+          phoneNumber?: string;
+          chatId?: string;
+          operationMode?: OperationMode;
+        } = {
           phoneNumber: d.phoneNumber,
           chatId: d.chatId,
-          dmPolicy: d.dmPolicy,
+          operationMode: d.operationMode,
         };
         if (d.tokenTouched) patch.token = d.token;
         if (d.isNew && !d.tokenTouched) patch.token = "";
@@ -418,7 +471,7 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           enabled,
-          dmPolicy: globalDmPolicy,
+          operationMode: globalOperationMode,
           accounts,
           deleteAccountIds,
         }),
@@ -727,29 +780,33 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
                 <h3 className="text-xs uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
                   Configurações globais do canal
                 </h3>
-                <div className="flex flex-wrap items-center gap-4">
-                  <label className="flex items-center gap-2 text-sm cursor-pointer" style={{ color: "var(--text-primary)" }}>
-                    <Power className="w-3.5 h-3.5" style={{ color: enabled ? "#34d399" : "var(--text-muted)" }} />
-                    <input
-                      type="checkbox"
-                      checked={enabled}
-                      onChange={(e) => setEnabled(e.target.checked)}
-                    />
-                    Canal habilitado (<code>channels.whatsapp.enabled</code>)
+                <label className="flex items-center gap-2 text-sm cursor-pointer" style={{ color: "var(--text-primary)" }}>
+                  <Power className="w-3.5 h-3.5" style={{ color: enabled ? "#34d399" : "var(--text-muted)" }} />
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    onChange={(e) => setEnabled(e.target.checked)}
+                  />
+                  Canal habilitado (<code>channels.whatsapp.enabled</code>)
+                </label>
+
+                <div className="space-y-1">
+                  <label className="text-sm block" style={{ color: "var(--text-secondary)" }}>
+                    Modo de operação global
                   </label>
-                  <div className="flex items-center gap-2 text-sm">
-                    <span style={{ color: "var(--text-secondary)" }}>DM Policy global:</span>
-                    <select
-                      value={globalDmPolicy}
-                      onChange={(e) => setGlobalDmPolicy(e.target.value)}
-                      className="rounded px-2 py-1 text-xs"
-                      style={{ backgroundColor: "rgba(0,0,0,0.3)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-                    >
-                      {DM_POLICIES.map((p) => (
-                        <option key={p.value} value={p.value}>{p.label}</option>
-                      ))}
-                    </select>
-                  </div>
+                  <select
+                    value={globalOperationMode}
+                    onChange={(e) => setGlobalOperationMode(e.target.value as OperationMode)}
+                    className="w-full rounded px-2 py-1.5 text-sm"
+                    style={{ backgroundColor: "rgba(0,0,0,0.3)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+                  >
+                    {OPERATION_MODES.map((m) => (
+                      <option key={m.value} value={m.value}>{m.label}</option>
+                    ))}
+                  </select>
+                  <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                    {OPERATION_MODES.find((m) => m.value === globalOperationMode)?.hint}
+                  </p>
                 </div>
               </div>
 
@@ -866,17 +923,22 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
                             </label>
 
                             <label className="block text-xs space-y-1">
-                              <span style={{ color: "var(--text-secondary)" }}>DM Policy específica</span>
+                              <span style={{ color: "var(--text-secondary)" }}>Modo de operação desta conta</span>
                               <select
-                                value={d.dmPolicy}
-                                onChange={(e) => updateDraft(d.id, { dmPolicy: e.target.value })}
+                                value={d.operationMode}
+                                onChange={(e) =>
+                                  updateDraft(d.id, { operationMode: e.target.value as OperationMode })
+                                }
                                 className="w-full rounded px-2 py-1.5 text-sm"
                                 style={{ backgroundColor: "rgba(0,0,0,0.3)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
                               >
-                                {DM_POLICIES.map((p) => (
-                                  <option key={p.value} value={p.value}>{p.label}</option>
+                                {OPERATION_MODES.map((m) => (
+                                  <option key={m.value} value={m.value}>{m.label}</option>
                                 ))}
                               </select>
+                              <span className="text-[10px] block" style={{ color: "var(--text-muted)" }}>
+                                {OPERATION_MODES.find((m) => m.value === d.operationMode)?.hint}
+                              </span>
                             </label>
                           </div>
 
