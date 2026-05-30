@@ -84,12 +84,58 @@ const CATEGORY_LABEL: Record<Check["category"], string> = {
   config: "Configuração",
 };
 
+interface DiagnoseNowFinding {
+  severity: "ok" | "info" | "warn" | "fail";
+  area: string;
+  message: string;
+  detail?: string;
+}
+interface DiagnoseNowResponse {
+  ok: boolean;
+  timestamp: string;
+  verdict: string;
+  findings: DiagnoseNowFinding[];
+  logsSource: string | null;
+  logsTail: string | null;
+  config: Record<string, unknown>;
+}
+
 export function WhatsappDoctor({ open, onClose, onChanged }: Props) {
   const [data, setData] = useState<DiagnoseResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [actionLog, setActionLog] = useState<Array<{ id: string; ok: boolean; msg: string }>>([]);
+  const [diagnoseNowBusy, setDiagnoseNowBusy] = useState(false);
+  const [diagnoseNow, setDiagnoseNow] = useState<DiagnoseNowResponse | null>(null);
+
+  const runDiagnoseNow = useCallback(async () => {
+    setDiagnoseNowBusy(true);
+    try {
+      const res = await fetch("/api/integrations/whatsapp/diagnose-now", {
+        method: "POST",
+      });
+      const json = (await res.json()) as DiagnoseNowResponse | { error: string };
+      if (!res.ok || "error" in json) {
+        setDiagnoseNow({
+          ok: false,
+          timestamp: new Date().toISOString(),
+          verdict:
+            "error" in json
+              ? `Falha ao diagnosticar: ${json.error}`
+              : `HTTP ${res.status}`,
+          findings: [],
+          logsSource: null,
+          logsTail: null,
+          config: {},
+        });
+        return;
+      }
+      setDiagnoseNow(json);
+    } finally {
+      setDiagnoseNowBusy(false);
+    }
+  }, []);
 
   const runDiagnose = useCallback(async (sendTest: boolean) => {
     setLoading(true);
@@ -295,10 +341,123 @@ export function WhatsappDoctor({ open, onClose, onChanged }: Props) {
             <Send className="w-3 h-3" />
             Mandar teste no WhatsApp
           </button>
+
+          <button
+            onClick={() => void runDiagnoseNow()}
+            disabled={diagnoseNowBusy}
+            className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded disabled:opacity-50"
+            style={{
+              backgroundColor: "rgba(234,179,8,0.15)",
+              color: "#fbbf24",
+              border: "1px solid rgba(234,179,8,0.4)",
+            }}
+            title="Lê config + journalctl do gateway + logs de inbound/dispatch nos últimos 300 lines e diz em português PT por que o bot não tá respondendo."
+          >
+            <Stethoscope className="w-3 h-3" />
+            {diagnoseNowBusy ? "Diagnosticando…" : "Diagnosticar AGORA (sem SSH)"}
+          </button>
         </div>
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+          {diagnoseNow && (
+            <div
+              className="rounded-lg p-3 space-y-2"
+              style={{
+                backgroundColor: "rgba(234,179,8,0.06)",
+                border: "1px solid rgba(234,179,8,0.4)",
+              }}
+            >
+              <div className="flex items-start gap-2">
+                <Stethoscope className="w-4 h-4 mt-0.5" style={{ color: "#fbbf24" }} />
+                <div className="flex-1">
+                  <div className="text-sm font-semibold" style={{ color: "#fbbf24" }}>
+                    Diagnóstico ao vivo · {new Date(diagnoseNow.timestamp).toLocaleTimeString("pt-BR")}
+                  </div>
+                  <div className="text-xs mt-0.5" style={{ color: "var(--text-secondary)" }}>
+                    {diagnoseNow.verdict}
+                  </div>
+                </div>
+                <button
+                  onClick={() => setDiagnoseNow(null)}
+                  className="text-[11px] px-1.5 py-0.5 rounded"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  Fechar
+                </button>
+              </div>
+              <ul className="space-y-1.5">
+                {diagnoseNow.findings.map((f, i) => {
+                  const color =
+                    f.severity === "fail"
+                      ? "#fca5a5"
+                      : f.severity === "warn"
+                        ? "#fbbf24"
+                        : f.severity === "info"
+                          ? "var(--text-secondary)"
+                          : "#6ee7b7";
+                  const icon =
+                    f.severity === "fail"
+                      ? "❌"
+                      : f.severity === "warn"
+                        ? "⚠️"
+                        : f.severity === "info"
+                          ? "ℹ️"
+                          : "✓";
+                  return (
+                    <li
+                      key={i}
+                      className="text-xs flex items-start gap-2 py-1 px-2 rounded"
+                      style={{ backgroundColor: "rgba(255,255,255,0.02)" }}
+                    >
+                      <span className="text-[11px]">{icon}</span>
+                      <div className="flex-1">
+                        <div style={{ color }}>
+                          <span className="text-[10px] mr-1 px-1 rounded" style={{ backgroundColor: "rgba(255,255,255,0.04)" }}>
+                            {f.area}
+                          </span>
+                          {f.message}
+                        </div>
+                        {f.detail && (
+                          <pre
+                            className="text-[10px] mt-1 font-mono whitespace-pre-wrap"
+                            style={{ color: "var(--text-muted)" }}
+                          >
+                            {f.detail}
+                          </pre>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+
+              {diagnoseNow.logsTail && (
+                <details className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                  <summary className="cursor-pointer">
+                    Últimas 30 linhas dos logs do gateway ({diagnoseNow.logsSource || "log"})
+                  </summary>
+                  <pre
+                    className="mt-2 p-2 rounded font-mono text-[10px] whitespace-pre-wrap overflow-auto max-h-60"
+                    style={{ backgroundColor: "rgba(0,0,0,0.3)" }}
+                  >
+                    {diagnoseNow.logsTail}
+                  </pre>
+                </details>
+              )}
+
+              <details className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                <summary className="cursor-pointer">Config WhatsApp aplicada agora</summary>
+                <pre
+                  className="mt-2 p-2 rounded font-mono text-[10px] whitespace-pre-wrap"
+                  style={{ backgroundColor: "rgba(0,0,0,0.3)" }}
+                >
+                  {JSON.stringify(diagnoseNow.config, null, 2)}
+                </pre>
+              </details>
+            </div>
+          )}
+
           {error && (
             <div
               className="rounded-lg p-3 text-sm flex items-start gap-2"
