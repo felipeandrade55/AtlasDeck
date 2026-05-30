@@ -284,15 +284,27 @@ export async function PUT(req: NextRequest) {
 
     if (typeof body.enabled === "boolean") wa.enabled = body.enabled;
 
-    // operationMode is the new top-level lever — translate to dmPolicy +
-    // messagePrefix in one shot. Falls back to body.dmPolicy for callers
-    // that still POST the old shape.
-    let appliedFromMode = false;
-    if (body.operationMode) {
-      const applied = operationModeToChannelConfig(body.operationMode);
+    // Apply ALL channel-level knobs the operation mode controls, in one
+    // place. Keeping this here (vs spreading across the route) means
+    // /api/integrations/whatsapp PUT and /api/integrations/whatsapp/mode
+    // POST always converge on the same set of fields.
+    const applyMode = (m: WhatsappOperationMode) => {
+      const applied = operationModeToChannelConfig(m);
       wa.dmPolicy = applied.dmPolicy;
       if (applied.messagePrefix) wa.messagePrefix = applied.messagePrefix;
       else delete wa.messagePrefix;
+      wa.selfChatMode = applied.selfChatMode;
+      wa.groupPolicy = applied.groupPolicy;
+      if (applied.groupAllowFrom.length > 0) wa.groupAllowFrom = applied.groupAllowFrom;
+      else delete wa.groupAllowFrom;
+    };
+
+    // operationMode is the new top-level lever — translate to all the
+    // channel-level fields in one shot. Falls back to body.dmPolicy for
+    // callers that still POST the old shape.
+    let appliedFromMode = false;
+    if (body.operationMode) {
+      applyMode(body.operationMode);
       appliedFromMode = true;
     }
     if (!appliedFromMode && typeof body.dmPolicy === "string" && body.dmPolicy) {
@@ -325,10 +337,7 @@ export async function PUT(req: NextRequest) {
           // mode — apply it to channels.whatsapp so the gateway honors it.
           // Multi-account WhatsApp on the same gateway is rare today
           // (Baileys + one number per process), so this collapse is safe.
-          const applied = operationModeToChannelConfig(patch.operationMode);
-          wa.dmPolicy = applied.dmPolicy;
-          if (applied.messagePrefix) wa.messagePrefix = applied.messagePrefix;
-          else delete wa.messagePrefix;
+          applyMode(patch.operationMode);
         }
 
         wa.accounts[cleanId] = {};

@@ -84,22 +84,22 @@ const OPERATION_MODES: Array<{
   {
     value: "passive",
     label: "🔇 Passivo (recomendado — bot recebe mas não responde)",
-    hint: "DMs entregues à conta WhatsApp não são roteadas pro agente. Ninguém recebe resposta automática.",
+    hint: "DMs entregues à conta WhatsApp não são roteadas pro agente. Grupos também ignorados. Ninguém recebe resposta automática.",
   },
   {
     value: "owner",
     label: "👤 Responder como você (primeira pessoa)",
-    hint: "Bot responde DMs como se fosse você — primeira pessoa, tom casual. Use só em contatos confiáveis.",
+    hint: "Bot responde DMs como se fosse você (primeira pessoa, tom casual, busca memórias antes de responder, áudio via voz clonada Fish Audio). Grupos: só responde se você for mencionado. Comandos do seu próprio número aceitos (selfChatMode).",
   },
   {
     value: "assistant",
     label: "🤝 Responder como seu assessor (terceira pessoa)",
-    hint: "Bot se apresenta como assessor pessoal e responde por você. Tom profissional, terceira pessoa.",
+    hint: "Bot se apresenta como assessor profissional, anota recados, marca reuniões (calendário), NÃO expõe suas memórias pessoais. Comandos administrativos só do seu número. Quando você pedir 'briefing' ele resume quem falou com ele.",
   },
   {
     value: "open",
     label: "🌐 Bot livre (responde com a personalidade do agente)",
-    hint: "Sem persona injetada. Bot responde com a voz padrão do agente. Útil pra sandbox/testes.",
+    hint: "Sem persona injetada. Bot responde com a voz padrão do agente. Útil pra sandbox/testes — não recomendado pra WhatsApp pessoal.",
   },
   {
     value: "pairing",

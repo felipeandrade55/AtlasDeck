@@ -77,6 +77,10 @@ export async function POST(req: NextRequest) {
     wa.dmPolicy = applied.dmPolicy;
     if (applied.messagePrefix) wa.messagePrefix = applied.messagePrefix;
     else delete wa.messagePrefix;
+    wa.selfChatMode = applied.selfChatMode;
+    wa.groupPolicy = applied.groupPolicy;
+    if (applied.groupAllowFrom.length > 0) wa.groupAllowFrom = applied.groupAllowFrom;
+    else delete wa.groupAllowFrom;
     raw.channels.whatsapp = wa;
 
     writeFileSync(configPath, JSON.stringify(raw, null, 2), "utf-8");
