@@ -122,6 +122,37 @@ function ensureWhatsappChannelDefaults(raw: Record<string, unknown>): boolean {
 }
 
 /**
+ * Make sure `gateway.reload.mode = "hybrid"` is explicitly set. It's the
+ * OpenClaw default, but a previous AtlasDeck version (or a manual edit)
+ * may have set it to "restart" or "off" — in either case, channel-config
+ * changes we make (operationMode → dmPolicy/messagePrefix/etc) would
+ * either trigger a FULL gateway restart (which kills the Baileys session
+ * for 15-20s) or not apply at all without an explicit restart call.
+ *
+ * Hybrid mode lets the gateway hot-apply changes when safe and only
+ * restart when truly required — which is what we want for the
+ * "click save → it works" UX.
+ *
+ * Returns true if we mutated the value.
+ */
+function ensureGatewayReloadHybrid(raw: Record<string, unknown>): boolean {
+  const gateway = (raw.gateway && typeof raw.gateway === "object" ? raw.gateway : {}) as Record<
+    string,
+    unknown
+  >;
+  const reload = (gateway.reload && typeof gateway.reload === "object" ? gateway.reload : {}) as Record<
+    string,
+    unknown
+  >;
+  if (reload.mode === "hybrid") return false;
+  raw.gateway = {
+    ...gateway,
+    reload: { ...reload, mode: "hybrid" },
+  };
+  return true;
+}
+
+/**
  * Force `plugins.entries.<id>.enabled = true` for each id passed in.
  * External plugins like @openclaw/whatsapp have `activation.onStartup: false`
  * in their manifest, so they only load when the host config explicitly
@@ -214,12 +245,19 @@ export function sweepOpenClawConfig(): SweepResult {
     // missing fields silently drop the runtime).
     const changedWhatsappChannelDefaults = ensureWhatsappChannelDefaults(raw);
 
+    // gateway.reload.mode=hybrid is OpenClaw default but we force it so
+    // changes from AtlasDeck (operation mode flips, etc) hot-apply via
+    // the gateway's file-watcher instead of needing an explicit restart
+    // that would kill the Baileys WhatsApp session for 15-20s.
+    const changedReloadMode = ensureGatewayReloadHybrid(raw);
+
     if (
       changedTelegram ||
       changedWhatsapp ||
       changedGatewayToolsAllow ||
       changedPluginsEnabled.length > 0 ||
       changedWhatsappChannelDefaults ||
+      changedReloadMode ||
       removedAcpxEntry
     ) {
       writeFileSync(configPath, JSON.stringify(raw, null, 2), "utf-8");

@@ -923,18 +923,12 @@ server.registerTool(
   {
     title: "Muda o modo de operação do WhatsApp",
     description:
-      "Use quando Felipe pedir 'muda o whatsapp pro modo X', 'ativa modo assessor no whatsapp', 'desliga o bot do whatsapp' (=passive), 'tô ocupado, manda o assessor atender' (=assistant), 'volta a responder normal' (=owner ou open). SEMPRE confirme com Felipe ANTES de mudar pra um modo que faz o bot responder (owner/assistant/open) se ele estiver atualmente em passive — não queremos surpresas. Depois de mudar, o gateway precisa reiniciar (este tool faz isso automaticamente quando restart=true).",
+      "Use quando Felipe pedir 'muda o whatsapp pro modo X', 'ativa modo assessor no whatsapp', 'desliga o bot do whatsapp' (=passive), 'tô ocupado, manda o assessor atender' (=assistant), 'volta a responder normal' (=owner ou open). SEMPRE confirme com Felipe ANTES de mudar pra um modo que faz o bot responder (owner/assistant/open) se ele estiver atualmente em passive — não queremos surpresas. A mudança aplica AUTOMATICAMENTE via hot-reload do gateway em ~1-2s — não precisa reiniciar nada, não derruba a sessão Baileys, mensagens nesse intervalo NÃO se perdem.",
     inputSchema: {
       mode: z
         .enum(["passive", "owner", "assistant", "open", "pairing"])
         .describe(
           "passive=silencioso (default), owner=responde como Felipe, assistant=assessor, open=voz padrão do agente, pairing=legado.",
-        ),
-      restart: z
-        .boolean()
-        .optional()
-        .describe(
-          "Reinicia o gateway depois de salvar (padrão: true). Sem restart, a mudança não vale até o próximo reload.",
         ),
       accountId: z.string().optional().describe("ID da conta WhatsApp (padrão: 'main')."),
     },
@@ -958,39 +952,14 @@ server.registerTool(
         return asError(json.error || `HTTP ${res.status}`);
       }
 
-      // Optional restart so the agent doesn't have to chain a second tool
-      // call after every mode change. Failure here is non-fatal — the
-      // config was saved either way, restart can happen later.
-      let restartOk: boolean | null = null;
-      let restartNote = "";
-      if (args.restart !== false) {
-        try {
-          const r = await fetch(
-            `${ATLASDECK_BASE_URL.replace(/\/$/, "")}/api/recovery/action`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action: "gateway-restart" }),
-            },
-          );
-          const rj = (await r.json()) as { success?: boolean; error?: string };
-          restartOk = r.ok && !!rj.success;
-          restartNote = restartOk ? "gateway reiniciado" : rj.error || "restart falhou";
-        } catch (e) {
-          restartOk = false;
-          restartNote = e instanceof Error ? e.message : String(e);
-        }
-      }
-
       return asJson({
         ok: true,
         mode: args.mode,
         applied: json.applied,
-        restart: { performed: args.restart !== false, ok: restartOk, note: restartNote },
         hint:
           args.mode === "passive"
-            ? "Modo passivo ativo. Bot não vai mais ler nem responder nada no WhatsApp."
-            : `Modo ${args.mode} aplicado. Bot vai começar a responder no próximo DM recebido.`,
+            ? "Modo passivo ativo. Em ~2s o bot para de responder qualquer um no WhatsApp."
+            : `Modo ${args.mode} aplicado. Em ~2s o bot começa a responder no próximo DM recebido. (hot-reload, sem derrubar Baileys)`,
       });
     } catch (err) {
       return asError(err instanceof Error ? err.message : String(err));

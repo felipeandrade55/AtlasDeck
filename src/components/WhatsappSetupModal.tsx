@@ -23,13 +23,11 @@ import {
   Power,
   Wrench,
 } from "lucide-react";
-import { RestartStatusBanner } from "./RestartStatusBanner";
-import {
-  restartGatewayClient,
-  getAutoRestartPref,
-  setAutoRestartPref,
-  type ClientRestartResult,
-} from "@/lib/restart-gateway-client";
+// Hot-reload-only: OpenClaw's gateway.reload.mode=hybrid (set by sweep)
+// auto-applies channels.whatsapp.* changes within ~1-2s of writing
+// openclaw.json — no explicit restart needed and no Baileys session
+// disruption. The old restartGatewayClient import lived here for the
+// "Reiniciar gateway ao salvar" checkbox we just removed.
 
 type OperationMode = "passive" | "owner" | "assistant" | "open" | "pairing";
 
@@ -137,9 +135,9 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
 
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  const [autoRestart, setAutoRestart] = useState(true);
-  const [restarting, setRestarting] = useState(false);
-  const [restartResult, setRestartResult] = useState<ClientRestartResult | null>(null);
+  // Restart state removed — see header comment. Hot-reload (gateway.reload.mode=hybrid)
+  // is automatic and silent. The only explicit restart still happens server-side
+  // inside the Reparar config endpoint (which installs plugins, that case needs it).
 
   const [pairingAccountId, setPairingAccountId] = useState<string | null>(null);
   const [pairingOutput, setPairingOutput] = useState<string>("");
@@ -266,13 +264,7 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
     detail: string;
   } | null>(null);
 
-  useEffect(() => {
-    setAutoRestart(getAutoRestartPref());
-  }, []);
-  const updateAutoRestart = (v: boolean) => {
-    setAutoRestart(v);
-    setAutoRestartPref(v);
-  };
+  // autoRestart preference removed — hot-reload is the only path now.
 
   const refresh = useCallback(async (opts: { reveal?: boolean } = {}) => {
     setLoading(true);
@@ -516,15 +508,16 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
         console.error("owner-phone save failed:", e);
       }
 
-      setSaveMsg({ kind: "ok", text: "Configuração salva" });
+      // Hot-reload (gateway.reload.mode=hybrid, set by sweep) picks up
+      // openclaw.json changes within ~1-2s of the file write — no need
+      // to call gateway-restart, which would kill the Baileys WhatsApp
+      // session for 15-20s and cause inbound messages in that window
+      // to be silently dropped. We give the gateway a short grace then
+      // refresh the UI so the user sees the applied state.
+      setSaveMsg({ kind: "ok", text: "Configuração salva — aplicando…" });
+      await new Promise((r) => setTimeout(r, 1500));
       await refresh();
-      if (autoRestart) {
-        setRestarting(true);
-        setRestartResult(null);
-        const result = await restartGatewayClient();
-        setRestartResult(result);
-        setRestarting(false);
-      }
+      setSaveMsg({ kind: "ok", text: "Configuração aplicada (hot-reload)" });
     } catch (e) {
       setSaveMsg({ kind: "err", text: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -628,16 +621,9 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
       });
 
       await refresh();
-      // Backend já reiniciou o gateway dentro do repair quando necessário,
-      // mas se o usuário marcou auto-restart e o backend não reiniciou,
-      // chamamos o restart client (mostra o banner padrão).
-      if (autoRestart && restart.ok !== true) {
-        setRestarting(true);
-        setRestartResult(null);
-        const result = await restartGatewayClient();
-        setRestartResult(result);
-        setRestarting(false);
-      }
+      // Backend Reparar config já cuida do restart quando necessário
+      // (install de plugin requer restart full — diferente de mudança
+      // de modo, que aplica via hot-reload). Nada a fazer aqui.
     } catch (e) {
       setRepairResult({
         ok: false,
@@ -1224,24 +1210,13 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
           )}
         </div>
 
-        <RestartStatusBanner
-          restarting={restarting}
-          result={restartResult}
-          successHint="token já está ativo no OpenClaw"
-        />
-
-        {/* Footer */}
+        {/* Footer — no auto-restart checkbox. Hot reload is automatic
+            (gateway.reload.mode=hybrid). Save means working, period. */}
         <div className="flex items-center justify-between px-5 py-3 border-t gap-3 flex-wrap" style={{ borderColor: "var(--border)" }}>
-          <div className="flex items-center gap-3 flex-wrap text-xs">
-            <label className="flex items-center gap-1.5 cursor-pointer select-none" style={{ color: "var(--text-secondary)" }}>
-              <input
-                type="checkbox"
-                checked={autoRestart}
-                onChange={(e) => updateAutoRestart(e.target.checked)}
-                className="cursor-pointer"
-              />
-              Reiniciar gateway ao salvar
-            </label>
+          <div className="flex items-center gap-3 flex-wrap text-xs" style={{ color: "var(--text-muted)" }}>
+            <span>
+              Mudanças aplicam automaticamente via hot-reload — sem derrubar a sessão Baileys.
+            </span>
             {saveMsg && (
               <span style={{ color: saveMsg.kind === "ok" ? "#34d399" : "#fca5a5" }}>{saveMsg.text}</span>
             )}
@@ -1256,12 +1231,12 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
             </button>
             <button
               onClick={onSave}
-              disabled={saving || restarting || !data}
+              disabled={saving || !data}
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg font-medium disabled:opacity-50"
               style={{ backgroundColor: "rgba(139,92,246,0.2)", color: "#c4b5fd", border: "1px solid rgba(139,92,246,0.4)" }}
             >
               {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-              {saving ? "Salvando…" : autoRestart ? "Salvar e aplicar" : "Salvar alterações"}
+              {saving ? "Salvando…" : "Salvar e aplicar"}
             </button>
           </div>
         </div>

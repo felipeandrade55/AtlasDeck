@@ -115,7 +115,7 @@ export async function POST(req: NextRequest) {
       accountId,
       applied,
       hint:
-        "Reinicie o gateway para o novo modo ser aplicado. Use POST /api/recovery/action com {action:'gateway-restart'} ou o botão Reparar config no modal.",
+        "Mudança aplicada — hot-reload do gateway (gateway.reload.mode=hybrid) pega em ~1-2s. Sem restart, sem derrubar Baileys.",
     });
   } catch (e) {
     return NextResponse.json(
