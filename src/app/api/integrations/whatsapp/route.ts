@@ -14,6 +14,7 @@ import {
   operationModeToChannelConfig,
   type WhatsappOperationMode,
 } from "@/lib/whatsapp-accounts-local";
+import { applyAgentTtsBlock, buildAgentTtsBlock } from "@/lib/openclaw-agent-tts";
 import { waCall, hasWhatsappSessionLocal } from "@/lib/whatsapp-api";
 
 export const dynamic = "force-dynamic";
@@ -297,6 +298,14 @@ export async function PUT(req: NextRequest) {
       wa.groupPolicy = applied.groupPolicy;
       if (applied.groupAllowFrom.length > 0) wa.groupAllowFrom = applied.groupAllowFrom;
       else delete wa.groupAllowFrom;
+
+      // Agent-level TTS wire-up: only owner mode wants Fish-Audio cloned
+      // voice on inbound-audio replies. Build the block from saved
+      // settings; if user hasn't configured Fish Audio yet, applyAgentTtsBlock
+      // gets null and removes any stale tts block instead of writing a
+      // half-broken one.
+      const ttsBlock = applied.wantsClonedVoiceReply ? buildAgentTtsBlock() : null;
+      applyAgentTtsBlock(raw as unknown as Record<string, unknown>, ttsBlock);
     };
 
     // operationMode is the new top-level lever — translate to all the

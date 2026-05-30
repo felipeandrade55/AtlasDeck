@@ -28,6 +28,7 @@ import {
   setWhatsappAccountLocal,
   type WhatsappOperationMode,
 } from "@/lib/whatsapp-accounts-local";
+import { applyAgentTtsBlock, buildAgentTtsBlock } from "@/lib/openclaw-agent-tts";
 import { logActivity } from "@/lib/activities-db";
 
 export const dynamic = "force-dynamic";
@@ -82,6 +83,11 @@ export async function POST(req: NextRequest) {
     if (applied.groupAllowFrom.length > 0) wa.groupAllowFrom = applied.groupAllowFrom;
     else delete wa.groupAllowFrom;
     raw.channels.whatsapp = wa;
+
+    // Wire Fish-Audio cloned voice into agents.list[main].tts so OpenClaw's
+    // dispatch picks it up on inbound-audio replies (owner mode only).
+    const ttsBlock = applied.wantsClonedVoiceReply ? buildAgentTtsBlock() : null;
+    applyAgentTtsBlock(raw as Record<string, unknown>, ttsBlock);
 
     writeFileSync(configPath, JSON.stringify(raw, null, 2), "utf-8");
     setWhatsappAccountLocal(accountId, { operationMode: mode });

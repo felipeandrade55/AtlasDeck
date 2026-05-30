@@ -770,6 +770,14 @@ export interface MemorySettings {
   openwakeword_threshold: number;
   setup_step: SetupStep;
   setup_completed_at: string | null;
+  /**
+   * Owner WhatsApp number in E.164 (digits only, with country code, no +).
+   * Example: "5564992224800". Used by the WhatsApp Assessor mode to
+   * recognize commands that came from Felipe himself (via self-chat or
+   * another device on his account) and accept admin actions. Anyone else
+   * gets the "isso é com o Felipe" fallback.
+   */
+  owner_whatsapp_number: string | null;
 }
 
 export type WakeEngine = "openwakeword" | "porcupine";
@@ -816,6 +824,7 @@ const DEFAULT_SETTINGS: MemorySettings = {
   openwakeword_threshold: 0.5,
   setup_step: "install",
   setup_completed_at: null,
+  owner_whatsapp_number: null,
 };
 
 function parseSetupStep(value: string | undefined): SetupStep {
@@ -914,6 +923,7 @@ export function getSettings(): MemorySettings {
     ),
     setup_step: parseSetupStep(map.get("setup_step")),
     setup_completed_at: parseNullableString(map.get("setup_completed_at")),
+    owner_whatsapp_number: parseNullableString(map.get("owner_whatsapp_number")),
   };
 }
 
