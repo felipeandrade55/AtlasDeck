@@ -74,67 +74,107 @@ function readWhatsappConfig(): Record<string, unknown> {
   }
 }
 
-function analyzeLogs(text: string): {
+// Parse the ISO timestamp embedded in an openclaw log line. The journalctl
+// header looks like "May 30 01:32:08 host node[pid]: 2026-05-30T01:32:08…"
+// — we grab the second timestamp (the openclaw one) because it carries
+// timezone info and we don't have to guess the year.
+function lineTimestampMs(line: string): number | null {
+  const m = line.match(/\b(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:?\d{2}|Z)?)\b/);
+  if (!m) return null;
+  const t = Date.parse(m[1]);
+  return Number.isNaN(t) ? null : t;
+}
+
+interface LogStats {
   inboundCount: number;
   dispatchCount: number;
-  sessionDropCount: number;
-  lastListeningAtMs: number | null;
   lastInboundLine: string | null;
-  lastErrorLine: string | null;
-  baileysReconnects: number;
-} {
-  const lines = text.split("\n");
+  lastDispatchLine: string | null;
+}
+
+function statsForLines(lines: string[]): LogStats {
   let inbound = 0;
   let dispatch = 0;
-  let sessionDrops = 0;
-  let baileysReconnects = 0;
-  let lastListeningAtMs: number | null = null;
   let lastInbound: string | null = null;
-  let lastError: string | null = null;
-
+  let lastDispatch: string | null = null;
   for (const line of lines) {
     const lower = line.toLowerCase();
-    if (!lower.includes("whatsapp") && !lower.includes("baileys")) continue;
-
-    if (lower.includes("inbound") || /\[whatsapp\][^\n]*from/.test(line)) {
+    const looksWhatsapp =
+      lower.includes("[whatsapp]") || lower.includes("baileys") || lower.includes("channel=whatsapp");
+    if (!looksWhatsapp) continue;
+    // OpenClaw logs inbound either as "Inbound message" (telegram pattern,
+    // and same exists for whatsapp) or as the bare "[whatsapp] … from".
+    if (/inbound message/i.test(line) || /\[whatsapp\][^\n]*\bfrom\b/.test(line)) {
       inbound += 1;
       lastInbound = line;
     }
-    if (lower.includes("dispatch") || lower.includes("agent:main:whatsapp")) {
-      dispatch += 1;
-    }
+    // OpenClaw routes the inbound to the agent via the gateway WS layer,
+    // logged as "[ws] ⇄ res ✓ message.action … channel=whatsapp …". That's
+    // the actual dispatch signal — NOT a string called "dispatch".
     if (
-      lower.includes("connection closed") ||
-      lower.includes("connection lost") ||
-      lower.includes("status 408") ||
-      lower.includes("status 503")
+      /message\.action[^\n]*channel=whatsapp/i.test(line) ||
+      /agent[^\n]*whatsapp/i.test(line)
     ) {
-      sessionDrops += 1;
+      dispatch += 1;
+      lastDispatch = line;
     }
-    if (/retry \d+\/\d+/.test(lower)) {
-      baileysReconnects += 1;
-    }
-    if (lower.includes("listening for personal whatsapp")) {
-      // Parse the iso-ish timestamp at the start of the journalctl line if possible.
-      const m = line.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
-      if (m) {
-        const t = Date.parse(m[1]);
-        if (!Number.isNaN(t)) lastListeningAtMs = t;
+  }
+  return { inboundCount: inbound, dispatchCount: dispatch, lastInboundLine: lastInbound, lastDispatchLine: lastDispatch };
+}
+
+function analyzeLogs(text: string): {
+  recent: LogStats;
+  total: LogStats;
+  sessionDropCount: number;
+  lastListeningAtMs: number | null;
+  lastErrorLine: string | null;
+  baileysReconnects: number;
+  recentWindowMinutes: number;
+} {
+  const recentWindowMinutes = 5;
+  const cutoffMs = Date.now() - recentWindowMinutes * 60_000;
+
+  const allLines = text.split("\n");
+  const recentLines: string[] = [];
+  let sessionDrops = 0;
+  let baileysReconnects = 0;
+  let lastListeningAtMs: number | null = null;
+  let lastError: string | null = null;
+
+  for (const line of allLines) {
+    const ts = lineTimestampMs(line);
+    if (ts !== null && ts >= cutoffMs) recentLines.push(line);
+
+    const lower = line.toLowerCase();
+    if (lower.includes("whatsapp") || lower.includes("baileys")) {
+      if (
+        lower.includes("connection closed") ||
+        lower.includes("connection lost") ||
+        lower.includes("status 408") ||
+        lower.includes("status 503")
+      ) {
+        sessionDrops += 1;
       }
-    }
-    if (lower.includes("error") || lower.includes(" err ")) {
-      lastError = line;
+      if (/retry \d+\/\d+/.test(lower)) {
+        baileysReconnects += 1;
+      }
+      if (lower.includes("listening for personal whatsapp") && ts !== null) {
+        lastListeningAtMs = ts;
+      }
+      if (lower.includes("error") || lower.includes(" err ")) {
+        lastError = line;
+      }
     }
   }
 
   return {
-    inboundCount: inbound,
-    dispatchCount: dispatch,
+    recent: statsForLines(recentLines),
+    total: statsForLines(allLines),
     sessionDropCount: sessionDrops,
     lastListeningAtMs,
-    lastInboundLine: lastInbound,
     lastErrorLine: lastError,
     baileysReconnects,
+    recentWindowMinutes,
   };
 }
 
@@ -245,36 +285,38 @@ export async function POST() {
         findings.push({
           severity: "warn",
           area: "baileys",
-          message: `${sig.sessionDropCount} desconexão(ões) do Baileys nos últimos logs (timeout/reconexão). ${sig.baileysReconnects} retry(s) detectado(s). Se você mandou 'oi' durante uma reconexão, a mensagem foi perdida — tente de novo.`,
+          message: `${sig.sessionDropCount} desconexão(ões) do Baileys no histórico de logs (timeout/reconexão). ${sig.baileysReconnects} retry(s) detectado(s). Se você mandou 'oi' DURANTE uma reconexão, a mensagem foi perdida — tente de novo.`,
         });
       }
 
-      if (sig.inboundCount === 0) {
+      // RECENT WINDOW — what matters for "manda oi agora e vê se funciona".
+      // Counts only events in the last 5 minutes so a fresh test isn't
+      // drowned by stale numbers from older broken configs.
+      if (sig.recent.inboundCount === 0) {
         findings.push({
-          severity: "fail",
+          severity: "warn",
           area: "baileys",
-          message:
-            "ZERO mensagens WhatsApp inbound nos logs do gateway. O 'oi' do outro número NÃO está chegando — possíveis causas:\n" +
-            "• O remetente está bloqueado no seu WhatsApp\n" +
-            "• A sessão Baileys está desconectada (verifique no card 'Status: connected' do modal)\n" +
-            "• O número que mandou não tem conversa anterior com você (WhatsApp Web às vezes filtra primeiro contato)\n" +
-            "• A mensagem caiu durante uma reconexão (manda de novo agora)",
+          message: `Nenhuma mensagem WhatsApp inbound nos últimos ${sig.recentWindowMinutes}min. Histórico total: ${sig.total.inboundCount} inbound. Manda 'oi' agora e roda este diagnóstico de novo — se o contador subir, Baileys tá entregando. Se não subir, a mensagem não chegou (remetente bloqueado / primeiro contato bloqueado / sessão desconectada).`,
         });
       } else {
+        const dispatchOk = sig.recent.dispatchCount > 0;
         findings.push({
-          severity: "ok",
-          area: "baileys",
-          message: `${sig.inboundCount} mensagens WhatsApp inbound detectadas nos logs.`,
-          detail: sig.lastInboundLine ?? undefined,
+          severity: dispatchOk ? "ok" : "fail",
+          area: dispatchOk ? "agent" : "agent",
+          message: dispatchOk
+            ? `Janela ${sig.recentWindowMinutes}min: ${sig.recent.inboundCount} inbound → ${sig.recent.dispatchCount} chegaram no agente. ✓ Pipeline ok.`
+            : `Janela ${sig.recentWindowMinutes}min: ${sig.recent.inboundCount} inbound, ZERO chegaram no agente. Filtro do plugin tá bloqueando (allowFrom / groupPolicy / requireMention).`,
+          detail: (dispatchOk ? sig.recent.lastDispatchLine : sig.recent.lastInboundLine) ?? undefined,
         });
       }
 
-      if (sig.inboundCount > 0 && sig.dispatchCount === 0) {
+      // Historical context (informational, not a verdict on right-now).
+      if (sig.total.inboundCount > 0) {
         findings.push({
-          severity: "fail",
-          area: "agent",
-          message:
-            "Mensagens chegaram no gateway mas NÃO foram roteadas pro agente (zero linhas 'dispatch' / 'agent:main:whatsapp'). Provavelmente filtro dmPolicy/groupPolicy bloqueou, ou a allowFrom restringiu.",
+          severity: "info",
+          area: "baileys",
+          message: `Histórico total nos logs: ${sig.total.inboundCount} inbound, ${sig.total.dispatchCount} dispatched. Contagens incluem mensagens antigas (de antes de fixes de config).`,
+          detail: sig.total.lastInboundLine ?? undefined,
         });
       }
 
