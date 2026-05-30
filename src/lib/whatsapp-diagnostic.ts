@@ -8,7 +8,7 @@ import { resolveOpenClawAgentsConfigPath, readOpenClawConfig } from "./openclaw-
 import { getWhatsappAccountLocal } from "./whatsapp-accounts-local";
 import { waCall, looksLikePhoneNumber, hasWhatsappSessionLocal } from "./whatsapp-api";
 import { detectGatewayRuntime } from "./gateway-control";
-import { WHATSAPP_PLUGIN, listInstalledPlugins } from "./openclaw-plugins";
+import { WHATSAPP_PLUGIN, isPluginInstalled } from "./openclaw-plugins";
 
 export type CheckStatus = "pass" | "warn" | "fail" | "skip";
 
@@ -395,23 +395,28 @@ export async function runDiagnose(opts: RunDiagnoseOptions): Promise<DiagnoseRes
   // Channel plugin presence — `openclaw channels login --channel whatsapp`
   // silently exits when @openclaw/whatsapp isn't installed, which from the UI
   // looks indistinguishable from "the system can't generate the QR code".
+  //
+  // Use the filesystem probe (isPluginInstalled) instead of parsing the CLI
+  // plugins-list output. The CLI format changes across openclaw versions and
+  // we hit false-negatives (plugin clearly present on disk + pairing working,
+  // but parser reported "not installed").
   try {
-    const plugins = listInstalledPlugins();
-    if (!plugins.ran) {
-      checks.push({
-        id: "plugin-whatsapp",
-        category: "openclaw",
-        label: `Plugin ${WHATSAPP_PLUGIN}`,
-        status: "skip",
-        detail: `Não consegui listar plugins do OpenClaw${plugins.error ? `: ${plugins.error}` : ""}. O pareamento pode ainda funcionar.`,
-      });
-    } else if (plugins.packages.includes(WHATSAPP_PLUGIN)) {
+    const probe = isPluginInstalled(WHATSAPP_PLUGIN);
+    if (probe.installed) {
       checks.push({
         id: "plugin-whatsapp",
         category: "openclaw",
         label: `Plugin ${WHATSAPP_PLUGIN}`,
         status: "pass",
-        detail: "Plugin instalado — `channels login --channel whatsapp` consegue rodar.",
+        detail: "Plugin instalado no filesystem — `channels login --channel whatsapp` consegue rodar.",
+      });
+    } else if (probe.error) {
+      checks.push({
+        id: "plugin-whatsapp",
+        category: "openclaw",
+        label: `Plugin ${WHATSAPP_PLUGIN}`,
+        status: "skip",
+        detail: `Não consegui inspecionar a pasta de plugins do OpenClaw: ${probe.error}. Se o pareamento funcionou, ignore.`,
       });
     } else {
       checks.push({
@@ -420,8 +425,8 @@ export async function runDiagnose(opts: RunDiagnoseOptions): Promise<DiagnoseRes
         label: `Plugin ${WHATSAPP_PLUGIN}`,
         status: "fail",
         detail:
-          `Plugin ${WHATSAPP_PLUGIN} não está instalado — por isso o terminal de pareamento sai sem mostrar QR Code. ` +
-          "A pré-flight do botão Parear já instala automaticamente, mas você pode adiantar clicando em Instalar agora.",
+          `Plugin ${WHATSAPP_PLUGIN} não está instalado em <openclawDir>/npm/node_modules/. ` +
+          "A pré-flight do botão Parear instala automaticamente, mas dá pra adiantar clicando em Instalar agora.",
         fix: {
           action: "install-whatsapp-plugin",
           label: "Instalar plugin agora",
