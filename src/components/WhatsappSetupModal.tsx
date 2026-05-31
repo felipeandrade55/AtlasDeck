@@ -22,6 +22,8 @@ import {
   FileText,
   Power,
   Wrench,
+  RotateCcw,
+  Clock,
 } from "lucide-react";
 // Hot-reload-only: OpenClaw's gateway.reload.mode=hybrid (set by sweep)
 // auto-applies channels.whatsapp.* changes within ~1-2s of writing
@@ -862,6 +864,9 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
                 </div>
               </div>
 
+              {/* Session rotation card — reset Codex thread context */}
+              <RotationCard />
+
               {/* Accounts */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
@@ -1283,6 +1288,227 @@ function DiagBlock({
       <div className="text-[10px] space-y-0.5" style={{ color: "var(--text-muted)" }}>
         {details}
       </div>
+    </div>
+  );
+}
+
+interface RotationConfigResponse {
+  enabled: boolean;
+  intervalHours: number;
+  lastRotatedAt: number;
+  watchdog: {
+    started: boolean;
+    lastTickAt: number;
+    rotationsCount: number;
+    lastError: string | null;
+  };
+}
+
+function RotationCard() {
+  const [cfg, setCfg] = useState<RotationConfigResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [rotating, setRotating] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [draftEnabled, setDraftEnabled] = useState(false);
+  const [draftHours, setDraftHours] = useState(24);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/integrations/whatsapp/rotation-config", { cache: "no-store" });
+      const json = (await res.json()) as RotationConfigResponse;
+      setCfg(json);
+      setDraftEnabled(json.enabled);
+      setDraftHours(json.intervalHours);
+    } catch (e) {
+      setMsg({ kind: "err", text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const dirty = cfg !== null && (draftEnabled !== cfg.enabled || draftHours !== cfg.intervalHours);
+
+  const rotateNow = async () => {
+    setRotating(true);
+    setMsg(null);
+    try {
+      const res = await fetch("/api/integrations/whatsapp/rotate-session", { method: "POST" });
+      const json = await res.json();
+      if (json.rotated) {
+        const mb = (json.files.reduce((s: number, f: { sizeBytes: number }) => s + f.sizeBytes, 0) / 1024 / 1024).toFixed(2);
+        setMsg({ kind: "ok", text: `${json.files.length} arquivo(s) rotacionado(s) (${mb}MB liberados). Próxima mensagem começa com contexto limpo.` });
+      } else {
+        setMsg({ kind: "err", text: json.reason || "Não rotacionou (motivo desconhecido)" });
+      }
+      await load();
+    } catch (e) {
+      setMsg({ kind: "err", text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setRotating(false);
+    }
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setMsg(null);
+    try {
+      const res = await fetch("/api/integrations/whatsapp/rotation-config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: draftEnabled, intervalHours: draftHours }),
+      });
+      const json = (await res.json()) as RotationConfigResponse;
+      setCfg(json);
+      setMsg({
+        kind: "ok",
+        text: json.enabled
+          ? `Auto-rotação ATIVADA a cada ${json.intervalHours}h.`
+          : "Auto-rotação desativada — só rotações manuais (botão acima) acontecem.",
+      });
+    } catch (e) {
+      setMsg({ kind: "err", text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      className="rounded-lg p-3 space-y-3"
+      style={{ backgroundColor: "rgba(0,0,0,0.25)", border: "1px solid var(--border)" }}
+    >
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2">
+          <RotateCcw className="w-4 h-4" style={{ color: "#c4b5fd" }} />
+          <h3 className="text-xs uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+            Memória da conversa (Codex)
+          </h3>
+        </div>
+        <button
+          onClick={() => void load()}
+          disabled={loading}
+          className="flex items-center gap-1 text-[11px] px-2 py-1 rounded disabled:opacity-50"
+          style={{ color: "var(--text-muted)" }}
+          title="Atualizar status"
+        >
+          {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+        </button>
+      </div>
+
+      <p className="text-[11px] leading-relaxed" style={{ color: "var(--text-muted)" }}>
+        <strong style={{ color: "var(--text-secondary)" }}>O que faz:</strong> reseta o histórico de
+        prompts/respostas que o Codex carrega a cada turno. Quando esse histórico passa de ~5MB o LLM
+        engasga ("📝 mas sem reply"). Rotacionar = renomear o JSONL pra <code>.reset.&lt;ts&gt;.jsonl</code>{" "}
+        → próxima conversa começa do zero.
+      </p>
+      <p className="text-[11px] leading-relaxed" style={{ color: "var(--text-muted)" }}>
+        <strong style={{ color: "var(--text-secondary)" }}>O que NÃO faz:</strong> não apaga mensagens
+        do WhatsApp (essas ficam no celular/servidores do WhatsApp) nem memórias do bot (memory_*
+        ficam no SQLite separado). Só esquece a conversa LLM.
+      </p>
+
+      {/* Manual rotate */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <button
+          onClick={() => void rotateNow()}
+          disabled={rotating}
+          className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded disabled:opacity-50"
+          style={{ backgroundColor: "rgba(139,92,246,0.15)", color: "#c4b5fd", border: "1px solid rgba(139,92,246,0.4)" }}
+        >
+          {rotating ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
+          Resetar memória agora
+        </button>
+        {cfg && cfg.lastRotatedAt > 0 && (
+          <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+            última rotação: {new Date(cfg.lastRotatedAt).toLocaleString("pt-BR")}
+          </span>
+        )}
+      </div>
+
+      {/* Auto schedule */}
+      <div className="space-y-2 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
+        <label className="flex items-start gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={draftEnabled}
+            onChange={(e) => setDraftEnabled(e.target.checked)}
+            className="mt-0.5"
+          />
+          <div className="flex-1">
+            <div className="text-xs" style={{ color: "var(--text-primary)" }}>
+              <Clock className="w-3 h-3 inline mr-1" style={{ verticalAlign: "-2px" }} />
+              Rotacionar automaticamente em intervalo fixo
+            </div>
+            <div className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+              Recomendado se você usa WhatsApp ativamente. 24h é um bom default.
+            </div>
+          </div>
+        </label>
+
+        <div className="flex items-center gap-2 pl-6">
+          <label className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+            A cada
+          </label>
+          <input
+            type="number"
+            min={1}
+            max={168}
+            step={1}
+            value={draftHours}
+            disabled={!draftEnabled}
+            onChange={(e) => {
+              const n = parseInt(e.target.value, 10);
+              if (Number.isFinite(n)) setDraftHours(Math.max(1, Math.min(168, n)));
+            }}
+            className="w-16 rounded px-2 py-1 text-xs disabled:opacity-40"
+            style={{ backgroundColor: "rgba(0,0,0,0.3)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+          />
+          <span className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+            hora(s) {draftHours >= 24 ? `(~${(draftHours / 24).toFixed(1)} dia${draftHours >= 48 ? "s" : ""})` : ""}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2 pl-6">
+          <button
+            onClick={() => void save()}
+            disabled={!dirty || saving}
+            className="flex items-center gap-1 text-[11px] px-2 py-1 rounded disabled:opacity-40"
+            style={{ backgroundColor: dirty ? "rgba(16,185,129,0.15)" : "transparent", color: dirty ? "#6ee7b7" : "var(--text-muted)", border: `1px solid ${dirty ? "rgba(16,185,129,0.4)" : "var(--border)"}` }}
+          >
+            {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+            Salvar agenda
+          </button>
+          {cfg?.watchdog?.started ? (
+            <span className="text-[10px]" style={{ color: "#6ee7b7" }}>watchdog ativo</span>
+          ) : (
+            <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>watchdog dormindo</span>
+          )}
+          {cfg?.watchdog?.rotationsCount ? (
+            <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+              {cfg.watchdog.rotationsCount} rotação(ões) automática(s)
+            </span>
+          ) : null}
+        </div>
+      </div>
+
+      {msg && (
+        <div
+          className="text-[11px] p-2 rounded"
+          style={{
+            backgroundColor: msg.kind === "ok" ? "rgba(16,185,129,0.08)" : "rgba(239,68,68,0.08)",
+            border: `1px solid ${msg.kind === "ok" ? "rgba(16,185,129,0.3)" : "rgba(239,68,68,0.3)"}`,
+            color: msg.kind === "ok" ? "#6ee7b7" : "#fca5a5",
+          }}
+        >
+          {msg.text}
+        </div>
+      )}
     </div>
   );
 }

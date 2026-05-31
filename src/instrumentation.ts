@@ -41,6 +41,17 @@ export async function register(): Promise<void> {
   } catch (err) {
     console.warn("[instrumentation] agent-load watchdog bootstrap failed:", err);
   }
+  // WhatsApp rotation watchdog. Schedule-based (vs the threshold-based
+  // agent-load watchdog above) — the user picks an interval in the
+  // setup modal and we rotate the whatsapp session at that cadence.
+  // Off by default (config.enabled=false); turns on when the user
+  // saves the schedule from the UI.
+  try {
+    const { startWhatsappRotationWatchdog } = await import("./lib/whatsapp-rotation-watchdog");
+    startWhatsappRotationWatchdog();
+  } catch (err) {
+    console.warn("[instrumentation] whatsapp rotation watchdog bootstrap failed:", err);
+  }
   // Make sure the nightly backup cron is registered on a fresh install —
   // idempotent, so existing crontabs are left alone.
   try {
