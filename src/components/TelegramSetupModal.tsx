@@ -707,26 +707,25 @@ export function TelegramSetupModal({ open, onClose }: Props) {
                                   )
                                 }
                               />
-                              {/* Updates */}
+                              {/* Backlog — derivado de webhook.pending_update_count.
+                                  NUNCA chamar getUpdates aqui: rouba o long-poll
+                                  do openclaw-gateway e trava `channels.telegram.start-account`,
+                                  silenciando Telegram E WhatsApp (mesma fila do main). */}
                               <DiagBlock
-                                title="getUpdates"
+                                title="Backlog (pending updates)"
                                 icon={Inbox}
                                 ok={live.diagnostics.updates.ok}
                                 summary={
                                   live.diagnostics.updates.ok
-                                    ? `${live.diagnostics.updates.count} update(s) recentes`
+                                    ? `${live.diagnostics.updates.count} update(s) na fila do Telegram`
                                     : live.diagnostics.updates.error || "falhou"
                                 }
                                 details={
-                                  live.diagnostics.updates.ok && live.diagnostics.updates.count > 0 ? (
-                                    <>
-                                      <div>último de: {live.diagnostics.updates.latestFrom || "?"}</div>
-                                      <div>texto: <em>{(live.diagnostics.updates.latestText || "(sem texto)").slice(0, 60)}</em></div>
-                                      <div>em: {tsToDate(live.diagnostics.updates.latestDate) || "?"}</div>
-                                    </>
-                                  ) : (
-                                    <div>{live.diagnostics.updates.error || "Nenhum update novo. Envie /start ao bot para popular."}</div>
-                                  )
+                                  <div>
+                                    {live.diagnostics.updates.ok
+                                      ? "Contagem vinda do getWebhookInfo (não consome updates). Conteúdo da última mensagem fica visível só no log do gateway — getUpdates ficaria competindo com o long-poll do OpenClaw."
+                                      : live.diagnostics.updates.error || "—"}
+                                  </div>
                                 }
                               />
                             </div>

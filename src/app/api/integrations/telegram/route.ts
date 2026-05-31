@@ -1,7 +1,11 @@
 /**
  * Telegram integration — detailed status + edit + test.
  *
- * GET  /api/integrations/telegram        → full config + live diagnostics (getMe, getWebhookInfo, getUpdates)
+ * GET  /api/integrations/telegram        → full config + live diagnostics (getMe, getWebhookInfo)
+ *                                          NEVER calls getUpdates — that steals the long-poll from
+ *                                          openclaw-gateway and freezes `channels.telegram.start-account`,
+ *                                          blocking the entire main agent work queue (Telegram + WhatsApp).
+ *                                          Use webhook.pending_update_count as the queue-depth signal instead.
  * PUT  /api/integrations/telegram        → upsert config (enabled, dmPolicy, accounts)
  * POST /api/integrations/telegram?action=test → send a test message via the chosen account
  * POST /api/integrations/telegram?action=clear-webhook → deleteWebhook (useful when polling stopped working)
@@ -173,31 +177,29 @@ export async function GET(req: NextRequest) {
 
       let diagnostics: AccountOut["diagnostics"] = null;
       if (includeLive && hasToken) {
-        const [bot, webhook, updatesRaw] = await Promise.all([
+        // IMPORTANT: only getMe + getWebhookInfo. Calling getUpdates here
+        // races the openclaw-gateway's long-poll (Telegram allows exactly
+        // one getUpdates client per token) — this exact bug froze
+        // `channels.telegram.start-account` for 21h and backed up 114
+        // queued items in the main agent's work queue, silencing BOTH
+        // Telegram and WhatsApp (whatsapp dispatch went to the same agent).
+        const [bot, webhook] = await Promise.all([
           tgCall<{ id: number; is_bot: boolean; first_name: string; username?: string }>(token, "getMe"),
           tgCall<{ url: string; has_custom_certificate: boolean; pending_update_count: number; last_error_date?: number; last_error_message?: string; max_connections?: number; allowed_updates?: string[] }>(token, "getWebhookInfo"),
-          tgCall<Array<{ update_id: number; message?: { date: number; text?: string; from?: { id: number; first_name?: string; username?: string } } }>>(token, "getUpdates", { limit: 5, timeout: 0 }),
         ]);
 
-        let updates: NonNullable<AccountOut["diagnostics"]>["updates"];
-        if (!updatesRaw.ok) {
-          // Common case: 409 Conflict — webhook is set, getUpdates is rejected
-          updates = {
-            ok: false,
-            count: 0,
-            error: updatesRaw.description || updatesRaw.networkError || `HTTP ${updatesRaw.httpStatus ?? "?"}`,
-          };
-        } else {
-          const arr = updatesRaw.result || [];
-          const latest = arr[arr.length - 1];
-          updates = {
-            ok: true,
-            count: arr.length,
-            latestText: latest?.message?.text,
-            latestFrom: latest?.message?.from?.username || latest?.message?.from?.first_name,
-            latestDate: latest?.message?.date,
-          };
-        }
+        // Pseudo-"updates" diagnostic derived from webhook.pending_update_count.
+        // This is the queue depth at Telegram's side without consuming anything,
+        // so the gateway's poll keeps draining normally. We lose the latestText
+        // /latestFrom/latestDate fields (they require consuming updates), but
+        // the count is the actually-useful signal anyway.
+        const pendingCount =
+          webhook.ok && webhook.result ? webhook.result.pending_update_count : 0;
+        const updates: NonNullable<AccountOut["diagnostics"]>["updates"] = {
+          ok: webhook.ok,
+          count: pendingCount,
+          error: webhook.ok ? undefined : webhook.description || webhook.networkError || `HTTP ${webhook.httpStatus ?? "?"}`,
+        };
 
         diagnostics = { bot, webhook, updates };
       }
@@ -246,9 +248,6 @@ export async function GET(req: NextRequest) {
       }
       if (wh && wh.pending_update_count > 50) {
         issues.push(`Conta "${a.id}": ${wh.pending_update_count} updates pendentes (backlog grande)`);
-      }
-      if (a.diagnostics?.updates && !a.diagnostics.updates.ok && !wh?.url) {
-        issues.push(`Conta "${a.id}": getUpdates falhou — ${a.diagnostics.updates.error}`);
       }
       if (!a.chatId) issues.push(`Conta "${a.id}": chatId não definido — alertas (cost/budget) não conseguirão enviar mensagens proativas`);
     }
