@@ -167,8 +167,12 @@ export interface OperationModeApplied {
    *  delivery, advanced modes use "extensive" for sentiment etc. */
   reactionLevel: "off" | "ack" | "minimal" | "extensive";
   /** "off" disables auto-replies entirely. "first" = reply to first msg
-   *  in a burst, "batched" = wait for the burst to settle then reply
-   *  once, "all" = noisy reply-to-every-message. Passive uses "off". */
+   *  in a burst (BUGGY in @openclaw/whatsapp 2026.5.12: the burst tracker
+   *  classifies almost every message after the first as "subsequent" and
+   *  the bot stays silent forever — observed in prod 2026-05-31, lost
+   *  hours debugging). "batched" = wait for the burst to settle then
+   *  reply once. "all" = reply to every message. Active modes use "all"
+   *  until upstream fixes "first". Passive uses "off". */
   replyToMode: "off" | "first" | "all" | "batched";
   /** Ack-reaction sub-config (the small emoji the bot adds when it
    *  "received" a message). Schema requires `direct` and `group` even
@@ -285,7 +289,7 @@ export function operationModeToChannelConfig(mode: WhatsappOperationMode | undef
         wantsClonedVoiceReply: false,
         sendReadReceipts: true,
         reactionLevel: "ack",
-        replyToMode: "first",
+        replyToMode: "all",
         ackReaction: { direct: true, group: "mentions", emoji: "📝" },
         actions: { reactions: true, sendMessage: true, polls: false },
       };
@@ -301,7 +305,7 @@ export function operationModeToChannelConfig(mode: WhatsappOperationMode | undef
         wantsClonedVoiceReply: false,
         sendReadReceipts: true,
         reactionLevel: "ack",
-        replyToMode: "first",
+        replyToMode: "all",
         ackReaction: { direct: true, group: "mentions" },
         actions: { reactions: true, sendMessage: true, polls: true },
       };
@@ -318,7 +322,7 @@ export function operationModeToChannelConfig(mode: WhatsappOperationMode | undef
         wantsClonedVoiceReply: false,
         sendReadReceipts: true,
         reactionLevel: "ack",
-        replyToMode: "first",
+        replyToMode: "all",
         ackReaction: { direct: true, group: "mentions" },
         actions: { reactions: true, sendMessage: true, polls: true },
       };
