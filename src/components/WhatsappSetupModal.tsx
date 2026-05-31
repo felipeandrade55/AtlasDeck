@@ -820,7 +820,15 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
                   </label>
                   <select
                     value={globalOperationMode}
-                    onChange={(e) => setGlobalOperationMode(e.target.value as OperationMode)}
+                    onChange={(e) => {
+                      const m = e.target.value as OperationMode;
+                      setGlobalOperationMode(m);
+                      // Propagate to every draft. Otherwise the save body
+                      // carries stale per-account operationMode that runs
+                      // applyMode() a second time and overwrites the global
+                      // one, making the dropdown silently revert on refresh.
+                      setDrafts((ds) => ds.map((d) => ({ ...d, operationMode: m })));
+                    }}
                     className="w-full rounded px-2 py-1.5 text-sm"
                     style={{ backgroundColor: "rgba(0,0,0,0.3)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
                   >
