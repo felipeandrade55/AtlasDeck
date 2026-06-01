@@ -15,8 +15,15 @@
  * `data/whatsapp-rotation-config.json`. A dashboard restart re-reads
  * the config and resumes from there — no scheduling drift.
  */
-import { getWhatsappRotationConfig, markWhatsappRotated } from "./whatsapp-rotation-config";
-import { rotateActiveWhatsappSession } from "./whatsapp-session-rotator";
+import {
+  getWhatsappRotationConfig,
+  markWhatsappRotated,
+  markWhatsappCleanup,
+} from "./whatsapp-rotation-config";
+import {
+  rotateActiveWhatsappSession,
+  cleanupOldWhatsappRotations,
+} from "./whatsapp-session-rotator";
 import { logActivity } from "./activities-db";
 
 interface WatchdogState {
@@ -25,6 +32,10 @@ interface WatchdogState {
   lastTickAt: number;
   rotationsCount: number;
   lastRotationAt: number;
+  cleanupsCount: number;
+  lastCleanupAt: number;
+  lastCleanupFilesDeleted: number;
+  lastCleanupBytesFreed: number;
   lastError: string | null;
 }
 
@@ -34,8 +45,17 @@ const state: WatchdogState = {
   lastTickAt: 0,
   rotationsCount: 0,
   lastRotationAt: 0,
+  cleanupsCount: 0,
+  lastCleanupAt: 0,
+  lastCleanupFilesDeleted: 0,
+  lastCleanupBytesFreed: 0,
   lastError: null,
 };
+
+// Cleanup runs at most once per CLEANUP_COOLDOWN_MS so we don't hammer
+// readdir+stat every minute on a directory with thousands of files.
+// Once per hour is plenty — the eligible-age threshold is in days.
+const CLEANUP_COOLDOWN_MS = 60 * 60 * 1000;
 
 let timer: NodeJS.Timeout | null = null;
 
@@ -43,25 +63,46 @@ async function tick(): Promise<void> {
   state.lastTickAt = Date.now();
   try {
     const cfg = getWhatsappRotationConfig();
-    if (!cfg.enabled) return;
 
-    const intervalMs = cfg.intervalHours * 60 * 60 * 1000;
-    const elapsed = Date.now() - cfg.lastRotatedAt;
-    if (elapsed < intervalMs) return;
+    // Rotation pass — only if user opted in via `enabled`.
+    if (cfg.enabled) {
+      const intervalMs = cfg.intervalHours * 60 * 60 * 1000;
+      const elapsed = Date.now() - cfg.lastRotatedAt;
+      if (elapsed >= intervalMs) {
+        const result = await rotateActiveWhatsappSession({
+          triggeredBy: "auto-watchdog",
+        });
+        if (result.rotated) {
+          state.rotationsCount += 1;
+          state.lastRotationAt = Date.now();
+          markWhatsappRotated(state.lastRotationAt);
+          state.lastError = null;
+        } else {
+          // Skipped (no active session, or inside safety window) — mark
+          // anyway so we don't hammer the rotator every minute.
+          markWhatsappRotated(Date.now());
+          state.lastError = `rotation skipped: ${result.reason}`;
+        }
+      }
+    }
 
-    const result = await rotateActiveWhatsappSession({
-      triggeredBy: "auto-watchdog",
-    });
-    if (result.rotated) {
-      state.rotationsCount += 1;
-      state.lastRotationAt = Date.now();
-      markWhatsappRotated(state.lastRotationAt);
-      state.lastError = null;
-    } else {
-      // Skipped (no active session, or inside safety window) — mark
-      // anyway so we don't hammer the rotator every minute.
-      markWhatsappRotated(Date.now());
-      state.lastError = `rotation skipped: ${result.reason}`;
+    // Cleanup pass — independent of rotation toggle. Default cfg.cleanupDays=7
+    // means "always sweep stale artifacts" even when auto-rotation is off
+    // (user might be manually rotating + still want auto-cleanup). Setting
+    // cleanupDays=0 in config disables this pass entirely.
+    if (cfg.cleanupDays >= 1) {
+      const sinceLast = Date.now() - cfg.lastCleanupAt;
+      if (sinceLast >= CLEANUP_COOLDOWN_MS || cfg.lastCleanupAt === 0) {
+        const r = await cleanupOldWhatsappRotations({
+          olderThanDays: cfg.cleanupDays,
+          triggeredBy: "auto-watchdog",
+        });
+        state.cleanupsCount += 1;
+        state.lastCleanupAt = Date.now();
+        state.lastCleanupFilesDeleted = r.deleted.length;
+        state.lastCleanupBytesFreed = r.totalBytesFreed;
+        markWhatsappCleanup(r.deleted.length, r.totalBytesFreed, state.lastCleanupAt);
+      }
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

@@ -24,6 +24,9 @@ import {
   Wrench,
   RotateCcw,
   Clock,
+  ChevronDown,
+  ChevronRight,
+  RotateCw,
 } from "lucide-react";
 // Hot-reload-only: OpenClaw's gateway.reload.mode=hybrid (set by sweep)
 // auto-applies channels.whatsapp.* changes within ~1-2s of writing
@@ -867,6 +870,9 @@ export function WhatsappSetupModal({ open, onClose }: Props) {
               {/* Session rotation card — reset Codex thread context */}
               <RotationCard />
 
+              {/* Prompts editor — view/edit the system prompt injected per mode */}
+              <PromptsCard refreshKey={data?.timestamp ?? ""} />
+
               {/* Accounts */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
@@ -1296,10 +1302,15 @@ interface RotationConfigResponse {
   enabled: boolean;
   intervalHours: number;
   lastRotatedAt: number;
+  cleanupDays: number;
+  lastCleanupAt: number;
+  lastCleanupFilesDeleted: number;
+  lastCleanupBytesFreed: number;
   watchdog: {
     started: boolean;
     lastTickAt: number;
     rotationsCount: number;
+    cleanupsCount: number;
     lastError: string | null;
   };
 }
@@ -1308,10 +1319,12 @@ function RotationCard() {
   const [cfg, setCfg] = useState<RotationConfigResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [rotating, setRotating] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [draftEnabled, setDraftEnabled] = useState(false);
   const [draftHours, setDraftHours] = useState(24);
+  const [draftCleanupDays, setDraftCleanupDays] = useState(7);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1321,6 +1334,7 @@ function RotationCard() {
       setCfg(json);
       setDraftEnabled(json.enabled);
       setDraftHours(json.intervalHours);
+      setDraftCleanupDays(json.cleanupDays);
     } catch (e) {
       setMsg({ kind: "err", text: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -1332,7 +1346,11 @@ function RotationCard() {
     void load();
   }, [load]);
 
-  const dirty = cfg !== null && (draftEnabled !== cfg.enabled || draftHours !== cfg.intervalHours);
+  const dirty =
+    cfg !== null &&
+    (draftEnabled !== cfg.enabled ||
+      draftHours !== cfg.intervalHours ||
+      draftCleanupDays !== cfg.cleanupDays);
 
   const rotateNow = async () => {
     setRotating(true);
@@ -1361,20 +1379,70 @@ function RotationCard() {
       const res = await fetch("/api/integrations/whatsapp/rotation-config", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: draftEnabled, intervalHours: draftHours }),
+        body: JSON.stringify({
+          enabled: draftEnabled,
+          intervalHours: draftHours,
+          cleanupDays: draftCleanupDays,
+        }),
       });
       const json = (await res.json()) as RotationConfigResponse;
       setCfg(json);
+      const cleanupNote =
+        json.cleanupDays >= 1
+          ? ` Auto-limpeza apaga rotações > ${json.cleanupDays}d.`
+          : " Auto-limpeza desativada.";
       setMsg({
         kind: "ok",
-        text: json.enabled
-          ? `Auto-rotação ATIVADA a cada ${json.intervalHours}h.`
-          : "Auto-rotação desativada — só rotações manuais (botão acima) acontecem.",
+        text:
+          (json.enabled
+            ? `Auto-rotação ATIVADA a cada ${json.intervalHours}h.`
+            : "Auto-rotação desativada — só rotações manuais (botão acima) acontecem.") +
+          cleanupNote,
       });
     } catch (e) {
       setMsg({ kind: "err", text: e instanceof Error ? e.message : String(e) });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const cleanupNow = async () => {
+    setCleaning(true);
+    setMsg(null);
+    try {
+      const res = await fetch("/api/integrations/whatsapp/cleanup-old-rotations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          // Use the saved cleanupDays, or 7 as a safe fallback. The
+          // server applies the same default if the request omits it,
+          // but being explicit makes the activity log clearer.
+          olderThanDays: cfg?.cleanupDays && cfg.cleanupDays >= 1 ? cfg.cleanupDays : 7,
+        }),
+      });
+      const json = (await res.json()) as {
+        scanned: number;
+        deleted: Array<{ filePath: string; sizeBytes: number; ageDays: number }>;
+        totalBytesFreed: number;
+        olderThanDays: number;
+      };
+      if (json.deleted.length === 0) {
+        setMsg({
+          kind: "ok",
+          text: `Varri ${json.scanned} arquivo(s). Nenhum tinha > ${json.olderThanDays}d — nada pra apagar.`,
+        });
+      } else {
+        const mb = (json.totalBytesFreed / 1024 / 1024).toFixed(2);
+        setMsg({
+          kind: "ok",
+          text: `${json.deleted.length} rotação(ões) antiga(s) apagada(s) — ${mb}MB liberados.`,
+        });
+      }
+      await load();
+    } catch (e) {
+      setMsg({ kind: "err", text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setCleaning(false);
     }
   };
 
@@ -1474,7 +1542,57 @@ function RotationCard() {
           </span>
         </div>
 
-        <div className="flex items-center gap-2 pl-6">
+        {/* Auto-cleanup: independent of rotation toggle. Sweeps .reset.* artifacts. */}
+        <div className="pt-2" style={{ borderTop: "1px dashed var(--border)" }}>
+          <div className="flex items-center gap-2 flex-wrap">
+            <label className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+              <Trash2 className="w-3 h-3 inline mr-1" style={{ verticalAlign: "-2px" }} />
+              Apagar rotações antigas após
+            </label>
+            <input
+              type="number"
+              min={0}
+              max={365}
+              step={1}
+              value={draftCleanupDays}
+              onChange={(e) => {
+                const n = parseInt(e.target.value, 10);
+                if (Number.isFinite(n)) setDraftCleanupDays(Math.max(0, Math.min(365, n)));
+              }}
+              className="w-16 rounded px-2 py-1 text-xs"
+              style={{ backgroundColor: "rgba(0,0,0,0.3)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+            />
+            <span className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+              dia(s) {draftCleanupDays === 0 ? "(desativado)" : ""}
+            </span>
+          </div>
+          <p className="text-[10px] pl-5 pt-1" style={{ color: "var(--text-muted)" }}>
+            Watchdog varre 1x/hora os arquivos <code>.reset.&lt;ts&gt;.jsonl</code> e apaga os mais
+            velhos que esse limite. Nunca toca em sessões ativas. <strong>0 desativa</strong> —
+            mas aí você acumula MB indefinidamente.
+          </p>
+          <div className="flex items-center gap-2 pl-5 pt-1 flex-wrap">
+            <button
+              onClick={() => void cleanupNow()}
+              disabled={cleaning}
+              className="flex items-center gap-1 text-[11px] px-2 py-1 rounded disabled:opacity-50"
+              style={{ backgroundColor: "rgba(239,68,68,0.08)", color: "#fca5a5", border: "1px solid rgba(239,68,68,0.3)" }}
+              title="Apaga AGORA os .reset.*.jsonl mais velhos que o limite"
+            >
+              {cleaning ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+              Limpar antigas agora
+            </button>
+            {cfg && cfg.lastCleanupAt > 0 && (
+              <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                última: {cfg.lastCleanupFilesDeleted} arquivo(s),{" "}
+                {(cfg.lastCleanupBytesFreed / 1024 / 1024).toFixed(2)}MB ·{" "}
+                {new Date(cfg.lastCleanupAt).toLocaleString("pt-BR")}
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 pl-6 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
           <button
             onClick={() => void save()}
             disabled={!dirty || saving}
@@ -1482,7 +1600,7 @@ function RotationCard() {
             style={{ backgroundColor: dirty ? "rgba(16,185,129,0.15)" : "transparent", color: dirty ? "#6ee7b7" : "var(--text-muted)", border: `1px solid ${dirty ? "rgba(16,185,129,0.4)" : "var(--border)"}` }}
           >
             {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
-            Salvar agenda
+            Salvar agenda + limpeza
           </button>
           {cfg?.watchdog?.started ? (
             <span className="text-[10px]" style={{ color: "#6ee7b7" }}>watchdog ativo</span>
@@ -1491,7 +1609,12 @@ function RotationCard() {
           )}
           {cfg?.watchdog?.rotationsCount ? (
             <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-              {cfg.watchdog.rotationsCount} rotação(ões) automática(s)
+              {cfg.watchdog.rotationsCount} rotação(ões) auto
+            </span>
+          ) : null}
+          {cfg?.watchdog?.cleanupsCount ? (
+            <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+              · {cfg.watchdog.cleanupsCount} limpeza(s) auto
             </span>
           ) : null}
         </div>
@@ -1507,6 +1630,300 @@ function RotationCard() {
           }}
         >
           {msg.text}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Prompts editor ──────────────────────────────────────────────────────────
+// Surfaces the messagePrefix injected for each operation mode and lets the
+// user tweak it inline. Defaults live in code (whatsapp-accounts-local.ts);
+// overrides persist in data/whatsapp-prompts.json. When the user saves the
+// prompt of the currently-active mode, the backend writes it into openclaw.json
+// so hot-reload picks it up immediately. Editing a non-active mode just stores
+// the override — it takes effect next time that mode is selected.
+
+interface PromptModeRow {
+  mode: OperationMode;
+  default: string;
+  current: string;
+  isCustom: boolean;
+  editable: boolean;
+}
+
+interface PromptsResponse {
+  activeMode: OperationMode;
+  modes: PromptModeRow[];
+}
+
+const MODE_LABELS: Record<OperationMode, string> = {
+  passive: "🔇 Passivo",
+  owner: "👤 Responder como você",
+  assistant: "🤝 Responder como seu assessor",
+  open: "🌐 Bot livre",
+  pairing: "🔐 Pareamento manual",
+};
+
+function PromptsCard({ refreshKey }: { refreshKey: string }) {
+  const [data, setData] = useState<PromptsResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState<Set<OperationMode>>(new Set());
+  const [drafts, setDrafts] = useState<Partial<Record<OperationMode, string>>>({});
+  const [busyMode, setBusyMode] = useState<OperationMode | null>(null);
+  const [msg, setMsg] = useState<{ mode: OperationMode; kind: "ok" | "err"; text: string } | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/integrations/whatsapp/prompts", { cache: "no-store" });
+      const json = (await res.json()) as PromptsResponse;
+      setData(json);
+      // Reset drafts to match server state so the editor reflects what's
+      // actually saved (clears any in-flight unsaved edits — desired on reload).
+      const next: Partial<Record<OperationMode, string>> = {};
+      for (const m of json.modes) next[m.mode] = m.current;
+      setDrafts(next);
+    } catch (e) {
+      setMsg({ mode: "passive", kind: "err", text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load, refreshKey]);
+
+  const toggle = (mode: OperationMode) => {
+    setExpanded((s) => {
+      const next = new Set(s);
+      if (next.has(mode)) next.delete(mode);
+      else next.add(mode);
+      return next;
+    });
+  };
+
+  const save = async (mode: OperationMode) => {
+    const prompt = drafts[mode] ?? "";
+    setBusyMode(mode);
+    setMsg(null);
+    try {
+      const res = await fetch("/api/integrations/whatsapp/prompts", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode, prompt }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      setMsg({
+        mode,
+        kind: "ok",
+        text: json.hint || (json.isCustom ? "Prompt personalizado salvo." : "Revertido para o padrão."),
+      });
+      await load();
+    } catch (e) {
+      setMsg({ mode, kind: "err", text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusyMode(null);
+    }
+  };
+
+  const revert = async (mode: OperationMode) => {
+    setDrafts((d) => ({ ...d, [mode]: data?.modes.find((m) => m.mode === mode)?.default ?? "" }));
+    setBusyMode(mode);
+    setMsg(null);
+    try {
+      const res = await fetch("/api/integrations/whatsapp/prompts", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode, prompt: "" }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      setMsg({ mode, kind: "ok", text: json.hint || "Revertido para o padrão." });
+      await load();
+    } catch (e) {
+      setMsg({ mode, kind: "err", text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusyMode(null);
+    }
+  };
+
+  return (
+    <div
+      className="rounded-lg p-3 space-y-3"
+      style={{ backgroundColor: "rgba(0,0,0,0.25)", border: "1px solid var(--border)" }}
+    >
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2">
+          <FileText className="w-4 h-4" style={{ color: "#fbbf24" }} />
+          <h3 className="text-xs uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+            Prompts dos modos
+          </h3>
+        </div>
+        <button
+          onClick={() => void load()}
+          disabled={loading}
+          className="flex items-center gap-1 text-[11px] px-2 py-1 rounded disabled:opacity-50"
+          style={{ color: "var(--text-muted)" }}
+          title="Recarregar"
+        >
+          <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} />
+        </button>
+      </div>
+
+      <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+        Edite o texto injetado pelo gateway em cada mensagem (campo <code>messagePrefix</code>) antes do agente ver.
+        Mudar o prompt do <strong>modo atualmente ativo</strong> aplica via hot-reload em ~1-2s.
+        Os outros entram em vigor quando você selecionar o modo no dropdown acima.
+      </p>
+
+      {!data && loading && (
+        <div className="text-[11px] flex items-center gap-2" style={{ color: "var(--text-muted)" }}>
+          <Loader2 className="w-3 h-3 animate-spin" /> Carregando…
+        </div>
+      )}
+
+      {data && (
+        <div className="space-y-1.5">
+          {data.modes.map((m) => {
+            const isOpen = expanded.has(m.mode);
+            const isActive = data.activeMode === m.mode;
+            const draft = drafts[m.mode] ?? m.current;
+            const dirty = draft !== m.current;
+            const matchesDefault = draft === m.default;
+            const busy = busyMode === m.mode;
+            const localMsg = msg && msg.mode === m.mode ? msg : null;
+
+            return (
+              <div
+                key={m.mode}
+                className="rounded"
+                style={{
+                  backgroundColor: "rgba(0,0,0,0.25)",
+                  border: `1px solid ${isActive ? "rgba(139,92,246,0.45)" : "var(--border)"}`,
+                }}
+              >
+                <button
+                  onClick={() => toggle(m.mode)}
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left"
+                  style={{ color: "var(--text-primary)" }}
+                >
+                  {isOpen ? (
+                    <ChevronDown className="w-3.5 h-3.5 shrink-0" style={{ color: "var(--text-muted)" }} />
+                  ) : (
+                    <ChevronRight className="w-3.5 h-3.5 shrink-0" style={{ color: "var(--text-muted)" }} />
+                  )}
+                  <span className="text-sm flex-1 truncate">{MODE_LABELS[m.mode]}</span>
+                  {isActive && (
+                    <span
+                      className="text-[10px] px-1.5 py-0.5 rounded shrink-0"
+                      style={{
+                        backgroundColor: "rgba(139,92,246,0.15)",
+                        color: "#c4b5fd",
+                        border: "1px solid rgba(139,92,246,0.4)",
+                      }}
+                    >
+                      ativo
+                    </span>
+                  )}
+                  {!m.editable && (
+                    <span className="text-[10px] shrink-0" style={{ color: "var(--text-muted)" }}>
+                      sem prompt
+                    </span>
+                  )}
+                  {m.editable && (
+                    <span
+                      className="text-[10px] px-1.5 py-0.5 rounded shrink-0"
+                      style={{
+                        backgroundColor: m.isCustom ? "rgba(234,179,8,0.12)" : "rgba(16,185,129,0.10)",
+                        color: m.isCustom ? "#fbbf24" : "#6ee7b7",
+                        border: `1px solid ${m.isCustom ? "rgba(234,179,8,0.35)" : "rgba(16,185,129,0.3)"}`,
+                      }}
+                    >
+                      {m.isCustom ? "personalizado" : "padrão"}
+                    </span>
+                  )}
+                </button>
+
+                {isOpen && (
+                  <div className="px-2.5 pb-2.5 space-y-2 border-t" style={{ borderColor: "var(--border)" }}>
+                    {!m.editable ? (
+                      <p className="text-[11px] pt-2" style={{ color: "var(--text-muted)" }}>
+                        Este modo não usa <code>messagePrefix</code> — o gateway não chega a invocar o agente
+                        ({m.mode === "passive"
+                          ? "DMs e grupos ficam desligados"
+                          : "pareamento gerencia o fluxo via código por contato"}),
+                        então editar texto aqui não muda comportamento.
+                      </p>
+                    ) : (
+                      <>
+                        <textarea
+                          value={draft}
+                          onChange={(e) => setDrafts((d) => ({ ...d, [m.mode]: e.target.value }))}
+                          spellCheck={false}
+                          className="w-full text-[11px] font-mono p-2 rounded resize-y"
+                          style={{
+                            backgroundColor: "rgba(0,0,0,0.4)",
+                            color: "var(--text-primary)",
+                            border: "1px solid var(--border)",
+                            minHeight: "180px",
+                            maxHeight: "420px",
+                          }}
+                        />
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <button
+                            onClick={() => void save(m.mode)}
+                            disabled={busy || !dirty}
+                            className="flex items-center gap-1 text-[11px] px-2 py-1 rounded disabled:opacity-40"
+                            style={{
+                              backgroundColor: "rgba(139,92,246,0.15)",
+                              color: "#c4b5fd",
+                              border: "1px solid rgba(139,92,246,0.4)",
+                            }}
+                          >
+                            {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                            Salvar
+                          </button>
+                          <button
+                            onClick={() => void revert(m.mode)}
+                            disabled={busy || (!m.isCustom && matchesDefault)}
+                            className="flex items-center gap-1 text-[11px] px-2 py-1 rounded disabled:opacity-40"
+                            style={{ color: "var(--text-muted)", border: "1px solid var(--border)" }}
+                            title="Apaga o override e volta ao texto padrão (em código)"
+                          >
+                            <RotateCw className="w-3 h-3" />
+                            Reverter para padrão
+                          </button>
+                          {dirty && (
+                            <span className="text-[10px]" style={{ color: "#fbbf24" }}>
+                              alterações não salvas
+                            </span>
+                          )}
+                          <span className="text-[10px] ml-auto" style={{ color: "var(--text-muted)" }}>
+                            {draft.length} caracteres
+                          </span>
+                        </div>
+                        {localMsg && (
+                          <div
+                            className="text-[10px] p-1.5 rounded"
+                            style={{
+                              backgroundColor: localMsg.kind === "ok" ? "rgba(16,185,129,0.08)" : "rgba(239,68,68,0.08)",
+                              border: `1px solid ${localMsg.kind === "ok" ? "rgba(16,185,129,0.3)" : "rgba(239,68,68,0.3)"}`,
+                              color: localMsg.kind === "ok" ? "#6ee7b7" : "#fca5a5",
+                            }}
+                          >
+                            {localMsg.text}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

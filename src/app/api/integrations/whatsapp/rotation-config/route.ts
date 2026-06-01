@@ -31,10 +31,15 @@ function snapshot() {
     enabled: cfg.enabled,
     intervalHours: cfg.intervalHours,
     lastRotatedAt: cfg.lastRotatedAt,
+    cleanupDays: cfg.cleanupDays,
+    lastCleanupAt: cfg.lastCleanupAt,
+    lastCleanupFilesDeleted: cfg.lastCleanupFilesDeleted,
+    lastCleanupBytesFreed: cfg.lastCleanupBytesFreed,
     watchdog: {
       started: wd.started,
       lastTickAt: wd.lastTickAt,
       rotationsCount: wd.rotationsCount,
+      cleanupsCount: wd.cleanupsCount,
       lastError: wd.lastError,
     },
   };
@@ -48,12 +53,12 @@ export async function GET() {
 }
 
 export async function PUT(req: NextRequest) {
-  let body: { enabled?: boolean; intervalHours?: number } = {};
+  let body: { enabled?: boolean; intervalHours?: number; cleanupDays?: number } = {};
   try {
     body = await req.json();
   } catch {
     return NextResponse.json(
-      { error: "Body JSON inválido — espera { enabled?: boolean, intervalHours?: number }" },
+      { error: "Body JSON inválido — espera { enabled?: boolean, intervalHours?: number, cleanupDays?: number }" },
       { status: 400 },
     );
   }
@@ -61,6 +66,7 @@ export async function PUT(req: NextRequest) {
   setWhatsappRotationConfig({
     enabled: body.enabled,
     intervalHours: body.intervalHours,
+    cleanupDays: body.cleanupDays,
   });
   // Make sure the watchdog is up so the new config takes effect on
   // the next tick (within 60s) without needing a process restart.

@@ -50,6 +50,26 @@ export interface RotateWhatsappResult {
   agentId: string;
 }
 
+export interface CleanupOldRotationsInput {
+  /** Agent id to scan. Defaults to "main". */
+  agentId?: string;
+  /** Delete files older than this many days. Must be >= 1 to actually
+   *  delete (0 returns the plan without touching anything). */
+  olderThanDays: number;
+  /** When true, list-only — no unlinks. */
+  dryRun?: boolean;
+  triggeredBy?: "manual" | "auto-watchdog" | "api";
+}
+
+export interface CleanupOldRotationsResult {
+  scanned: number;
+  deleted: Array<{ filePath: string; sizeBytes: number; ageDays: number }>;
+  skipped: Array<{ filePath: string; sizeBytes: number; ageDays: number; reason: string }>;
+  totalBytesFreed: number;
+  agentId: string;
+  dryRun: boolean;
+}
+
 const DEFAULT_INACTIVITY_MS = 5_000;
 const SCAN_PEEK_BYTES = 32 * 1024;
 
@@ -270,3 +290,126 @@ export async function rotateActiveWhatsappSession(
     agentId,
   };
 }
+
+/**
+ * Delete `.reset.<ts>.jsonl` artifacts older than `olderThanDays` from
+ * the agent's sessions directory. Targets ONLY rotated artifacts —
+ * never touches active session files (those don't have `.reset.` in
+ * the name).
+ *
+ * Safety:
+ *   - Hard filter: filename must contain `.reset.` AND end with `.jsonl`
+ *     (or `.json` for the trajectory sidecar). Prevents the world's
+ *     dumbest typo from nuking active sessions.
+ *   - `olderThanDays < 1` → dryRun forced. Caller can't accidentally
+ *     pass `0` and wipe today's rotations.
+ *   - Uses `fs.statSync` mtime (NOT the timestamp in the filename) so
+ *     even if someone hand-renames a file, the age check still holds.
+ */
+export async function cleanupOldWhatsappRotations(
+  input: CleanupOldRotationsInput,
+): Promise<CleanupOldRotationsResult> {
+  const agentId = input.agentId ?? "main";
+  const triggeredBy = input.triggeredBy ?? "manual";
+  // 0 or negative → treat as dryRun so a misconfigured cleanupDays
+  // can never delete fresh artifacts. The watchdog disables itself
+  // when cleanupDays=0 (see whatsapp-rotation-watchdog), so this is
+  // a defense-in-depth check.
+  const dryRun = input.dryRun || input.olderThanDays < 1;
+  const olderThanDays = Math.max(1, input.olderThanDays);
+
+  const cfg = readOpenClawConfig();
+  const sessionsDir = path.join(cfg.openclawDir, "agents", agentId, "sessions");
+
+  const result: CleanupOldRotationsResult = {
+    scanned: 0,
+    deleted: [],
+    skipped: [],
+    totalBytesFreed: 0,
+    agentId,
+    dryRun,
+  };
+
+  if (!existsSync(sessionsDir)) return result;
+
+  let entries: string[];
+  try {
+    entries = await fsp.readdir(sessionsDir);
+  } catch {
+    return result;
+  }
+
+  const cutoffMs = Date.now() - olderThanDays * 24 * 60 * 60 * 1000;
+
+  for (const name of entries) {
+    // Hard filter — only touch `.reset.` artifacts. The match must be
+    // in the middle of the name, not at the start, to avoid edge cases.
+    if (!name.includes(".reset.")) continue;
+    if (!(name.endsWith(".jsonl") || name.endsWith(".json"))) continue;
+
+    const full = path.join(sessionsDir, name);
+    let s;
+    try {
+      s = statSync(full);
+    } catch {
+      continue;
+    }
+    if (!s.isFile()) continue;
+    result.scanned += 1;
+
+    const ageMs = Date.now() - s.mtimeMs;
+    const ageDays = ageMs / (24 * 60 * 60 * 1000);
+
+    if (s.mtimeMs > cutoffMs) {
+      result.skipped.push({
+        filePath: full,
+        sizeBytes: s.size,
+        ageDays,
+        reason: `younger than ${olderThanDays}d`,
+      });
+      continue;
+    }
+
+    if (dryRun) {
+      result.deleted.push({ filePath: full, sizeBytes: s.size, ageDays });
+      result.totalBytesFreed += s.size;
+      continue;
+    }
+
+    try {
+      await fsp.unlink(full);
+      result.deleted.push({ filePath: full, sizeBytes: s.size, ageDays });
+      result.totalBytesFreed += s.size;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      result.skipped.push({
+        filePath: full,
+        sizeBytes: s.size,
+        ageDays,
+        reason: `unlink failed: ${msg}`,
+      });
+    }
+  }
+
+  if (!dryRun && result.deleted.length > 0) {
+    const mb = (result.totalBytesFreed / 1024 / 1024).toFixed(2);
+    logActivity(
+      "command",
+      `Limpeza de rotações WhatsApp: ${result.deleted.length} arquivo(s) apagados (${mb}MB liberados, trigger=${triggeredBy})`,
+      "success",
+      {
+        metadata: {
+          action: "whatsapp-rotation-cleanup",
+          triggeredBy,
+          agentId,
+          olderThanDays,
+          filesDeleted: result.deleted.length,
+          bytesFreed: result.totalBytesFreed,
+        },
+      },
+    );
+  }
+
+  return result;
+}
+
