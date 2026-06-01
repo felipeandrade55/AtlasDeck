@@ -15,6 +15,7 @@
  */
 import fs from "fs";
 import path from "path";
+import { getMessagePrefixOverride } from "./whatsapp-prompts-local";
 
 const LOCAL_PATH = path.join(process.cwd(), "data", "whatsapp-accounts.json");
 
@@ -194,15 +195,27 @@ export interface OperationModeApplied {
  *   - read the conversation context, don't reflex-reply to the last line
  */
 const SHARED_RULES = [
+  "[AUDITORIA — OBRIGATÓRIA antes de qualquer ação]",
+  "• ANTES de processar ou responder qualquer mensagem inbound (DM ou grupo), chame `whatsapp_briefing_log` com {senderJid, senderName (se souber), summary (1 frase do que a pessoa disse/quer), urgency ('normal' por padrão), actionTaken ('respondendo' OU 'ignorando: grupo sem mention' OU 'ignorando: <motivo>'), botReply (texto literal que você vai mandar de volta; null se for ignorar)}.",
+  "• Se já souber o que vai responder, inclua o texto exato em `botReply`. Se ainda não souber, chame `whatsapp_briefing_log` sem `botReply`, guarde o `entry.id` retornado e DEPOIS de mandar a resposta chame `whatsapp_briefing_attach_reply` com {id, botReply} pra fechar o registro.",
+  "• Este é o ÚNICO rastro que Felipe tem de que você está vivo e operando. NÃO pule por nenhum motivo — vale para TODAS as mensagens, em TODOS os modos, inclusive quando você decide não responder.",
+  "• Se a tool não existir/falhar, ignore o erro e siga respondendo normalmente — não bloqueie a resposta por causa do log.",
+  "",
   "[REGRAS GERAIS — sempre aplicam]",
-  "• GRUPO sem @mention de Felipe → NÃO responda. Apenas leia e ignore. Não diga 'desculpe' nem 'estou em modo passivo' — silêncio total.",
+  "• GRUPO sem @mention de Felipe → NÃO responda. Apenas leia e ignore (mas LOGUE com actionTaken='ignorando: grupo sem mention'). Não diga 'desculpe' nem 'estou em modo passivo' — silêncio total.",
   "• GRUPO com @mention de Felipe → responda em até 2 frases, endereçando a pessoa que mencionou. Sem expor info pessoal nem listar.",
   "• Considere o HISTÓRICO RECENTE da conversa antes de responder. Não responda mecanicamente à última mensagem isolada — entenda a thread e responda de forma natural.",
   "• Se a pessoa mandou áudio, é geralmente OK responder por áudio também (mesmo formato).",
   "",
 ].join("\n");
 
-export function operationModeToChannelConfig(mode: WhatsappOperationMode | undefined): OperationModeApplied {
+/**
+ * Builds the OperationModeApplied object using the BUILT-IN default
+ * messagePrefix for each mode. Internal — public callers go through
+ * `operationModeToChannelConfig`, which also applies any user override saved
+ * via the WhatsApp setup modal's "Prompts dos modos" editor.
+ */
+function buildDefaultChannelConfig(mode: WhatsappOperationMode | undefined): OperationModeApplied {
   switch (mode) {
     case "owner": {
       const persona = [
@@ -271,8 +284,8 @@ export function operationModeToChannelConfig(mode: WhatsappOperationMode | undef
         "• Se NÃO bater (ou se get_owner_phone retornar configured=false): responda 'Ações desse tipo são só com o Felipe — vou avisar ele.' e chame `whatsapp_briefing_log` com urgency='high' e actionTaken='comando admin recusado (remetente não é o dono)'.",
         "• Pedidos comuns (recados, marcar reunião normal, tirar dúvida geral) NÃO precisam dessa validação — só os comandos que mexem no sistema.",
         "",
-        "BRIEFING — DIÁRIO OBRIGATÓRIO:",
-        "• APÓS cada conversa que você atendeu, chame `whatsapp_briefing_log` com {senderJid, senderName, summary, urgency, actionTaken, requiresFollowup}. Isso vira o histórico que Felipe vai consultar depois.",
+        "BRIEFING — ASSESSOR-ESPECÍFICO (o log básico já está nas REGRAS GERAIS):",
+        "• Quando logar via `whatsapp_briefing_log`, capriche no `summary` (1-2 frases ricas: 'Maria perguntou sobre orçamento do projeto X, falou que precisa fechar até sexta') e seja agressivo no `urgency` ('high' se a pessoa pediu retorno, 'medium' se Felipe deveria ver hoje). Adicione `actionTaken` detalhado ('agendei reunião quarta 14h', 'orientei a mandar email').",
         "• Quando Felipe pedir 'me dá o briefing', 'resumo de quem falou comigo', 'quem mandou mensagem hoje' — chame `whatsapp_briefing_get` (filtros sinceHours, onlyPending, urgency). Apresente em markdown agrupado por remetente, urgência destacada (🔴 urgent, 🟠 high, 🟡 medium, ⚪ normal).",
         "• Depois que Felipe ler o briefing e confirmar, chame `whatsapp_briefing_ack` ({all: true} ou {ids: [...]}) pra marcar como visto e limpar o painel pendente.",
         "",
@@ -359,6 +372,28 @@ export function operationModeToChannelConfig(mode: WhatsappOperationMode | undef
         actions: { reactions: false, sendMessage: false, polls: false },
       };
   }
+}
+
+/**
+ * Returns the built-in default messagePrefix for a mode (NEVER the user's
+ * override). Used by the UI to display "this is the default text" alongside
+ * the current value, so the user can compare and revert.
+ */
+export function getDefaultMessagePrefix(mode: WhatsappOperationMode | undefined): string {
+  return buildDefaultChannelConfig(mode).messagePrefix;
+}
+
+/**
+ * Public entry point. Same shape as before, with one difference: if the user
+ * saved a custom messagePrefix for this mode via the modal, it replaces the
+ * default. All other fields (dmPolicy, allowFrom, reactionLevel, …) come
+ * from the built-in defaults — only the prompt text is user-editable.
+ */
+export function operationModeToChannelConfig(mode: WhatsappOperationMode | undefined): OperationModeApplied {
+  const base = buildDefaultChannelConfig(mode);
+  const override = getMessagePrefixOverride(mode);
+  if (override === null) return base;
+  return { ...base, messagePrefix: override };
 }
 
 export function deleteWhatsappAccountLocal(id: string): void {
