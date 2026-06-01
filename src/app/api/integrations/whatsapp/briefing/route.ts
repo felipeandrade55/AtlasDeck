@@ -20,6 +20,7 @@ import {
   listBriefings,
   acknowledgeAllBriefings,
   summarizeBriefings,
+  attachBotReply,
   type BriefingUrgency,
 } from "@/lib/whatsapp-briefing-db";
 
@@ -28,6 +29,12 @@ export const dynamic = "force-dynamic";
 const URGENCIES: BriefingUrgency[] = ["low", "normal", "medium", "high", "urgent"];
 
 export async function POST(req: NextRequest) {
+  // Dual-mode endpoint:
+  //   POST ?action=attachReply { id, botReply } → updates existing briefing
+  //   POST                     { senderJid, summary, ... } → creates new
+  const url = new URL(req.url);
+  const action = url.searchParams.get("action");
+
   let body: {
     accountId?: string;
     senderJid?: string;
@@ -37,11 +44,30 @@ export async function POST(req: NextRequest) {
     actionTaken?: string | null;
     requiresFollowup?: boolean;
     rawExcerpt?: string | null;
+    botReply?: string | null;
+    id?: string;
   } = {};
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "Body JSON inválido" }, { status: 400 });
+  }
+
+  if (action === "attachReply") {
+    const id = (body.id || "").trim();
+    const botReply = (body.botReply || "").trim();
+    if (!id) return NextResponse.json({ error: "id obrigatório" }, { status: 400 });
+    if (!botReply) return NextResponse.json({ error: "botReply obrigatório" }, { status: 400 });
+    try {
+      const ok = attachBotReply(id, botReply);
+      if (!ok) return NextResponse.json({ error: `id=${id} não encontrado` }, { status: 404 });
+      return NextResponse.json({ ok: true, id });
+    } catch (e) {
+      return NextResponse.json(
+        { error: e instanceof Error ? e.message : String(e) },
+        { status: 500 },
+      );
+    }
   }
 
   const accountId = (body.accountId || "main").trim();
@@ -65,6 +91,7 @@ export async function POST(req: NextRequest) {
       actionTaken: body.actionTaken ?? null,
       requiresFollowup: !!body.requiresFollowup,
       rawExcerpt: body.rawExcerpt ?? null,
+      botReply: body.botReply ?? null,
     });
     return NextResponse.json({ ok: true, entry });
   } catch (e) {

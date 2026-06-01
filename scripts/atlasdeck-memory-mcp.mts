@@ -585,9 +585,9 @@ server.registerTool(
 server.registerTool(
   "whatsapp_briefing_log",
   {
-    title: "Log uma conversa do modo Assessor",
+    title: "Log uma conversa WhatsApp (auditoria)",
     description:
-      "Modo Assessor: chame este tool DEPOIS de cada conversa que você atendeu em nome do Felipe, registrando quem falou, sobre o quê, urgência e ação tomada. Felipe vai pedir o briefing depois e este log é a fonte de verdade. NÃO use no modo Owner — apenas Assessor.",
+      "Chame ANTES de processar/responder qualquer mensagem inbound do WhatsApp, em QUALQUER modo (owner/assessor/open). Este é o rastro de auditoria que Felipe consulta — não pule. Se você vai responder, inclua o texto da resposta em `botReply`. Se vai ignorar (ex: grupo sem mention), passe actionTaken='ignorando: <motivo>' e botReply=null. Retorna `entry.id` — guarde se for usar `whatsapp_briefing_attach_reply` depois.",
     inputSchema: {
       senderJid: z
         .string()
@@ -604,7 +604,7 @@ server.registerTool(
         .min(1)
         .max(2000)
         .describe(
-          "Resumo da conversa em 1-3 frases. O que a pessoa queria, qual o ponto principal.",
+          "Resumo da mensagem inbound em 1-3 frases. O que a pessoa disse/quer.",
         ),
       urgency: z
         .enum(["low", "normal", "medium", "high", "urgent"])
@@ -616,7 +616,7 @@ server.registerTool(
         .string()
         .optional()
         .describe(
-          "O que você (assessor) fez: 'agendei reunião quarta 14h', 'anotei recado', 'orientei pra mandar email pro Felipe', etc.",
+          "O que você fez: 'respondendo', 'agendei reunião quarta 14h', 'anotei recado', 'ignorando: grupo sem mention', etc.",
         ),
       requiresFollowup: z
         .boolean()
@@ -627,7 +627,14 @@ server.registerTool(
         .max(1000)
         .optional()
         .describe(
-          "Trecho literal mais importante da mensagem (opcional, pra Felipe não precisar caçar contexto).",
+          "Trecho literal mais importante da mensagem inbound (opcional).",
+        ),
+      botReply: z
+        .string()
+        .max(4000)
+        .optional()
+        .describe(
+          "Texto LITERAL que você vai mandar de volta pro remetente. Inclua SEMPRE que for responder — é o que Felipe vê pra auditar o que você disse. Se for ignorar, deixe null/omita.",
         ),
       accountId: z
         .string()
@@ -646,8 +653,37 @@ server.registerTool(
         actionTaken: args.actionTaken ?? null,
         requiresFollowup: !!args.requiresFollowup,
         rawExcerpt: args.rawExcerpt ?? null,
+        botReply: args.botReply ?? null,
       });
       return asJson({ ok: true, entry });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
+server.registerTool(
+  "whatsapp_briefing_attach_reply",
+  {
+    title: "Anexa o texto da resposta a um briefing já gravado",
+    description:
+      "Use quando logou ANTES de responder (sem saber o texto exato ainda) e quer voltar e gravar o que realmente mandou. Passe o `id` que `whatsapp_briefing_log` retornou + o `botReply` literal.",
+    inputSchema: {
+      id: z.string().min(1).describe("ID do briefing (retornado por whatsapp_briefing_log)."),
+      botReply: z
+        .string()
+        .min(1)
+        .max(4000)
+        .describe("Texto literal que você enviou pro remetente."),
+    },
+  },
+  async (args) => {
+    try {
+      const updated = briefingDb.attachBotReply(args.id, args.botReply);
+      if (!updated) {
+        return asError(`Briefing id=${args.id} não encontrado.`);
+      }
+      return asJson({ ok: true, id: args.id });
     } catch (err) {
       return asError(err instanceof Error ? err.message : String(err));
     }

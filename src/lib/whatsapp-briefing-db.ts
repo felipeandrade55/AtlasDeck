@@ -46,6 +46,37 @@ function db(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_briefing_urgency
       ON assessor_conversations(urgency, created_at DESC);
   `);
+
+  // ── Idempotent column migrations ───────────────────────────────────
+  // SQLite has no "ADD COLUMN IF NOT EXISTS", so we sniff pragma and
+  // ALTER only when missing. Both columns nullable → zero risk to old
+  // rows. Wrapped in try/catch defensively in case the table is locked.
+  const existing = new Set(
+    (conn.prepare("PRAGMA table_info(assessor_conversations)").all() as Array<{ name: string }>).map(
+      (r) => r.name,
+    ),
+  );
+  // bot_reply_text: literal text the bot said back to the sender. Captured
+  // alongside the inbound summary so the user can audit both sides without
+  // jumping to Codex session logs.
+  if (!existing.has("bot_reply_text")) {
+    try {
+      conn.exec(`ALTER TABLE assessor_conversations ADD COLUMN bot_reply_text TEXT`);
+    } catch {
+      // ignore — another writer raced us; harmless
+    }
+  }
+  // session_id: optional Codex thread id (when the MCP server is taught to
+  // capture it). Indexed lazily once populated. Lets us correlate briefings
+  // with usage-tracking session-level cost rows for per-conversation pricing.
+  if (!existing.has("session_id")) {
+    try {
+      conn.exec(`ALTER TABLE assessor_conversations ADD COLUMN session_id TEXT`);
+    } catch {
+      // ignore — another writer raced us; harmless
+    }
+  }
+
   _db = conn;
   return conn;
 }
@@ -61,6 +92,11 @@ export interface BriefingEntryInput {
   actionTaken?: string | null;
   requiresFollowup?: boolean;
   rawExcerpt?: string | null;
+  /** Texto que o bot mandou de volta (se respondeu). Null quando ignorou. */
+  botReply?: string | null;
+  /** Codex session id (quando o MCP server conseguir capturar). Permite
+   *  correlacionar com usage-tracking pra custo por conversa. */
+  sessionId?: string | null;
 }
 
 export interface BriefingEntry {
@@ -73,6 +109,8 @@ export interface BriefingEntry {
   actionTaken: string | null;
   requiresFollowup: boolean;
   rawExcerpt: string | null;
+  botReply: string | null;
+  sessionId: string | null;
   createdAt: number;
   updatedAt: number;
   acknowledgedAt: number | null;
@@ -89,6 +127,8 @@ function rowToEntry(row: Record<string, unknown>): BriefingEntry {
     actionTaken: (row.action_taken as string | null) ?? null,
     requiresFollowup: !!(row.requires_followup as number),
     rawExcerpt: (row.raw_excerpt as string | null) ?? null,
+    botReply: (row.bot_reply_text as string | null) ?? null,
+    sessionId: (row.session_id as string | null) ?? null,
     createdAt: row.created_at as number,
     updatedAt: row.updated_at as number,
     acknowledgedAt: (row.acknowledged_at as number | null) ?? null,
@@ -102,9 +142,11 @@ export function logBriefing(input: BriefingEntryInput): BriefingEntry {
     .prepare(
       `INSERT INTO assessor_conversations
          (id, account_id, sender_jid, sender_name, summary, urgency,
-          action_taken, requires_followup, raw_excerpt, created_at, updated_at)
+          action_taken, requires_followup, raw_excerpt, bot_reply_text,
+          session_id, created_at, updated_at)
        VALUES (@id, @accountId, @senderJid, @senderName, @summary, @urgency,
-               @actionTaken, @requiresFollowup, @rawExcerpt, @createdAt, @updatedAt)`,
+               @actionTaken, @requiresFollowup, @rawExcerpt, @botReply,
+               @sessionId, @createdAt, @updatedAt)`,
     )
     .run({
       id,
@@ -116,6 +158,8 @@ export function logBriefing(input: BriefingEntryInput): BriefingEntry {
       actionTaken: input.actionTaken ?? null,
       requiresFollowup: input.requiresFollowup ? 1 : 0,
       rawExcerpt: input.rawExcerpt ?? null,
+      botReply: input.botReply ?? null,
+      sessionId: input.sessionId ?? null,
       createdAt: now,
       updatedAt: now,
     });
@@ -125,6 +169,23 @@ export function logBriefing(input: BriefingEntryInput): BriefingEntry {
       unknown
     >,
   );
+}
+
+/**
+ * Attach (or overwrite) the bot's literal reply to an existing briefing.
+ * Used when the agent logs upfront on receipt (per the SHARED_RULES audit
+ * directive) and then circles back AFTER replying to fill in what it sent.
+ * Cheap to call: indexed by primary key.
+ */
+export function attachBotReply(id: string, botReply: string): boolean {
+  const result = db()
+    .prepare(
+      `UPDATE assessor_conversations
+         SET bot_reply_text = @botReply, updated_at = @now
+         WHERE id = @id`,
+    )
+    .run({ id, botReply, now: Date.now() });
+  return result.changes > 0;
 }
 
 export interface BriefingQuery {

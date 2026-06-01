@@ -594,3 +594,60 @@ export function getCollectionMetadata(db: Database.Database): CollectionMetadata
     jsonlError: getSetting(db, "last_jsonl_error") || null,
   };
 }
+
+/**
+ * Snapshot row stripped to the minimum the briefing-cost correlator needs.
+ * Returned timestamps are unix ms (same as usage_snapshots.timestamp).
+ */
+export interface SnapshotInRange {
+  timestampMs: number;
+  cost: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  model: string | null;
+}
+
+/**
+ * Pull every usage snapshot inside a time window for a given agent. The
+ * briefing route uses this to attribute LLM cost to individual WhatsApp
+ * conversations via non-overlapping windows around each briefing's
+ * `created_at`. Bounded by the caller — the database is read-only and
+ * indexed on (date, timestamp) so even wide ranges return fast.
+ */
+export function getSnapshotsInRange(
+  db: Database.Database,
+  startMs: number,
+  endMs: number,
+  agentId?: string,
+): SnapshotInRange[] {
+  const where: string[] = ["timestamp >= ?", "timestamp <= ?"];
+  const params: unknown[] = [startMs, endMs];
+  if (agentId) {
+    where.push("agent_id = ?");
+    params.push(agentId);
+  }
+  const rows = db
+    .prepare(
+      `SELECT timestamp, cost, input_tokens, output_tokens, total_tokens, model
+         FROM usage_snapshots
+         WHERE ${where.join(" AND ")}
+         ORDER BY timestamp ASC`,
+    )
+    .all(...params) as Array<{
+      timestamp: number;
+      cost: number;
+      input_tokens: number;
+      output_tokens: number;
+      total_tokens: number;
+      model: string | null;
+    }>;
+  return rows.map((r) => ({
+    timestampMs: r.timestamp,
+    cost: r.cost,
+    inputTokens: r.input_tokens,
+    outputTokens: r.output_tokens,
+    totalTokens: r.total_tokens,
+    model: r.model,
+  }));
+}
