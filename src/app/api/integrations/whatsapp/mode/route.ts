@@ -95,6 +95,11 @@ export async function POST(req: NextRequest) {
     wa.ackReaction = applied.ackReaction;
     wa.actions = applied.actions;
 
+    // Channel enabled flag is load-bearing for passive mode: false → gateway
+    // skips Baileys session → user's phone gets push notifications normally.
+    // All other modes need enabled=true to do their jobs.
+    wa.enabled = applied.channelEnabled;
+
     raw.channels.whatsapp = wa;
 
     // Wire Fish-Audio cloned voice into agents.list[main].tts so OpenClaw's

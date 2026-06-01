@@ -184,6 +184,21 @@ export interface OperationModeApplied {
    *  (no sendMessage, no reactions, no polls) as a hard safety net in
    *  case some upstream code tries to push a message anyway. */
   actions: { reactions: boolean; sendMessage: boolean; polls: boolean };
+  /** Whether the WhatsApp channel itself is enabled at the gateway level.
+   *
+   *  CRITICAL: when false, the gateway DOES NOT START the Baileys session
+   *  for this account. No session = no presence = no auto-mark-as-read =
+   *  user's phone receives push notifications normally.
+   *
+   *  Why this matters: even with `sendReadReceipts: false`, a connected
+   *  Baileys session syncs read-state across paired devices — which causes
+   *  the user's PHONE to suppress notifications for messages the bot
+   *  "saw" (Baileys' default behavior; we have no plugin-level knob to
+   *  disable it as of @openclaw/whatsapp 2026.5.12). The only reliable
+   *  way to keep phone notifications working in passive mode is to NOT
+   *  connect at all. Passive = "bot is off". Pairing/owner/assistant/open
+   *  all need the session up to do their jobs. */
+  channelEnabled: boolean;
 }
 
 /**
@@ -195,15 +210,21 @@ export interface OperationModeApplied {
  *   - read the conversation context, don't reflex-reply to the last line
  */
 const SHARED_RULES = [
-  "[AUDITORIA — OBRIGATÓRIA antes de qualquer ação]",
-  "• ANTES de processar ou responder qualquer mensagem inbound (DM ou grupo), chame `whatsapp_briefing_log` com {senderJid, senderName (se souber), summary (1 frase do que a pessoa disse/quer), urgency ('normal' por padrão), actionTaken ('respondendo' OU 'ignorando: grupo sem mention' OU 'ignorando: <motivo>'), botReply (texto literal que você vai mandar de volta; null se for ignorar)}.",
+  "[REGRA #0 — GATE DE GRUPO — AVALIE ANTES DE QUALQUER OUTRA COISA]",
+  "• Pergunte a si mesmo PRIMEIRO: a mensagem veio de um GRUPO?",
+  "  - SE NÃO (é DM direto): pule para REGRA #1 abaixo.",
+  "  - SE SIM (é grupo): verifique se Felipe foi @-mentioned NESSA mensagem específica.",
+  "    • NÃO foi mentioned → você EXECUTA EXATAMENTE 1 AÇÃO: chama `whatsapp_briefing_log` com actionTaken='ignorando: grupo sem mention' e botReply=null. ZERO resposta de texto pro grupo. ZERO reflexão adicional. FIM.",
+  "    • FOI mentioned → siga normalmente pra REGRA #1 + persona; mas responda no MÁXIMO 2 frases endereçando a pessoa que mencionou, sem expor info pessoal nem listar coisas.",
+  "• Esta regra é hard-coded e vale em TODOS os modos. Não invente exceções (\"mas é meu amigo\", \"mas a pergunta era pertinente\") — se não tem @mention, não responde. Auditoria via log SEMPRE acontece, resposta NUNCA.",
+  "",
+  "[REGRA #1 — AUDITORIA — OBRIGATÓRIA antes de qualquer ação]",
+  "• ANTES de processar ou responder qualquer mensagem inbound (DM ou grupo com mention), chame `whatsapp_briefing_log` com {senderJid, senderName (se souber), summary (1 frase do que a pessoa disse/quer), urgency ('normal' por padrão), actionTaken ('respondendo' OU 'ignorando: grupo sem mention' OU 'ignorando: <motivo>'), botReply (texto literal que você vai mandar de volta; null se for ignorar)}.",
   "• Se já souber o que vai responder, inclua o texto exato em `botReply`. Se ainda não souber, chame `whatsapp_briefing_log` sem `botReply`, guarde o `entry.id` retornado e DEPOIS de mandar a resposta chame `whatsapp_briefing_attach_reply` com {id, botReply} pra fechar o registro.",
   "• Este é o ÚNICO rastro que Felipe tem de que você está vivo e operando. NÃO pule por nenhum motivo — vale para TODAS as mensagens, em TODOS os modos, inclusive quando você decide não responder.",
   "• Se a tool não existir/falhar, ignore o erro e siga respondendo normalmente — não bloqueie a resposta por causa do log.",
   "",
   "[REGRAS GERAIS — sempre aplicam]",
-  "• GRUPO sem @mention de Felipe → NÃO responda. Apenas leia e ignore (mas LOGUE com actionTaken='ignorando: grupo sem mention'). Não diga 'desculpe' nem 'estou em modo passivo' — silêncio total.",
-  "• GRUPO com @mention de Felipe → responda em até 2 frases, endereçando a pessoa que mencionou. Sem expor info pessoal nem listar.",
   "• Considere o HISTÓRICO RECENTE da conversa antes de responder. Não responda mecanicamente à última mensagem isolada — entenda a thread e responda de forma natural.",
   "• Se a pessoa mandou áudio, é geralmente OK responder por áudio também (mesmo formato).",
   "",
@@ -254,6 +275,7 @@ function buildDefaultChannelConfig(mode: WhatsappOperationMode | undefined): Ope
         replyToMode: "batched",
         ackReaction: { direct: true, group: "mentions", emoji: "👀" },
         actions: { reactions: true, sendMessage: true, polls: false },
+        channelEnabled: true,
       };
     }
     case "assistant": {
@@ -305,6 +327,7 @@ function buildDefaultChannelConfig(mode: WhatsappOperationMode | undefined): Ope
         replyToMode: "all",
         ackReaction: { direct: true, group: "mentions", emoji: "📝" },
         actions: { reactions: true, sendMessage: true, polls: false },
+        channelEnabled: true,
       };
     }
     case "open":
@@ -321,6 +344,7 @@ function buildDefaultChannelConfig(mode: WhatsappOperationMode | undefined): Ope
         replyToMode: "all",
         ackReaction: { direct: true, group: "mentions" },
         actions: { reactions: true, sendMessage: true, polls: true },
+        channelEnabled: true,
       };
     case "pairing":
       return {
@@ -338,27 +362,31 @@ function buildDefaultChannelConfig(mode: WhatsappOperationMode | undefined): Ope
         replyToMode: "all",
         ackReaction: { direct: true, group: "mentions" },
         actions: { reactions: true, sendMessage: true, polls: true },
+        channelEnabled: true,
       };
     case "passive":
     default:
-      // TRUE SILENT MODE — every observable signal off. Gateway still
-      // receives messages over the Baileys socket (required for the
-      // session to stay alive), but does not:
-      //   • route them to the agent (dmPolicy + groupPolicy = disabled)
-      //   • mark them read on WhatsApp (sendReadReceipts = false →
-      //     senders see one gray ✓, NOT the double-blue ✓✓)
-      //   • emoji-react to them (reactionLevel + ackReaction)
-      //   • generate replies (replyToMode = off)
-      //   • allow any outbound action (actions.* = false — hard fence
-      //     even if some upstream code tries to push a message anyway)
-      // selfChatMode also off so commands from Felipe's own number
-      // arrive nowhere — he has to use Telegram or the AtlasDeck UI to
-      // leave passive mode.
+      // TRUE OFF MODE — gateway does NOT start the Baileys session.
+      //
+      // Original design: "connected but silent" (gateway receives messages,
+      // doesn't dispatch). Turns out @openclaw/whatsapp 2026.5.12 doesn't
+      // expose any knob to stop Baileys' default read-state sync once the
+      // session is up — and that sync propagates to ALL paired devices, so
+      // the user's PHONE stops getting push notifications for messages the
+      // bot "saw" (which is every inbound, because Baileys subscribes to
+      // them on connect to stay alive).
+      //
+      // Empirically (user report 2026-06-01): passive = no push to phone.
+      // Disconnecting the bot entirely = phone notifications resume.
+      //
+      // So passive now means "channel disabled, no Baileys session". The
+      // other silence knobs (dmPolicy, sendReadReceipts, actions) stay set
+      // defensively in case some upstream code reads them anyway, but the
+      // load-bearing one is channelEnabled=false. Switching out of passive
+      // re-enables the channel and Baileys re-connects (uses cached creds
+      // — no re-pair needed, ~5-10s warmup).
       return {
         dmPolicy: "disabled",
-        // Passive doesn't need allowFrom — dmPolicy=disabled already
-        // blocks every inbound at the channel layer. Empty array is
-        // safe; the schema doesn't require it.
         allowFrom: [],
         selfChatMode: false,
         groupPolicy: "disabled",
@@ -370,6 +398,7 @@ function buildDefaultChannelConfig(mode: WhatsappOperationMode | undefined): Ope
         replyToMode: "off",
         ackReaction: { direct: false, group: "never" },
         actions: { reactions: false, sendMessage: false, polls: false },
+        channelEnabled: false,
       };
   }
 }

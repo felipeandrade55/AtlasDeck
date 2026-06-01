@@ -283,6 +283,10 @@ export async function PUT(req: NextRequest) {
       ({ dmPolicy: "disabled", accounts: {} } as WhatsappChannelConfig));
     if (!wa.accounts) wa.accounts = {};
 
+    // body.enabled is the explicit override. We apply it FIRST, then let
+    // applyMode override it with the mode-derived value below. This keeps
+    // the order "what the user passed → what the chosen mode dictates",
+    // matching the modal's UX where picking passive auto-disables.
     if (typeof body.enabled === "boolean") wa.enabled = body.enabled;
 
     // Apply ALL channel-level knobs the operation mode controls, in one
@@ -314,6 +318,11 @@ export async function PUT(req: NextRequest) {
       wa.replyToMode = applied.replyToMode;
       wa.ackReaction = applied.ackReaction;
       wa.actions = applied.actions;
+
+      // Channel enabled flag is load-bearing for passive mode: false →
+      // gateway skips Baileys session → user's phone keeps receiving push
+      // notifications normally. Other modes need the session up.
+      wa.enabled = applied.channelEnabled;
 
       // Agent-level TTS wire-up: only owner mode wants Fish-Audio cloned
       // voice on inbound-audio replies. Build the block from saved

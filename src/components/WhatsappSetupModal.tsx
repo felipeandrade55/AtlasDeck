@@ -86,8 +86,8 @@ const OPERATION_MODES: Array<{
 }> = [
   {
     value: "passive",
-    label: "🔇 Passivo (recomendado — silêncio absoluto)",
-    hint: "Bot conectado mas INVISÍVEL: não roteia DMs nem grupos pro agente, NÃO envia read-receipts (sender não vê ✓✓ azul), NÃO reage com emoji, NÃO envia mensagem nenhuma. Pra sair do passivo, use Telegram, o modal aqui, ou peça pro bot via Telegram 'muda o whatsapp pra modo X'.",
+    label: "🔇 Passivo / Desconectado (recomendado quando não estiver em uso)",
+    hint: "Bot DESCONECTADO do WhatsApp (channels.whatsapp.enabled=false). Sessão Baileys não sobe → seu telefone volta a receber notificações push de novas mensagens normalmente. Pra reativar, escolha owner/assessor/open — Baileys reconecta em ~5-10s usando credenciais cacheadas (não precisa re-parear).",
   },
   {
     value: "owner",
@@ -102,7 +102,7 @@ const OPERATION_MODES: Array<{
   {
     value: "open",
     label: "🌐 Bot livre (responde com a personalidade do agente)",
-    hint: "Sem persona injetada. Bot responde com a voz padrão do agente. Útil pra sandbox/testes — não recomendado pra WhatsApp pessoal.",
+    hint: "Sem persona injetada. Bot responde com a voz padrão do agente em DMs. Grupos: responde APENAS quando você é mentioned (regra hard-coded no prompt em TODOS modos, não só nesse). Útil pra sandbox/testes — não recomendado pra WhatsApp pessoal.",
   },
   {
     value: "pairing",
