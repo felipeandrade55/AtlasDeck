@@ -92,13 +92,33 @@ function truncate(s: string, n: number): string {
   return `${s.slice(0, n - 1).trimEnd()}…`;
 }
 
-function peekIsWhatsapp(filePath: string): boolean {
+/** Two-tier WhatsApp session detection — must be reliable, not just hopeful.
+ *
+ *  Tier 1 (filename): sessions named *-topic-whatsapp-account-*.jsonl are
+ *  definitively WhatsApp — OpenClaw embeds the channel in the topic name.
+ *
+ *  Tier 2 (first user message): look for the gateway system notice that opens
+ *  every WhatsApp session: "WhatsApp gateway connected as +<phone>".
+ *  This fires before the bot has said anything, so no false positives from
+ *  Telegram sessions that merely *mention* WhatsApp in their content.
+ *
+ *  Reject: any file that only contains "whatsapp" somewhere in the body —
+ *  that's exactly how Telegram sessions sneak through the old /whatsapp/i peek.
+ */
+function peekIsWhatsapp(filePath: string, stem: string): boolean {
+  // Tier 1: filename carries the channel name — cheapest check, no I/O.
+  if (/-topic-whatsapp-/i.test(stem)) return true;
+
+  // Tier 2: read the first 32KB and look for the gateway connected message
+  // that OpenClaw injects at the start of every inbound WhatsApp session.
   let fd: number | null = null;
   try {
     fd = fs.openSync(filePath, "r");
-    const buf = Buffer.alloc(PEEK_BYTES);
+    const buf = Buffer.alloc(32768);
     const n = fs.readSync(fd, buf, 0, buf.length, 0);
-    return /whatsapp/i.test(buf.toString("utf8", 0, n));
+    // The gateway system message looks like:
+    //   "WhatsApp gateway connected as +5564…"
+    return /WhatsApp gateway connected as \+\d/i.test(buf.toString("utf8", 0, n));
   } catch {
     return false;
   } finally {
@@ -160,7 +180,7 @@ export function discoverWhatsappSessions(opts: IngestOptions = {}): DiscoveredSe
   candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
   const limited =
     typeof opts.maxFilesScan === "number" ? candidates.slice(0, opts.maxFilesScan) : candidates;
-  return limited.filter((s) => peekIsWhatsapp(s.filePath));
+  return limited.filter((s) => peekIsWhatsapp(s.filePath, s.stem));
 }
 
 // ── Noise filters ───────────────────────────────────────────────────────────

@@ -34,13 +34,14 @@ function truncate(s, n) {
   return s.length <= n ? s : s.slice(0, n - 1).trimEnd() + "…";
 }
 
-function peekIsWhatsapp(filePath) {
+function peekIsWhatsapp(filePath, stem) {
+  if (/-topic-whatsapp-/i.test(stem)) return true;
   let fd = null;
   try {
     fd = fs.openSync(filePath, "r");
-    const buf = Buffer.alloc(PEEK_BYTES);
+    const buf = Buffer.alloc(32768);
     const n = fs.readSync(fd, buf, 0, buf.length, 0);
-    return /whatsapp/i.test(buf.toString("utf8", 0, n));
+    return /WhatsApp gateway connected as \+\d/i.test(buf.toString("utf8", 0, n));
   } catch {
     return false;
   } finally {
@@ -70,7 +71,7 @@ function discoverWhatsappSessions() {
     }
   }
   out.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  return out.filter((s) => peekIsWhatsapp(s.filePath));
+  return out.filter((s) => peekIsWhatsapp(s.filePath, s.stem));
 }
 
 function isHeartbeatInbound(text) {
