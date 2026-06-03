@@ -63,4 +63,15 @@ export async function register(): Promise<void> {
   } catch (err) {
     console.warn("[instrumentation] Backup cron install failed:", err);
   }
+  // WhatsApp briefing ingester — see instrumentation.ts (root) for the why.
+  // Idempotent; the scheduler's own guard prevents a double-start if both
+  // instrumentation files are loaded.
+  try {
+    const { startWhatsappBriefingScheduler } = await import(
+      "./lib/whatsapp-briefing-scheduler"
+    );
+    startWhatsappBriefingScheduler();
+  } catch (err) {
+    console.warn("[instrumentation] whatsapp briefing scheduler bootstrap failed:", err);
+  }
 }

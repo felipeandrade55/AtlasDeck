@@ -104,6 +104,15 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
+  // Sync-on-read: reconstruct briefings from OpenClaw transcripts before
+  // returning, so opening the page reflects real traffic. Throttled; ?refresh=1
+  // forces it. Swallows its own errors.
+  try {
+    const { maybeIngestOnRead } = await import("@/lib/whatsapp-briefing-ingester");
+    maybeIngestOnRead(url.searchParams.get("refresh") === "1");
+  } catch {
+    /* ingester optional — never block the read */
+  }
   const accountId = url.searchParams.get("accountId") || undefined;
   const sinceParam = url.searchParams.get("sinceMs");
   const senderJid = url.searchParams.get("senderJid") || undefined;

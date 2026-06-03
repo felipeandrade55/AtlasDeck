@@ -122,4 +122,18 @@ export async function register(): Promise<void> {
   } catch (err) {
     console.warn("[instrumentation] memory MCP install hook failed:", err);
   }
+
+  // WhatsApp briefing ingester — reconstructs the assessor briefing from
+  // OpenClaw session transcripts so the audit trail no longer depends on the
+  // model voluntarily calling the briefing tool. Idempotent (dedup + cursor);
+  // guard inside startWhatsappBriefingScheduler() prevents a double-start when
+  // both instrumentation files run.
+  try {
+    const { startWhatsappBriefingScheduler } = await import(
+      "@/lib/whatsapp-briefing-scheduler"
+    );
+    startWhatsappBriefingScheduler();
+  } catch (err) {
+    console.warn("[instrumentation] failed to start whatsapp briefing scheduler:", err);
+  }
 }

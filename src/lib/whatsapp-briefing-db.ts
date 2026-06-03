@@ -76,6 +76,46 @@ function db(): Database.Database {
       // ignore — another writer raced us; harmless
     }
   }
+  // source: where the row came from. 'agent' = the model called the
+  // whatsapp_briefing_log MCP tool (voluntary, unreliable). 'transcript' =
+  // the briefing ingester reconstructed it from the OpenClaw session .jsonl
+  // (robust — doesn't depend on the model). Null = legacy/agent.
+  if (!existing.has("source")) {
+    try {
+      conn.exec(`ALTER TABLE assessor_conversations ADD COLUMN source TEXT`);
+    } catch {
+      // ignore — another writer raced us; harmless
+    }
+  }
+  // dedup_key: stable identity for ingester-created rows ("<sessionId>:<line>")
+  // so re-reading a transcript (rotation, manual reprocess, overlapping runs)
+  // never double-inserts. Null for agent rows (no dedup — every tool call is a
+  // distinct event). Enforced by a PARTIAL unique index (nulls excluded).
+  if (!existing.has("dedup_key")) {
+    try {
+      conn.exec(`ALTER TABLE assessor_conversations ADD COLUMN dedup_key TEXT`);
+    } catch {
+      // ignore — another writer raced us; harmless
+    }
+  }
+  conn.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_briefing_dedup
+       ON assessor_conversations(dedup_key) WHERE dedup_key IS NOT NULL`,
+  );
+
+  // Incremental cursor for the transcript ingester — same shape as the
+  // usage-collector's jsonl_cursors. Lets steady-state runs skip unchanged
+  // session files (size + mtime) and resume mid-file (last_line). Kept in
+  // THIS db so cursor advances and briefing writes commit to the same file.
+  conn.exec(`
+    CREATE TABLE IF NOT EXISTS briefing_ingest_cursors (
+      file_path TEXT PRIMARY KEY,
+      last_size INTEGER NOT NULL DEFAULT 0,
+      last_mtime_ms INTEGER NOT NULL DEFAULT 0,
+      last_line INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL
+    );
+  `);
 
   _db = conn;
   return conn;
@@ -97,6 +137,13 @@ export interface BriefingEntryInput {
   /** Codex session id (quando o MCP server conseguir capturar). Permite
    *  correlacionar com usage-tracking pra custo por conversa. */
   sessionId?: string | null;
+  /** Origem da linha: 'agent' (tool MCP) ou 'transcript' (ingester). */
+  source?: "agent" | "transcript" | null;
+  /** Chave estável de dedup (só ingester). Conflito → no-op idempotente. */
+  dedupKey?: string | null;
+  /** Override do created_at (ms). O ingester usa o timestamp ORIGINAL da
+   *  mensagem em vez de Date.now() pra janela de 24h ficar correta. */
+  createdAtMs?: number | null;
 }
 
 export interface BriefingEntry {
@@ -111,6 +158,7 @@ export interface BriefingEntry {
   rawExcerpt: string | null;
   botReply: string | null;
   sessionId: string | null;
+  source: "agent" | "transcript" | null;
   createdAt: number;
   updatedAt: number;
   acknowledgedAt: number | null;
@@ -129,6 +177,7 @@ function rowToEntry(row: Record<string, unknown>): BriefingEntry {
     rawExcerpt: (row.raw_excerpt as string | null) ?? null,
     botReply: (row.bot_reply_text as string | null) ?? null,
     sessionId: (row.session_id as string | null) ?? null,
+    source: (row.source as "agent" | "transcript" | null) ?? null,
     createdAt: row.created_at as number,
     updatedAt: row.updated_at as number,
     acknowledgedAt: (row.acknowledged_at as number | null) ?? null,
@@ -137,16 +186,21 @@ function rowToEntry(row: Record<string, unknown>): BriefingEntry {
 
 export function logBriefing(input: BriefingEntryInput): BriefingEntry {
   const now = Date.now();
+  const createdAt = typeof input.createdAtMs === "number" ? input.createdAtMs : now;
   const id = `brf_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-  db()
+  // ON CONFLICT targets the PARTIAL unique index on dedup_key (nulls excluded),
+  // so agent rows (dedup_key=null) always insert and ingester rows are
+  // idempotent: re-reading the same transcript line is a no-op.
+  const result = db()
     .prepare(
       `INSERT INTO assessor_conversations
          (id, account_id, sender_jid, sender_name, summary, urgency,
           action_taken, requires_followup, raw_excerpt, bot_reply_text,
-          session_id, created_at, updated_at)
+          session_id, source, dedup_key, created_at, updated_at)
        VALUES (@id, @accountId, @senderJid, @senderName, @summary, @urgency,
                @actionTaken, @requiresFollowup, @rawExcerpt, @botReply,
-               @sessionId, @createdAt, @updatedAt)`,
+               @sessionId, @source, @dedupKey, @createdAt, @updatedAt)
+       ON CONFLICT(dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING`,
     )
     .run({
       id,
@@ -160,15 +214,92 @@ export function logBriefing(input: BriefingEntryInput): BriefingEntry {
       rawExcerpt: input.rawExcerpt ?? null,
       botReply: input.botReply ?? null,
       sessionId: input.sessionId ?? null,
-      createdAt: now,
+      source: input.source ?? null,
+      dedupKey: input.dedupKey ?? null,
+      createdAt,
       updatedAt: now,
     });
-  return rowToEntry(
-    db().prepare("SELECT * FROM assessor_conversations WHERE id = ?").get(id) as Record<
-      string,
-      unknown
-    >,
-  );
+  // Inserted → fetch by id. Skipped (dedup conflict) → return the existing row.
+  const row =
+    result.changes > 0
+      ? db().prepare("SELECT * FROM assessor_conversations WHERE id = ?").get(id)
+      : db()
+          .prepare("SELECT * FROM assessor_conversations WHERE dedup_key = ?")
+          .get(input.dedupKey ?? "");
+  return rowToEntry(row as Record<string, unknown>);
+}
+
+/** True if the insert created a new row (false = deduped). Mirrors logBriefing
+ *  but returns the insert outcome so the ingester can count new vs skipped. */
+export function ingestBriefingRow(input: BriefingEntryInput): boolean {
+  const before = input.dedupKey
+    ? db()
+        .prepare("SELECT 1 FROM assessor_conversations WHERE dedup_key = ?")
+        .get(input.dedupKey)
+    : undefined;
+  if (before) return false;
+  logBriefing(input);
+  return true;
+}
+
+// ── Ingest cursor helpers (mirror usage-collector-jsonl's jsonl_cursors) ──
+export interface IngestCursor {
+  lastSize: number;
+  lastMtimeMs: number;
+  lastLine: number;
+}
+
+export function getIngestCursor(filePath: string): IngestCursor | null {
+  const row = db()
+    .prepare(
+      "SELECT last_size, last_mtime_ms, last_line FROM briefing_ingest_cursors WHERE file_path = ?",
+    )
+    .get(filePath) as
+    | { last_size: number; last_mtime_ms: number; last_line: number }
+    | undefined;
+  if (!row) return null;
+  return { lastSize: row.last_size, lastMtimeMs: row.last_mtime_ms, lastLine: row.last_line };
+}
+
+export function upsertIngestCursor(
+  filePath: string,
+  cursor: IngestCursor,
+): void {
+  db()
+    .prepare(
+      `INSERT INTO briefing_ingest_cursors
+         (file_path, last_size, last_mtime_ms, last_line, updated_at)
+       VALUES (@filePath, @lastSize, @lastMtimeMs, @lastLine, @updatedAt)
+       ON CONFLICT(file_path) DO UPDATE SET
+         last_size = excluded.last_size,
+         last_mtime_ms = excluded.last_mtime_ms,
+         last_line = excluded.last_line,
+         updated_at = excluded.updated_at`,
+    )
+    .run({
+      filePath,
+      lastSize: cursor.lastSize,
+      lastMtimeMs: cursor.lastMtimeMs,
+      lastLine: cursor.lastLine,
+      updatedAt: Date.now(),
+    });
+}
+
+/** Count rows by source — used by diagnostics + scheduler logging. */
+export function getBriefingCountBySource(): { agent: number; transcript: number; total: number } {
+  const rows = db()
+    .prepare(
+      `SELECT COALESCE(source, 'agent') AS src, COUNT(*) AS n
+         FROM assessor_conversations GROUP BY COALESCE(source, 'agent')`,
+    )
+    .all() as Array<{ src: string; n: number }>;
+  let agent = 0;
+  let transcript = 0;
+  for (const r of rows) {
+    if (r.src === "transcript") transcript = r.n;
+    else agent += r.n;
+  }
+  return { agent, transcript, total: agent + transcript };
 }
 
 /**

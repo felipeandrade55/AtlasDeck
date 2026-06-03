@@ -38,6 +38,7 @@ interface BriefingEntry {
   rawExcerpt: string | null;
   botReply: string | null;
   sessionId: string | null;
+  source: "agent" | "transcript" | null;
   createdAt: number;
   updatedAt: number;
   acknowledgedAt: number | null;
@@ -613,6 +614,14 @@ export default function BriefingPage() {
                       )}
                       <div className="flex items-center gap-3 text-[10px] mt-1.5 flex-wrap" style={{ color: "var(--text-muted)" }}>
                         <span style={{ color: meta.color }}>{meta.label}</span>
+                        {e.source === "transcript" && (
+                          <span
+                            style={{ color: "#93c5fd" }}
+                            title="Reconstruído automaticamente do histórico de sessões do OpenClaw (não depende do bot logar)."
+                          >
+                            ⟳ reconstruído do histórico
+                          </span>
+                        )}
                         {e.requiresFollowup && (
                           <span style={{ color: "#fbbf24" }}>↩ exige retorno</span>
                         )}

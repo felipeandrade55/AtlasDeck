@@ -62,6 +62,14 @@ function detectMode(): { operationMode: WhatsappOperationMode; dmPolicy: string 
 }
 
 export async function GET() {
+  // Sync-on-read first so totals below reflect freshly-ingested transcripts.
+  try {
+    const { maybeIngestOnRead } = await import("@/lib/whatsapp-briefing-ingester");
+    maybeIngestOnRead();
+  } catch {
+    /* ingester optional */
+  }
+
   const mode = detectMode();
 
   // Activity in the last 24h that mentions WhatsApp. Catches config edits,
@@ -84,33 +92,48 @@ export async function GET() {
   const last500 = listBriefings({ limit: 500 });
   const totalEver = last500.length;
 
-  // Compute hints in priority order so the UI can pick the most useful one.
+  // Compute hints. ORDER MATTERS, but the history fact (totalEver) is reported
+  // FIRST when it exists — the briefing is now reconstructed from OpenClaw
+  // session transcripts (the ingester), so historical conversations show up
+  // regardless of the current operation mode. The passive-mode note is then
+  // ADDED as complementary context, never as a replacement that hides history.
   const hints: string[] = [];
 
-  if (mode.operationMode === "passive") {
+  if (totalEver > 0) {
+    // We DO have reconstructed history — lead with it so passive mode no
+    // longer makes the page look empty/misleading.
+    if (pending.totalPending > 0) {
+      hints.push(
+        `${totalEver} conversa(s) reconstruída(s) do histórico do WhatsApp, ${pending.totalPending} ainda não revisada(s). Abra a lista abaixo pra auditar o que o bot recebeu e respondeu.`,
+      );
+    } else {
+      hints.push(
+        `Tudo em dia: ${totalEver} conversa(s) reconstruída(s) do histórico, nenhuma pendente de revisão.`,
+      );
+    }
+    if (mode.operationMode === "passive") {
+      hints.push(
+        "🔇 Modo Passivo agora: o bot está conectado mas NÃO responde mensagens novas (dmPolicy=disabled). O histórico abaixo é o que ele já fez quando estava em Owner/Assessor/Open. Mude o modo se quiser que ele volte a responder.",
+      );
+    }
+  } else if (mode.operationMode === "passive") {
     hints.push(
-      "Modo atual: 🔇 Passivo. O bot está conectado mas NÃO roteia mensagens pro agente (dmPolicy=disabled), então não tem como gerar briefings. Mude pra Owner/Assessor/Open na configuração do WhatsApp se quiser que ele responda e logue.",
+      "Modo atual: 🔇 Passivo. O bot está conectado mas NÃO responde mensagens (dmPolicy=disabled) — e não há histórico de conversas reconstruído. Mude pra Owner/Assessor/Open se quiser que ele responda; o que ele fizer será auditado aqui automaticamente.",
     );
   } else if (mode.operationMode === "pairing") {
     hints.push(
-      "Modo atual: 🔐 Pareamento. O gateway está distribuindo códigos de pareamento e não passa mensagens normais pro agente — sem briefings esperados.",
+      "Modo atual: 🔐 Pareamento. O gateway está distribuindo códigos de pareamento e não passa mensagens normais pro agente — sem conversas esperadas.",
     );
-  } else if (totalEver === 0 && last24hCount === 0) {
+  } else {
+    // Active mode, no reconstructed history.
     hints.push(
-      `Modo atual: ${MODE_LABELS[mode.operationMode]}. Nenhuma atividade de WhatsApp registrada nas últimas 24h e nenhum briefing já gravado. Possível causa: bot não recebeu mensagens, OU canal desativado, OU sessão Baileys caiu. Confira o ⚙ WhatsApp setup.`,
+      `Modo atual: ${MODE_LABELS[mode.operationMode]}. Nenhuma conversa de WhatsApp encontrada no histórico do agente. Possível causa: bot não recebeu mensagens de pessoas reais, OU canal desativado, OU sessão Baileys caiu. Confira o ⚙ WhatsApp setup.`,
     );
-  } else if (totalEver === 0 && last24hCount > 0) {
-    hints.push(
-      `Modo atual: ${MODE_LABELS[mode.operationMode]}. Detectei ${last24hCount} evento(s) de WhatsApp nas últimas 24h mas ZERO briefings gravados — o agente provavelmente não está chamando \`whatsapp_briefing_log\`. Causas comuns: (1) MCP server \`atlasdeck-memory\` não registrado em ~/.openclaw/mcp.json — rode \`openclaw doctor\`; (2) prompt customizado removeu a regra de auditoria — veja Configurações → Prompts dos modos; (3) modelo está pulando a tool — considere atualizar pra um modelo mais novo.`,
-    );
-  } else if (totalEver > 0 && last24hCount > 0 && pending.totalPending === 0) {
-    hints.push(
-      `Tudo em dia: ${totalEver} briefing(s) total, ${last24hCount} evento(s) WhatsApp nas últimas 24h, nenhum pendente.`,
-    );
-  } else if (totalEver > 0 && last24hCount === 0) {
-    hints.push(
-      `${totalEver} briefing(s) histórico(s), mas zero atividade de WhatsApp nas últimas 24h. Bot pode estar desconectado (sessão Baileys caída) — confira o ⚙ WhatsApp setup.`,
-    );
+    if (last24hCount > 0) {
+      hints.push(
+        `Detectei ${last24hCount} evento(s) de WhatsApp (config/rotação) nas últimas 24h, mas nenhuma conversa de pessoa — se você esperava mensagens, confirme que o gateway está recebendo e que a sessão não caiu.`,
+      );
+    }
   }
 
   return NextResponse.json({
