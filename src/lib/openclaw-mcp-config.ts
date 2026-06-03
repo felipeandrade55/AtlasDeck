@@ -101,6 +101,13 @@ export function buildExpectedEntry(opts: {
     env: {
       ATLASDECK_ROOT: opts.atlasdeckRoot,
       OPENCLAW_AGENT_ID: opts.agentId ?? "main",
+      // tsx resolves the `@/` path alias ONLY if it can locate tsconfig.json.
+      // The Codex app-server launches `npx tsx` from a cwd that isn't the
+      // checkout root, so without this env the MCP crashes loading
+      // embeddings.ts ("Cannot find module '@/lib/usage-queries'") and
+      // registers 0 tools — the agent then hallucinates "Salvei" without
+      // ever calling memory_add. Absolute path so cwd is irrelevant.
+      TSX_TSCONFIG_PATH: path.join(opts.atlasdeckRoot, "tsconfig.json"),
     },
   };
 }

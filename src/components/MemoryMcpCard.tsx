@@ -234,7 +234,11 @@ export function MemoryMcpCard() {
         body: JSON.stringify({ agentId: "main" }),
       });
       const json = (await res.json()) as ActivateResponse;
-      setStatus(json.status);
+      // activate's `status` (InstallStatus) doesn't carry agentSavedCount —
+      // that count lives at the top level of the response. Merge it in, or
+      // the counter flashes back to 0 after Reverificar even though the
+      // memories are still in the DB (it's a response-shape gap, not data loss).
+      setStatus({ ...json.status, agentSavedCount: json.agentSavedCount });
       setPhase("idle");
 
       if (json.ok) {
