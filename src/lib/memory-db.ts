@@ -771,6 +771,12 @@ export interface MemorySettings {
   setup_step: SetupStep;
   setup_completed_at: string | null;
   /**
+   * Set to true when the user clicks "Skip" in the welcome wizard's email
+   * step. Lets the wizard treat the (optional) email step as complete so
+   * setup can finish without an IMAP account configured.
+   */
+  setup_email_skipped: boolean;
+  /**
    * Owner WhatsApp number in E.164 (digits only, with country code, no +).
    * Example: "5564992224800". Used by the WhatsApp Assessor mode to
    * recognize commands that came from Felipe himself (via self-chat or
@@ -784,7 +790,7 @@ export type WakeEngine = "openwakeword" | "porcupine";
 
 export type TtsProvider = "elevenlabs" | "fishaudio";
 
-export type SetupStep = "install" | "ai" | "interview" | "telegram" | "done";
+export type SetupStep = "install" | "ai" | "interview" | "telegram" | "email" | "done";
 
 const DEFAULT_SETTINGS: MemorySettings = {
   embedding_provider: "xenova",
@@ -824,6 +830,7 @@ const DEFAULT_SETTINGS: MemorySettings = {
   openwakeword_threshold: 0.5,
   setup_step: "install",
   setup_completed_at: null,
+  setup_email_skipped: false,
   owner_whatsapp_number: null,
 };
 
@@ -833,6 +840,7 @@ function parseSetupStep(value: string | undefined): SetupStep {
     value === "ai" ||
     value === "interview" ||
     value === "telegram" ||
+    value === "email" ||
     value === "done"
   ) {
     return value;
@@ -923,6 +931,7 @@ export function getSettings(): MemorySettings {
     ),
     setup_step: parseSetupStep(map.get("setup_step")),
     setup_completed_at: parseNullableString(map.get("setup_completed_at")),
+    setup_email_skipped: (map.get("setup_email_skipped") ?? "false") === "true",
     owner_whatsapp_number: parseNullableString(map.get("owner_whatsapp_number")),
   };
 }

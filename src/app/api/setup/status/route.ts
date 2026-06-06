@@ -14,6 +14,7 @@ import { resolveOpenClawAgentsConfigPath, getOpenClawWorkspace } from "@/lib/ope
 import { listProviderKeys, type ProviderId } from "@/lib/provider-keys";
 import { getTelegramAccountLocal } from "@/lib/telegram-accounts-local";
 import { getOllamaStatus } from "@/lib/ollama-client";
+import { countAccounts as countEmailAccounts } from "@/lib/email-store";
 
 export const dynamic = "force-dynamic";
 
@@ -113,7 +114,13 @@ export async function GET() {
   const chatId = getTelegramAccountLocal(primaryAccountId).chatId ?? null;
   const telegramConnected = hasToken && !!chatId;
 
-  // 5. Compute the suggested step pointer (auto-advances persisted step
+  // 5. Email — optional step. AtlasDeck owns IMAP/SMTP directly now;
+  // accounts live in data/email-accounts.json.
+  const emailAccountCount = countEmailAccounts();
+  const emailSkipped = settings.setup_email_skipped;
+  const emailDone = emailAccountCount > 0 || emailSkipped;
+
+  // 6. Compute the suggested step pointer (auto-advances persisted step
   // if the user fixed earlier steps out of band)
   let suggestedStep = settings.setup_step;
   if (settings.setup_completed_at) {
@@ -126,6 +133,8 @@ export async function GET() {
     suggestedStep = "interview";
   } else if (!telegramConnected) {
     suggestedStep = "telegram";
+  } else if (!emailDone) {
+    suggestedStep = "email";
   } else {
     suggestedStep = "done";
   }
@@ -165,6 +174,10 @@ export async function GET() {
       accountId: primaryAccountId,
       hasToken,
       hasChatId: !!chatId,
+    },
+    email: {
+      accountCount: emailAccountCount,
+      skipped: emailSkipped,
     },
   });
 }

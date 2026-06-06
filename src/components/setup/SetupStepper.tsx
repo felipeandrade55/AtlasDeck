@@ -12,9 +12,10 @@ import { InstallStep } from "./steps/InstallStep";
 import { AiProviderStep } from "./steps/AiProviderStep";
 import { InterviewStep } from "./steps/InterviewStep";
 import { TelegramStep } from "./steps/TelegramStep";
+import { EmailStep } from "./steps/EmailStep";
 import { DoneStep } from "./steps/DoneStep";
 
-export type StepId = "install" | "ai" | "interview" | "telegram" | "done";
+export type StepId = "install" | "ai" | "interview" | "telegram" | "email" | "done";
 
 export interface SetupStatus {
   setup: { step: StepId; completedAt: string | null };
@@ -28,6 +29,7 @@ export interface SetupStatus {
     ollama: { installed: boolean; running: boolean; modelsCount: number };
   };
   telegram: { connected: boolean; accountId: string; hasToken: boolean; hasChatId: boolean };
+  email: { accountCount: number; skipped: boolean };
 }
 
 const STEPS: Array<{ id: StepId; label: string; description: string }> = [
@@ -35,6 +37,7 @@ const STEPS: Array<{ id: StepId; label: string; description: string }> = [
   { id: "ai", label: "Modelo de IA", description: "Local ou nuvem" },
   { id: "interview", label: "Personalidade", description: "Entrevista guiada" },
   { id: "telegram", label: "Telegram", description: "Conectar bot" },
+  { id: "email", label: "E-mail", description: "Caixas IMAP (opcional)" },
   { id: "done", label: "Pronto", description: "Bora começar" },
 ];
 
@@ -148,6 +151,15 @@ export function SetupStepper({ initialStatus }: Props) {
             }}
           />
         )}
+        {status && currentStep === "email" && (
+          <EmailStep
+            status={status}
+            onAdvance={() => {
+              setManualStep(null);
+              refresh();
+            }}
+          />
+        )}
         {status && currentStep === "done" && <DoneStep status={status} />}
       </div>
 
@@ -164,6 +176,7 @@ function buildProgress(status: SetupStatus | null): Record<StepId, "done" | "cur
     ai: "pending",
     interview: "pending",
     telegram: "pending",
+    email: "pending",
     done: "pending",
   };
   if (!status) return out;
@@ -171,6 +184,7 @@ function buildProgress(status: SetupStatus | null): Record<StepId, "done" | "cur
   if (status.ai.configured) out.ai = "done";
   if (status.interview.complete) out.interview = "done";
   if (status.telegram.connected) out.telegram = "done";
+  if (status.email.accountCount > 0 || status.email.skipped) out.email = "done";
   if (status.setup.completedAt) out.done = "done";
   const current = status.setup.step;
   if (out[current] !== "done") out[current] = "current";
@@ -203,7 +217,7 @@ function Header() {
           marginBottom: 6,
         }}
       >
-        Vamos preparar o seu OpenClaw em 5 passos
+        Vamos preparar o seu OpenClaw em 6 passos
       </h1>
       <p style={{ fontSize: 13.5, color: "var(--text-secondary)", lineHeight: 1.6, maxWidth: 660 }}>
         Cada passo é detectado automaticamente — se você já tem algo configurado, o wizard pula adiante.

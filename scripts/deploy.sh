@@ -854,6 +854,35 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
+# FASE 3.9 — STORE LOCAL DE E-MAIL (AtlasDeck IMAP/SMTP)
+# ══════════════════════════════════════════════════════════════════════════════
+# AtlasDeck agora fala IMAP/SMTP diretamente (independente do daemon do
+# OpenClaw), com credenciais em data/email-accounts.json. O script abaixo
+# garante que esse arquivo exista com schema válido em toda instalação
+# fresca e em todo update — chmod 600, JSON {accounts:{}}, sem perder
+# contas já cadastradas. Idempotente, soft-fail.
+step "Store local de e-mail (IMAP/SMTP)..."
+T=$(now)
+phase_status "email-store-setup" "running"
+
+cd "$VPS_DIR"
+if [ -f scripts/setup-email-store.cjs ]; then
+  if node scripts/setup-email-store.cjs 2>&1 | tee -a /tmp/setup-email-store.log; then
+    ok "Store de e-mail pronto (data/email-accounts.json)"
+    record "Store e-mail" "ok" "$(elapsed $T)"
+    phase_status "email-store-setup" "ok" "$(elapsed $T)"
+  else
+    warn "setup-email-store teve avisos (não bloqueia o deploy)"
+    record "Store e-mail" "fail" "$(elapsed $T)"
+    phase_status "email-store-setup" "fail" "$(elapsed $T)"
+  fi
+else
+  warn "scripts/setup-email-store.cjs ausente — pulando"
+  record "Store e-mail" "skip" "$(elapsed $T)"
+  phase_status "email-store-setup" "skip" "$(elapsed $T)"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
 # FASE 4 — BUILD
 # ══════════════════════════════════════════════════════════════════════════════
 step "Build..."
