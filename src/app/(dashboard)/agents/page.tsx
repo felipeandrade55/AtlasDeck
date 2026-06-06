@@ -884,7 +884,7 @@ export default function AgentsPage() {
                 </label>
               </div>
 
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <label className="block space-y-1 col-span-1">
                   <span className="text-xs font-bold text-zinc-400 uppercase tracking-wide">Emoji</span>
                   <input

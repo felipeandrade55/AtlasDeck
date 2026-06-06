@@ -215,7 +215,7 @@ export default function GitPage() {
 
               {/* Changes breakdown */}
               {repo.isDirty && (
-                <div className="px-5 py-3 grid grid-cols-3 gap-4" style={{ backgroundColor: "rgba(251,191,36,0.04)" }}>
+                <div className="px-5 py-3 grid grid-cols-1 sm:grid-cols-3 gap-4" style={{ backgroundColor: "rgba(251,191,36,0.04)" }}>
                   {repo.staged.length > 0 && (
                     <div>
                       <div className="text-xs font-semibold mb-1" style={{ color: "var(--success)" }}>

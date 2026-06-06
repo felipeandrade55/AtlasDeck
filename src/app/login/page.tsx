@@ -40,8 +40,8 @@ function LoginForm() {
   };
 
   return (
-    <div 
-      className="rounded-xl p-10"
+    <div
+      className="rounded-xl p-6 sm:p-10"
       style={{
         backgroundColor: 'var(--card)',
         border: '1px solid var(--border)',
@@ -135,8 +135,8 @@ function LoginForm() {
 
 export default function LoginPage() {
   return (
-    <div 
-      className="min-h-screen flex items-center justify-center p-4 -ml-64"
+    <div
+      className="min-h-screen flex items-center justify-center p-4"
       style={{ backgroundColor: 'var(--background)' }}
     >
       <div className="w-full max-w-md">

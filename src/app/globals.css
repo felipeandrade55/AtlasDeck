@@ -473,3 +473,66 @@ code, pre, .font-mono {
   0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.55); }
   50% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
 }
+
+/* ============================================
+   Responsive / mobile safety nets
+   The AtlasDeck shell (Dock/TopBar/StatusBar/main) adapts via JS in
+   the dashboard layout. These rules harden everything *inside* the page
+   content so dense desktop layouts degrade gracefully on small screens.
+   ============================================ */
+
+/* Public booking page: info panel + slot picker side-by-side on desktop,
+   stacked on mobile (inline grid-template can't carry a media query). */
+.booking-card {
+  grid-template-columns: 320px 1fr;
+}
+
+@media (max-width: 767px) {
+  .booking-card {
+    grid-template-columns: 1fr;
+  }
+
+  /* Tighter card padding so content isn't squeezed into a sliver */
+  .stats-card,
+  .card {
+    padding: 16px;
+  }
+
+  .stats-card .value {
+    font-size: 22px;
+    letter-spacing: -1px;
+  }
+
+  /* Section headers stack their title/action instead of overflowing */
+  .section-header {
+    padding: 12px 16px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  /* 16px inputs stop iOS Safari from auto-zooming the viewport on focus */
+  .input,
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+
+  /* Wide tables and code blocks scroll within their own box rather than
+     forcing the whole page wider than the screen */
+  table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  pre {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  /* Long unbroken strings (URLs, hashes, paths) wrap instead of overflowing */
+  p, span, a, li, h1, h2, h3, h4, h5, h6 {
+    overflow-wrap: break-word;
+  }
+}

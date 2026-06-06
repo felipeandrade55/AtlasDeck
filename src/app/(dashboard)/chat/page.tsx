@@ -10,7 +10,7 @@ import {
 } from "react";
 // handleSend ref forwarded to the wake word hook so the callback can call
 // the latest version without forcing it to be declared before the hook.
-import { Bot, Download, Radio, Settings as SettingsIcon, Volume2, VolumeX } from "lucide-react";
+import { Bot, Download, Radio, Settings as SettingsIcon, Volume2, VolumeX, PanelLeftOpen } from "lucide-react";
 import { ThreadList } from "@/components/chat/ThreadList";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { Composer } from "@/components/chat/Composer";
@@ -28,6 +28,7 @@ import { useOpenWakeWord } from "@/components/chat/useOpenWakeWord";
 import { useFollowUpCapture } from "@/components/chat/useFollowUpCapture";
 import { useTtsEngine } from "@/components/chat/useTtsEngine";
 import { useWakeWord } from "@/components/chat/useWakeWord";
+import { useIsMobile } from "@/hooks/useMediaQuery";
 
 // "Atlas" is a real Portuguese word — pt-BR ASR transcribes it
 // reliably. "Jarvis" is kept as a secondary option (often mistranscribed
@@ -53,6 +54,8 @@ interface AgentApiResponse {
 }
 
 export default function ChatPage() {
+  const isMobile = useIsMobile();
+  const [threadsOpen, setThreadsOpen] = useState(false);
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -826,7 +829,13 @@ export default function ChatPage() {
   });
 
   return (
-    <div style={shellStyle}>
+    <div
+      style={
+        isMobile
+          ? { ...shellStyle, height: "calc(100vh - 48px)", margin: "-16px" }
+          : shellStyle
+      }
+    >
       <ThreadList
         threads={threads}
         activeId={activeThreadId}
@@ -835,12 +844,35 @@ export default function ChatPage() {
         onCreate={handleCreateThread}
         onPin={handleTogglePin}
         onDelete={handleDeleteThread}
+        isMobile={isMobile}
+        open={threadsOpen}
+        onClose={() => setThreadsOpen(false)}
       />
 
       <section style={mainStyle}>
         <header style={topBarStyle}>
           <div style={titleAreaStyle}>
             <h1 style={pageTitleStyle}>
+              {isMobile && (
+                <button
+                  type="button"
+                  onClick={() => setThreadsOpen(true)}
+                  aria-label="Abrir conversas"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    background: "none",
+                    border: "none",
+                    color: "var(--text-secondary)",
+                    cursor: "pointer",
+                    padding: 0,
+                    marginRight: 2,
+                  }}
+                >
+                  <PanelLeftOpen size={20} />
+                </button>
+              )}
               <Bot size={20} style={{ color: "var(--accent)" }} />
               {activeThread?.title ?? "Nova conversa"}
             </h1>

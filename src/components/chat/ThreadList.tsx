@@ -12,6 +12,10 @@ interface ThreadListProps {
   onCreate: () => void;
   onPin: (thread: ChatThread) => void;
   onDelete: (thread: ChatThread) => void;
+  /** On mobile the list becomes a slide-over drawer instead of a fixed column. */
+  isMobile?: boolean;
+  open?: boolean;
+  onClose?: () => void;
 }
 
 export function ThreadList({
@@ -22,8 +26,21 @@ export function ThreadList({
   onCreate,
   onPin,
   onDelete,
+  isMobile = false,
+  open = false,
+  onClose,
 }: ThreadListProps) {
   const [query, setQuery] = useState("");
+
+  // On mobile, picking or creating a thread should dismiss the drawer.
+  const handleSelect = (id: string) => {
+    onSelect(id);
+    if (isMobile) onClose?.();
+  };
+  const handleCreate = () => {
+    onCreate();
+    if (isMobile) onClose?.();
+  };
 
   const agentById = useMemo(() => {
     const map = new Map<string, AgentSummary>();
@@ -37,10 +54,10 @@ export function ThreadList({
     return threads.filter((t) => t.title.toLowerCase().includes(q));
   }, [threads, query]);
 
-  return (
-    <aside style={containerStyle}>
+  const aside = (
+    <aside style={isMobile ? mobileContainerStyle(open) : containerStyle}>
       <div style={headerStyle}>
-        <button type="button" onClick={onCreate} style={newButtonStyle}>
+        <button type="button" onClick={handleCreate} style={newButtonStyle}>
           <Plus size={16} />
           Nova conversa
         </button>
@@ -71,7 +88,7 @@ export function ThreadList({
             <button
               key={thread.id}
               type="button"
-              onClick={() => onSelect(thread.id)}
+              onClick={() => handleSelect(thread.id)}
               style={threadItemStyle(isActive)}
             >
               <div style={threadHeaderStyle}>
@@ -121,6 +138,28 @@ export function ThreadList({
       </div>
     </aside>
   );
+
+  if (!isMobile) return aside;
+
+  // Mobile: render the drawer above a tap-to-dismiss backdrop.
+  return (
+    <>
+      <div
+        onClick={onClose}
+        aria-hidden={!open}
+        style={{
+          position: "fixed",
+          inset: 0,
+          backgroundColor: "rgba(0, 0, 0, 0.55)",
+          zIndex: 35,
+          opacity: open ? 1 : 0,
+          pointerEvents: open ? "auto" : "none",
+          transition: "opacity 0.25s ease",
+        }}
+      />
+      {aside}
+    </>
+  );
 }
 
 function formatRel(iso: string): string {
@@ -144,6 +183,23 @@ const containerStyle: CSSProperties = {
   background: "var(--bg)",
   height: "100%",
 };
+
+function mobileContainerStyle(open: boolean): CSSProperties {
+  return {
+    position: "fixed",
+    top: 48, // below the app top bar
+    left: 0,
+    bottom: 0,
+    width: "min(85vw, 320px)",
+    display: "flex",
+    flexDirection: "column",
+    borderRight: "1px solid var(--border)",
+    background: "var(--bg)",
+    zIndex: 40,
+    transform: open ? "translateX(0)" : "translateX(-100%)",
+    transition: "transform 0.25s ease",
+  };
+}
 
 const headerStyle: CSSProperties = {
   padding: 12,

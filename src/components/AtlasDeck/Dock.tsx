@@ -37,9 +37,130 @@ const dockItems = [
 
 ];
 
-export function Dock() {
+interface DockProps {
+  isMobile?: boolean;
+  open?: boolean;
+  onClose?: () => void;
+}
+
+export function Dock({ isMobile = false, open = false, onClose }: DockProps) {
   const pathname = usePathname();
 
+  const isItemActive = (href: string) =>
+    pathname === href || (href !== "/" && pathname.startsWith(href));
+
+  // ----- Mobile: slide-in drawer with full labels -----
+  if (isMobile) {
+    return (
+      <>
+        {/* Backdrop */}
+        <div
+          onClick={onClose}
+          aria-hidden={!open}
+          style={{
+            position: "fixed",
+            inset: 0,
+            backgroundColor: "rgba(0, 0, 0, 0.55)",
+            zIndex: 55,
+            opacity: open ? 1 : 0,
+            pointerEvents: open ? "auto" : "none",
+            transition: "opacity 0.25s ease",
+          }}
+        />
+
+        {/* Drawer */}
+        <aside
+          className="dock dock-drawer"
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            bottom: 0,
+            width: "min(80vw, 280px)",
+            backgroundColor: "var(--surface)",
+            borderRight: "1px solid var(--border)",
+            display: "flex",
+            flexDirection: "column",
+            padding: "16px 12px",
+            gap: "4px",
+            zIndex: 60,
+            transform: open ? "translateX(0)" : "translateX(-100%)",
+            transition: "transform 0.25s ease",
+            overflowY: "auto",
+          }}
+        >
+          {/* Drawer header */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "10px",
+              padding: "4px 8px 14px",
+              marginBottom: "4px",
+              borderBottom: "1px solid var(--border)",
+            }}
+          >
+            <span style={{ fontSize: "22px" }}>🦞</span>
+            <span
+              style={{
+                fontFamily: "var(--font-heading)",
+                fontSize: "16px",
+                fontWeight: 700,
+                color: "var(--text-primary)",
+                letterSpacing: "-0.5px",
+              }}
+            >
+              AtlasDeck
+            </span>
+          </div>
+
+          {dockItems.map((item) => {
+            const isActive = isItemActive(item.href);
+            const Icon = item.icon;
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                onClick={onClose}
+                className="dock-drawer-item"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "14px",
+                  padding: "12px 14px",
+                  borderRadius: "10px",
+                  backgroundColor: isActive ? "var(--accent-soft)" : "transparent",
+                  textDecoration: "none",
+                }}
+              >
+                <Icon
+                  style={{
+                    width: "22px",
+                    height: "22px",
+                    flexShrink: 0,
+                    color: isActive ? "var(--accent)" : "var(--text-secondary)",
+                    strokeWidth: isActive ? 2.5 : 2,
+                  }}
+                />
+                <span
+                  style={{
+                    fontFamily: "var(--font-body)",
+                    fontSize: "14px",
+                    fontWeight: isActive ? 600 : 500,
+                    color: isActive ? "var(--accent)" : "var(--text-primary)",
+                  }}
+                >
+                  {item.label}
+                </span>
+              </Link>
+            );
+          })}
+        </aside>
+      </>
+    );
+  }
+
+  // ----- Desktop: fixed vertical icon rail -----
   return (
     <aside
       className="dock"
@@ -57,10 +178,11 @@ export function Dock() {
         padding: "12px 6px",
         gap: "4px",
         zIndex: 50,
+        overflowY: "auto",
       }}
     >
       {dockItems.map((item) => {
-        const isActive = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
+        const isActive = isItemActive(item.href);
         const Icon = item.icon;
 
         return (
@@ -71,6 +193,7 @@ export function Dock() {
             style={{
               width: "56px",
               height: "56px",
+              flexShrink: 0,
               display: "flex",
               flexDirection: "column",
               alignItems: "center",

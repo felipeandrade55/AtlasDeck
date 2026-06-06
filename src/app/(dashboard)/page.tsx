@@ -25,6 +25,7 @@ import {
   Terminal,
   Clock,
   Bell,
+  Mail,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -328,6 +329,7 @@ export default function DashboardPage() {
               { href: "/actions", icon: Zap, label: "Ações Rápidas", color: "var(--accent)" },
               { href: "/system", icon: Server, label: "Sistema", color: "var(--success)" },
               { href: "/logs", icon: Terminal, label: "Logs ao Vivo", color: "#60a5fa" },
+              { href: "/emails", icon: Mail, label: "E-mails", color: "#38bdf8" },
               { href: "/memory", icon: Brain, label: "Memória", color: "#f59e0b" },
               { href: "/skills", icon: Puzzle, label: "Habilidades", color: "#4ade80" },
               { href: "/reminders", icon: Bell, label: "Lembretes", color: "#f472b6" },

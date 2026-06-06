@@ -223,6 +223,7 @@ export default function PublicBookingPage({ params }: Props) {
       }}
     >
       <div
+        className="booking-card"
         style={{
           width: "100%",
           maxWidth: 920,
@@ -230,7 +231,6 @@ export default function PublicBookingPage({ params }: Props) {
           border: "1px solid var(--border)",
           borderRadius: "var(--radius-lg)",
           display: "grid",
-          gridTemplateColumns: "320px 1fr",
           overflow: "hidden",
         }}
       >

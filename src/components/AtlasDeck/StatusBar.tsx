@@ -22,7 +22,11 @@ interface SystemStats {
   telegramPendingUpdates?: number;
 }
 
-export function StatusBar() {
+interface StatusBarProps {
+  isMobile?: boolean;
+}
+
+export function StatusBar({ isMobile = false }: StatusBarProps) {
   const [stats, setStats] = useState<SystemStats>({
     cpu: 0,
     ram: { used: 0, total: 4 },
@@ -136,6 +140,11 @@ export function StatusBar() {
       )}
     </div>
   );
+
+  // Dense system telemetry doesn't fit a phone screen — the same metrics are
+  // available on the /system page (linked from the nav drawer). Hide the bar on
+  // mobile so content can run to the bottom edge.
+  if (isMobile) return null;
 
   return (
     <div

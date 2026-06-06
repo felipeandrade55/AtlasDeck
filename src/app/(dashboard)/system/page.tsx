@@ -1049,7 +1049,7 @@ export default function SystemMonitorPage() {
 
               {showAddRule && (
                 <div className="mb-4 p-3 rounded-lg space-y-3" style={{ backgroundColor: "var(--card-elevated)", border: "1px solid var(--border)" }}>
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                     <input 
                       placeholder="Porta (ex: 8080)" 
                       value={newRulePort} 

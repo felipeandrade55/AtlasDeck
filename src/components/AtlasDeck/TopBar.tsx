@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Search, Bell, User, Command, LogOut, Settings, ChevronDown, HelpCircle } from "lucide-react";
+import { Search, Bell, User, Command, LogOut, Settings, ChevronDown, HelpCircle, Menu } from "lucide-react";
 import { GlobalSearch } from "@/components/GlobalSearch";
 import { NotificationDropdown } from "@/components/NotificationDropdown";
 import { useRouter } from "next/navigation";
@@ -10,7 +10,12 @@ import Link from "next/link";
 const OWNER_NAME = process.env.NEXT_PUBLIC_OWNER_NAME ?? "Usuário";
 const OWNER_INITIAL = OWNER_NAME.charAt(0).toUpperCase();
 
-export function TopBar() {
+interface TopBarProps {
+  isMobile?: boolean;
+  onMenuClick?: () => void;
+}
+
+export function TopBar({ isMobile = false, onMenuClick }: TopBarProps) {
   const [showSearch, setShowSearch] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
@@ -56,7 +61,7 @@ export function TopBar() {
         style={{
           position: "fixed",
           top: 0,
-          left: "68px", // Width of dock
+          left: isMobile ? 0 : "68px", // Width of dock (collapses to a drawer on mobile)
           right: 0,
           height: "48px",
           backgroundColor: "var(--surface)",
@@ -64,12 +69,35 @@ export function TopBar() {
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          padding: "0 20px",
+          padding: isMobile ? "0 12px" : "0 20px",
+          gap: "8px",
           zIndex: 45,
         }}
       >
-        {/* Left: Logo & Title */}
-        <div className="flex items-center gap-3">
+        {/* Left: hamburger (mobile) + Logo & Title */}
+        <div className="flex items-center gap-3" style={{ minWidth: 0 }}>
+          {isMobile && (
+            <button
+              onClick={onMenuClick}
+              aria-label="Abrir menu"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: "36px",
+                height: "36px",
+                marginLeft: "-4px",
+                borderRadius: "8px",
+                background: "none",
+                border: "none",
+                color: "var(--text-primary)",
+                cursor: "pointer",
+                flexShrink: 0,
+              }}
+            >
+              <Menu style={{ width: "22px", height: "22px" }} />
+            </button>
+          )}
           <span style={{ fontSize: "20px" }}>🦞</span>
           <h1
             style={{
@@ -78,66 +106,75 @@ export function TopBar() {
               fontWeight: 700,
               color: "var(--text-primary)",
               letterSpacing: "-0.5px",
+              whiteSpace: "nowrap",
             }}
           >
             AtlasDeck
           </h1>
-          {/* Version Badge */}
-          <div
-            style={{
-              backgroundColor: "var(--accent-soft)",
-              borderRadius: "4px",
-              padding: "2px 8px",
-            }}
-          >
-            <span
+          {/* Version Badge — hidden on mobile to save horizontal room */}
+          {!isMobile && (
+            <div
               style={{
-                fontFamily: "var(--font-body)",
-                fontSize: "9px",
-                fontWeight: 700,
-                color: "var(--accent)",
-                letterSpacing: "1px",
+                backgroundColor: "var(--accent-soft)",
+                borderRadius: "4px",
+                padding: "2px 8px",
               }}
             >
-              v1.0
-            </span>
-          </div>
+              <span
+                style={{
+                  fontFamily: "var(--font-body)",
+                  fontSize: "9px",
+                  fontWeight: 700,
+                  color: "var(--accent)",
+                  letterSpacing: "1px",
+                }}
+              >
+                v1.0
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Right: Search + Notifications + User */}
-        <div className="flex items-center gap-3">
-          {/* Search Box */}
+        <div className="flex items-center gap-3" style={{ flexShrink: 0 }}>
+          {/* Search Box — full bar on desktop, icon-only on mobile */}
           <button
             onClick={() => setShowSearch(true)}
+            aria-label="Buscar"
             className="flex items-center gap-2 transition-all"
             style={{
-              width: "240px",
-              height: "32px",
-              backgroundColor: "var(--surface-elevated)",
-              borderRadius: "6px",
-              padding: "0 12px",
+              width: isMobile ? "36px" : "240px",
+              height: isMobile ? "36px" : "32px",
+              justifyContent: isMobile ? "center" : "flex-start",
+              backgroundColor: isMobile ? "transparent" : "var(--surface-elevated)",
+              borderRadius: isMobile ? "8px" : "6px",
+              padding: isMobile ? 0 : "0 12px",
+              flexShrink: 0,
             }}
           >
             <Search
               className="flex-shrink-0"
               style={{
-                width: "16px",
-                height: "16px",
+                width: isMobile ? "20px" : "16px",
+                height: isMobile ? "20px" : "16px",
                 color: "var(--text-muted)",
               }}
             />
-            <span
-              style={{
-                fontFamily: "var(--font-body)",
-                fontSize: "12px",
-                color: "var(--text-muted)",
-              }}
-            >
-              Buscar... ⌘K
-            </span>
+            {!isMobile && (
+              <span
+                style={{
+                  fontFamily: "var(--font-body)",
+                  fontSize: "12px",
+                  color: "var(--text-muted)",
+                }}
+              >
+                Buscar... ⌘K
+              </span>
+            )}
           </button>
 
-          {/* Help / Welcome guide */}
+          {/* Help / Welcome guide — hidden on mobile to keep the header uncluttered */}
+          {!isMobile && (
           <Link
             href="/welcome"
             aria-label="Guia de boas-vindas"
@@ -165,6 +202,7 @@ export function TopBar() {
           >
             <HelpCircle style={{ width: "18px", height: "18px" }} />
           </Link>
+          )}
 
           {/* Notifications Dropdown */}
           <NotificationDropdown />
@@ -207,26 +245,30 @@ export function TopBar() {
                   {OWNER_INITIAL}
                 </span>
               </div>
-              {/* Name */}
-              <span
-                style={{
-                  fontFamily: "var(--font-body)",
-                  fontSize: "12px",
-                  fontWeight: 500,
-                  color: "var(--text-secondary)",
-                }}
-              >
-                {OWNER_NAME}
-              </span>
-              <ChevronDown
-                style={{
-                  width: "12px",
-                  height: "12px",
-                  color: "var(--text-muted)",
-                  transform: showUserMenu ? "rotate(180deg)" : "rotate(0deg)",
-                  transition: "transform 0.15s",
-                }}
-              />
+              {/* Name + chevron — hidden on mobile (avatar stays tappable) */}
+              {!isMobile && (
+                <>
+                  <span
+                    style={{
+                      fontFamily: "var(--font-body)",
+                      fontSize: "12px",
+                      fontWeight: 500,
+                      color: "var(--text-secondary)",
+                    }}
+                  >
+                    {OWNER_NAME}
+                  </span>
+                  <ChevronDown
+                    style={{
+                      width: "12px",
+                      height: "12px",
+                      color: "var(--text-muted)",
+                      transform: showUserMenu ? "rotate(180deg)" : "rotate(0deg)",
+                      transition: "transform 0.15s",
+                    }}
+                  />
+                </>
+              )}
             </button>
 
             {/* Dropdown */}
