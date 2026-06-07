@@ -11,6 +11,7 @@ import {
   Brain,
   AlertCircle,
   Mic,
+  RefreshCw,
 } from "lucide-react";
 
 interface SuggestedEvent {
@@ -136,6 +137,7 @@ export default function TranscriptionsPage() {
 function TranscriptionDetail({ id, onBack }: { id: string; onBack: () => void }) {
   const [t, setT] = useState<Transcription | null>(null);
   const [loading, setLoading] = useState(true);
+  const [reanalyzing, setReanalyzing] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -150,10 +152,27 @@ function TranscriptionDetail({ id, onBack }: { id: string; onBack: () => void })
     load();
   }, [load]);
 
+  // Poll every 4s while analyzing
+  useEffect(() => {
+    if (!t || (t.status !== "analyzing" && !reanalyzing)) return;
+    const interval = setInterval(load, 4000);
+    return () => clearInterval(interval);
+  }, [t, reanalyzing, load]);
+
   const handleDelete = async () => {
     if (!confirm("Excluir esta transcrição? As sugestões pendentes também somem.")) return;
     await fetch(`/api/transcribe/${id}`, { method: "DELETE" });
     onBack();
+  };
+
+  const handleReanalyze = async () => {
+    setReanalyzing(true);
+    try {
+      await fetch(`/api/transcribe/${id}/reanalyze`, { method: "POST" });
+      await load();
+    } finally {
+      setReanalyzing(false);
+    }
   };
 
   if (loading || !t) {
@@ -165,6 +184,8 @@ function TranscriptionDetail({ id, onBack }: { id: string; onBack: () => void })
   }
 
   const pending = (t.suggestions || []).filter((s) => s.status === "pending");
+  const isAnalyzing = t.status === "analyzing" || reanalyzing;
+  const canReanalyze = t.status === "analyzing" || t.status === "error";
 
   return (
     <div className="p-4 md:p-8 space-y-5">
@@ -180,10 +201,45 @@ function TranscriptionDetail({ id, onBack }: { id: string; onBack: () => void })
             <StatusBadge status={t.status} inline />
           </p>
         </div>
-        <button onClick={handleDelete} className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg" style={{ color: "var(--error)", border: "1px solid color-mix(in srgb, var(--error) 30%, transparent)" }}>
-          <Trash2 size={15} /> Excluir
-        </button>
+        <div className="flex items-center gap-2">
+          {canReanalyze && (
+            <button
+              onClick={handleReanalyze}
+              disabled={reanalyzing}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg"
+              style={{ color: "var(--accent)", border: "1px solid color-mix(in srgb, var(--accent) 30%, transparent)" }}
+            >
+              {reanalyzing ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
+              Re-analisar
+            </button>
+          )}
+          <button onClick={handleDelete} className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg" style={{ color: "var(--error)", border: "1px solid color-mix(in srgb, var(--error) 30%, transparent)" }}>
+            <Trash2 size={15} /> Excluir
+          </button>
+        </div>
       </div>
+
+      {/* Analyzing banner */}
+      {isAnalyzing && (
+        <div className="flex items-center gap-3 rounded-xl p-4" style={{ backgroundColor: "color-mix(in srgb, var(--warning) 10%, transparent)", border: "1px solid color-mix(in srgb, var(--warning) 30%, transparent)" }}>
+          <Loader2 size={16} className="animate-spin shrink-0" style={{ color: "var(--warning)" }} />
+          <p className="text-sm" style={{ color: "var(--warning)" }}>
+            Analisando com IA… isso pode levar alguns segundos.
+          </p>
+        </div>
+      )}
+
+      {/* Error banner */}
+      {t.status === "error" && !reanalyzing && (
+        <div className="flex items-start gap-3 rounded-xl p-4" style={{ backgroundColor: "color-mix(in srgb, var(--error) 10%, transparent)", border: "1px solid color-mix(in srgb, var(--error) 30%, transparent)" }}>
+          <AlertCircle size={16} className="shrink-0 mt-0.5" style={{ color: "var(--error)" }} />
+          <div>
+            <p className="text-sm font-medium" style={{ color: "var(--error)" }}>Falha na análise</p>
+            {t.summary && <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>{t.summary}</p>}
+            <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Use o botão "Re-analisar" para tentar novamente.</p>
+          </div>
+        </div>
+      )}
 
       {/* Suggested events approval */}
       {pending.length > 0 && (

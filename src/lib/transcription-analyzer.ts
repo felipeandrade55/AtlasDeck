@@ -89,6 +89,38 @@ function extractJsonObject(text: string): string | null {
   return text.slice(start, end + 1);
 }
 
+async function runOpenAI(prompt: string): Promise<string | null> {
+  const apiKey = process.env.OPENAI_API_KEY || null;
+  if (!apiKey) return null;
+  try {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 60_000);
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        max_tokens: 2000,
+        temperature: 0.2,
+        response_format: { type: "json_object" },
+        messages: [{ role: "user", content: prompt }],
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(t);
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    return data.choices?.[0]?.message?.content ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function runOpenClaw(prompt: string): Promise<string | null> {
   try {
     const config = readOpenClawConfig();
@@ -161,16 +193,28 @@ function sanitizeEvent(raw: unknown): SuggestedEventDraft | null {
 
 async function analyzeWindow(text: string, nowIso: string, tz: string): Promise<AnalysisResult | null> {
   const prompt = buildPrompt(text, nowIso, tz);
+
+  // 1. OpenAI gpt-4o-mini (direct, low cost)
+  const oa = await runOpenAI(prompt);
+  if (oa) {
+    const parsed = parseAnalysis(oa);
+    if (parsed) return parsed;
+  }
+
+  // 2. OpenClaw CLI
   const oc = await runOpenClaw(prompt);
   if (oc) {
     const parsed = parseAnalysis(oc);
     if (parsed) return parsed;
   }
+
+  // 3. Ollama (local)
   const ol = await runOllama(prompt);
   if (ol) {
     const parsed = parseAnalysis(ol);
     if (parsed) return parsed;
   }
+
   return null;
 }
 
