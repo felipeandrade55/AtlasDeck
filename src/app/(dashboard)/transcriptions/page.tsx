@@ -273,7 +273,10 @@ function TranscriptionDetail({ id, onBack }: { id: string; onBack: () => void })
   const pending = (t.suggestions || []).filter((s) => s.status === "pending");
   const pendingTasks = (t.tasks || []).filter((s) => s.status === "pending");
   const isAnalyzing = t.status === "analyzing" || reanalyzing;
-  const canReanalyze = t.status === "analyzing" || t.status === "error";
+  // Re-analyze is available for any finished transcription with text — including
+  // ones already "analyzed", so older transcriptions can be reprocessed to
+  // extract the newer fields (decisions, topics, action items, open questions).
+  const canReanalyze = !isAnalyzing && t.status !== "recording" && !!t.text.trim();
 
   return (
     <div className="p-4 md:p-8 space-y-5">
@@ -347,6 +350,7 @@ function TranscriptionDetail({ id, onBack }: { id: string; onBack: () => void })
               disabled={reanalyzing}
               className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg"
               style={{ color: "var(--accent)", border: "1px solid color-mix(in srgb, var(--accent) 30%, transparent)" }}
+              title="Reprocessa a transcrição e extrai tarefas, decisões, tópicos e perguntas em aberto"
             >
               {reanalyzing ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
               Re-analisar
