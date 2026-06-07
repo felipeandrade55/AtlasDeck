@@ -13,6 +13,31 @@ interface ActiveTtsStatus {
 }
 
 const MAX_TTS_CHARS = 4500;
+const DIGIT_WORDS_PT: Record<string, string> = {
+  "0": "zero",
+  "1": "um",
+  "2": "dois",
+  "3": "três",
+  "4": "quatro",
+  "5": "cinco",
+  "6": "seis",
+  "7": "sete",
+  "8": "oito",
+  "9": "nove",
+};
+
+function prepareTextForSpeech(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[[^\]]*]\([^)]+\)/g, " ")
+    .replace(/\[([^\]]+)]\([^)]+\)/g, "$1")
+    .replace(/[\u{1F1E6}-\u{1F1FF}\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\uFE0F\u200D]/gu, " ")
+    .replace(/[*_>#~|]/g, " ")
+    .replace(/\d/g, (digit) => DIGIT_WORDS_PT[digit] ?? digit)
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 function splitForTts(text: string): string[] {
   const normalized = text.replace(/\s+/g, " ").trim();
@@ -92,8 +117,11 @@ export function useTtsEngine() {
 
   const cleanupAudio = useCallback(() => {
     if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.src = "";
+      const audio = audioRef.current;
+      audio.onended = null;
+      audio.onerror = null;
+      audio.pause();
+      audio.src = "";
       audioRef.current = null;
     }
     if (objectUrlRef.current) {
@@ -170,7 +198,9 @@ export function useTtsEngine() {
 
       if (engine === "elevenlabs" || engine === "fishaudio") {
         try {
-          for (const chunk of splitForTts(text)) {
+          const speechText = prepareTextForSpeech(text);
+          if (!speechText) return;
+          for (const chunk of splitForTts(speechText)) {
             if (cancelledRef.current) return;
             const ok = await speakViaCloud(chunk);
             if (!ok) return;

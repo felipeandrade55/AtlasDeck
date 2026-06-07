@@ -89,7 +89,7 @@ export default function ChatPage() {
   // transport badge so the user can see at a glance whether real-time
   // WS is actually being used vs. the legacy CLI/Ollama fallback.
   const [lastTransport, setLastTransport] = useState<
-    "ws" | "cli" | "ollama" | "unknown" | null
+    "ws" | "cli" | "ollama" | "atlas" | "unknown" | null
   >(null);
   /**
    * Persistent diagnostics inferred from the last few assistant turns:
@@ -541,7 +541,7 @@ export default function ChatPage() {
                 : m,
             ),
           );
-          if (provider === "ws" || provider === "cli" || provider === "ollama") {
+          if (provider === "ws" || provider === "cli" || provider === "ollama" || provider === "atlas") {
             setLastTransport(provider);
           } else {
             setLastTransport("unknown");
@@ -1102,7 +1102,11 @@ export default function ChatPage() {
           </span>
           <span
             style={pipelinePillStyle(
-              lastTransport === "ws" ? "ok" : lastTransport ? "warn" : "neutral",
+              lastTransport === "ws" || lastTransport === "atlas"
+                ? "ok"
+                : lastTransport
+                ? "warn"
+                : "neutral",
             )}
             title="Transporte usado na última resposta do agente"
           >
@@ -1644,12 +1648,13 @@ function TransportBadge({
   transport,
   streaming,
 }: {
-  transport: "ws" | "cli" | "ollama" | "unknown" | null;
+  transport: "ws" | "cli" | "ollama" | "atlas" | "unknown" | null;
   streaming: boolean;
 }) {
   if (!transport && !streaming) return null;
   const variants: Record<string, { label: string; color: string; bg: string }> = {
     ws: { label: "WS real-time", color: "#10b981", bg: "rgba(16, 185, 129, 0.12)" },
+    atlas: { label: "Atlas local", color: "#14b8a6", bg: "rgba(20, 184, 166, 0.12)" },
     cli: { label: "CLI (fallback)", color: "#f59e0b", bg: "rgba(245, 158, 11, 0.12)" },
     ollama: { label: "Ollama (fallback)", color: "#f59e0b", bg: "rgba(245, 158, 11, 0.12)" },
     unknown: { label: "transport ?", color: "#94a3b8", bg: "rgba(148, 163, 184, 0.12)" },
@@ -1672,6 +1677,8 @@ function TransportBadge({
       title={
         key === "ws"
           ? "Conexão WebSocket direta com o OpenClaw Gateway — streaming token a token."
+          : key === "atlas"
+          ? "Resposta direta do AtlasDeck local, sem chamar LLM."
           : key === "cli"
           ? "Fallback CLI ativo (ATLAS_CHAT_ALLOW_FALLBACK). Latência alta, sem token streaming real."
           : key === "ollama"
@@ -1697,9 +1704,10 @@ function ttsPreferredLabel(provider: "elevenlabs" | "fishaudio" | null): string 
 }
 
 function transportLabel(
-  transport: "ws" | "cli" | "ollama" | "unknown",
+  transport: "ws" | "cli" | "ollama" | "atlas" | "unknown",
 ): string {
   if (transport === "ws") return "WS real-time";
+  if (transport === "atlas") return "Atlas local";
   if (transport === "cli") return "CLI lento";
   if (transport === "ollama") return "Ollama fallback";
   return "desconhecido";

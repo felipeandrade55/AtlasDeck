@@ -31,7 +31,7 @@ import { runOpenClawChat, type RunnerEvent } from "@/lib/openclaw-runner";
 import { logActivity, updateActivity } from "@/lib/activities-db";
 import { publishEvent } from "@/lib/live-events";
 import { createTask, updateTask } from "@/lib/tasks-db";
-import { getSettings } from "@/lib/memory-db";
+import { getMemoryDailyStats, getSettings } from "@/lib/memory-db";
 import { cityFromAddress, shortCityName, type NominatimAddress } from "@/lib/location-display";
 
 export const runtime = "nodejs";
@@ -287,6 +287,36 @@ const QUICK_MODE_HINT =
   "Se o usuário pedir uma ação operacional (editar arquivo, rodar comando, usar skill, acessar sistema), " +
   "explique brevemente que isso precisa ser feito pelo modo OpenClaw Skills.";
 
+function normalizeIntent(text: string): string {
+  return text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function tryBuildDirectAnswer(prompt: string): string | null {
+  const normalized = normalizeIntent(prompt);
+  const asksMemory = /\b(memoria|memorias|armazenad[ao]s?|salv[ao]s?|registrad[ao]s?)\b/.test(normalized);
+  const asksToday = /\b(hoje|dia|diaria|diario|deste dia|nesse dia)\b/.test(normalized);
+  const asksCount = /\b(quant[ao]s?|total|numero|conta|contagem)\b/.test(normalized);
+  if (!asksMemory || !asksToday || !asksCount) return null;
+
+  const settings = getSettings();
+  const stats = getMemoryDailyStats(settings.home_timezone);
+  const typeParts = [
+    `${stats.byType.episodic} episódicas`,
+    `${stats.byType.semantic} semânticas`,
+    `${stats.byType.procedural} procedurais`,
+    `${stats.byType.identity} de identidade`,
+  ];
+  const archived = stats.archivedToday > 0 ? `\n\nArquivadas hoje: ${stats.archivedToday}.` : "";
+  return (
+    `Hoje (${stats.dateLabel}, fuso ${stats.timezone}), foram armazenadas ` +
+    `${stats.totalToday} memórias.\n\n` +
+    `Distribuição: ${typeParts.join(", ")}.${archived}`
+  );
+}
+
 function sseLine(event: string, data: unknown): string {
   const payload = typeof data === "string" ? data : JSON.stringify(data);
   return `event: ${event}\ndata: ${payload}\n\n`;
@@ -454,6 +484,7 @@ export async function POST(req: NextRequest) {
     content: "",
     status: "streaming",
   });
+  const directAnswer = tryBuildDirectAnswer(prompt);
 
   // Auto-promote substantial chat turns into kanban cards so the user
   // can watch Jarvis's real work move through the Live Mission board.
@@ -542,6 +573,36 @@ export async function POST(req: NextRequest) {
         assistantMessageId: assistantMsg.id,
         agentId,
       });
+
+      if (directAnswer) {
+        assembled = directAnswer;
+        updateMessage(assistantMsg.id, {
+          content: directAnswer,
+          status: "complete",
+          error: null,
+        });
+        send("provider", {
+          provider: "atlas",
+          detail: "resposta direta do banco de memórias",
+        });
+        send("token", { delta: directAnswer });
+        send("done", {
+          assistantMessageId: assistantMsg.id,
+          content: directAnswer,
+          tokensIn: 0,
+          tokensOut: 0,
+          cost: 0,
+          provider: "atlas",
+          providerDetail: "resposta direta do banco de memórias",
+          buffered: false,
+          stubReply: false,
+          heartbeatLeak: false,
+        });
+        try {
+          controller.close();
+        } catch {}
+        return;
+      }
 
       // Heartbeat every 15s to keep proxies/clients alive
       const heartbeat = setInterval(() => {

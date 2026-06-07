@@ -314,6 +314,8 @@ function providerLabel(provider: string): string {
       return "🐢 CLI";
     case "ollama":
       return "🦙 Ollama";
+    case "atlas":
+      return "⚡ Atlas";
     default:
       return provider;
   }
@@ -323,6 +325,8 @@ function providerBadgeStyle(provider: string): CSSProperties {
   const color =
     provider === "ws"
       ? "#22c55e"
+      : provider === "atlas"
+      ? "#14b8a6"
       : provider === "cli"
       ? "#f59e0b"
       : provider === "ollama"

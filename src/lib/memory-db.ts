@@ -978,6 +978,84 @@ export interface MemoryStats {
   cursors: number;
 }
 
+export interface MemoryDailyStats {
+  dateLabel: string;
+  timezone: string;
+  totalToday: number;
+  archivedToday: number;
+  byType: Record<MemoryType, number>;
+}
+
+function localDateParts(date: Date, timeZone: string): { year: number; month: number; day: number } {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value);
+  return { year: get("year"), month: get("month"), day: get("day") };
+}
+
+function utcInstantForLocalMidnight(
+  year: number,
+  month: number,
+  day: number,
+  timeZone: string,
+): Date {
+  let guess = Date.UTC(year, month - 1, day, 0, 0, 0);
+  for (let i = 0; i < 3; i += 1) {
+    const asLocal = localDateParts(new Date(guess), timeZone);
+    const localAsUtc = Date.UTC(asLocal.year, asLocal.month - 1, asLocal.day, 0, 0, 0);
+    const desiredAsUtc = Date.UTC(year, month - 1, day, 0, 0, 0);
+    guess += desiredAsUtc - localAsUtc;
+  }
+  return new Date(guess);
+}
+
+export function getMemoryDailyStats(timeZone?: string | null): MemoryDailyStats {
+  const db = getDb();
+  const tz = timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const now = new Date();
+  const today = localDateParts(now, tz);
+  const tomorrowUtc = new Date(Date.UTC(today.year, today.month - 1, today.day + 1));
+  const tomorrow = localDateParts(tomorrowUtc, "UTC");
+  const start = utcInstantForLocalMidnight(today.year, today.month, today.day, tz);
+  const end = utcInstantForLocalMidnight(tomorrow.year, tomorrow.month, tomorrow.day, tz);
+  const params = [start.toISOString(), end.toISOString()];
+
+  const totalToday = (db
+    .prepare(
+      "SELECT COUNT(*) AS n FROM memories WHERE datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?)",
+    )
+    .get(...params) as { n: number }).n;
+  const archivedToday = (db
+    .prepare(
+      "SELECT COUNT(*) AS n FROM memories WHERE archived = 1 AND datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?)",
+    )
+    .get(...params) as { n: number }).n;
+  const typeRows = db
+    .prepare(
+      "SELECT type, COUNT(*) AS n FROM memories WHERE archived = 0 AND datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?) GROUP BY type",
+    )
+    .all(...params) as Array<{ type: MemoryType; n: number }>;
+  const byType: Record<MemoryType, number> = {
+    episodic: 0,
+    semantic: 0,
+    procedural: 0,
+    identity: 0,
+  };
+  for (const row of typeRows) byType[row.type] = row.n;
+
+  return {
+    dateLabel: `${String(today.day).padStart(2, "0")}/${String(today.month).padStart(2, "0")}/${today.year}`,
+    timezone: tz,
+    totalToday,
+    archivedToday,
+    byType,
+  };
+}
+
 export function getStats(): MemoryStats {
   const db = getDb();
   const total = (db
