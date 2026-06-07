@@ -196,19 +196,23 @@ function RedesignedDashboardHome({ stats, agents, onAgentsClick }: DashboardHome
       </section>
 
       <section className="grid grid-cols-1 xl:grid-cols-12 gap-4 md:gap-6">
-        <div className="xl:col-span-4">
-          <PriorityPanel icon={CloudSun} label="Agora" title="Clima e rotina">
-            <WeatherWidget />
-          </PriorityPanel>
-        </div>
+        <div className="xl:col-span-8 space-y-4 md:space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
+            <PriorityPanel icon={CloudSun} label="Agora" title="Clima e rotina">
+              <WeatherWidget />
+            </PriorityPanel>
 
-        <div className="xl:col-span-4 space-y-4 md:space-y-6">
-          <PriorityPanel icon={Inbox} label="Atenção" title="Recados WhatsApp">
-            <BriefingCard />
-          </PriorityPanel>
-          <PriorityPanel icon={WalletCards} label="Controle" title="Custos">
-            <CostWidget />
-          </PriorityPanel>
+            <div className="space-y-4 md:space-y-6">
+              <PriorityPanel icon={Inbox} label="Atenção" title="Recados WhatsApp">
+                <BriefingCard />
+              </PriorityPanel>
+              <PriorityPanel icon={WalletCards} label="Controle" title="Custos">
+                <CostWidget />
+              </PriorityPanel>
+            </div>
+          </div>
+
+          <TodayFocusPanel stats={stats} agents={agents} />
         </div>
 
         <div className="xl:col-span-4">
@@ -371,6 +375,78 @@ function QuickActionsPanel() {
         </div>
       </div>
     </DashboardSection>
+  );
+}
+
+function TodayFocusPanel({ stats, agents }: { stats: Stats; agents: Agent[] }) {
+  const onlineAgents = agents.filter((agent) => agent.status === "online").length;
+  const successRate = stats.success + stats.error > 0
+    ? Math.round((stats.success / (stats.success + stats.error)) * 100)
+    : 100;
+
+  return (
+    <DashboardSection title="Resumo do dia" action={<LinkArrow href="/activity" label="Ver detalhes" />}>
+      <div className="p-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+        <FocusCard
+          icon={Inbox}
+          title="Prioridade"
+          value="Recados e custos"
+          description="Acompanhe WhatsApp e orçamento antes de abrir tarefas longas."
+          color="var(--accent)"
+        />
+        <FocusCard
+          icon={Activity}
+          title="Atividade"
+          value={`${stats.today.toLocaleString()} hoje`}
+          description={`${stats.pending.toLocaleString()} em andamento agora.`}
+          color="var(--info)"
+        />
+        <FocusCard
+          icon={Bot}
+          title="Operação"
+          value={`${onlineAgents}/${agents.length || 0} agentes online`}
+          description={`${successRate}% de sucesso nas ações finalizadas.`}
+          color="var(--success)"
+        />
+      </div>
+    </DashboardSection>
+  );
+}
+
+function FocusCard({
+  icon: Icon,
+  title,
+  value,
+  description,
+  color,
+}: {
+  icon: LucideIcon;
+  title: string;
+  value: string;
+  description: string;
+  color: string;
+}) {
+  return (
+    <div
+      className="rounded-xl p-4"
+      style={{
+        backgroundColor: "var(--card-elevated)",
+        border: "1px solid var(--border)",
+      }}
+    >
+      <div className="flex items-center gap-2 mb-3">
+        <Icon className="w-4 h-4" style={{ color }} />
+        <span className="text-[11px] font-bold uppercase tracking-[0.16em]" style={{ color: "var(--text-muted)" }}>
+          {title}
+        </span>
+      </div>
+      <div className="text-base font-bold mb-1" style={{ color: "var(--text-primary)", fontFamily: "var(--font-heading)" }}>
+        {value}
+      </div>
+      <p className="text-xs leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+        {description}
+      </p>
+    </div>
   );
 }
 

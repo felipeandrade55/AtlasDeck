@@ -26,6 +26,8 @@ interface Diagnostics {
   platform: string;
 }
 
+type LoadMode = "cached" | "normal" | "refresh";
+
 export function CostWidget() {
   const [data, setData] = useState<CostSummary | null>(null);
   const [collection, setCollection] = useState<CollectionInfo | null>(null);
@@ -35,9 +37,14 @@ export function CostWidget() {
   const [isLoading, setIsLoading] = useState(false);
   const cycleRef = useRef(0);
 
-  const load = useCallback((forceRefresh = false) => {
+  const load = useCallback((mode: LoadMode = "normal") => {
     setIsLoading(true);
-    const url = forceRefresh ? "/api/costs?refresh=1" : "/api/costs";
+    const url =
+      mode === "refresh"
+        ? "/api/costs?refresh=1"
+        : mode === "cached"
+          ? "/api/costs?collect=0"
+          : "/api/costs";
     fetch(url)
       .then((r) => r.json())
       .then((d) => {
@@ -60,16 +67,22 @@ export function CostWidget() {
   }, []);
 
   useEffect(() => {
-    load(true);
+    // Show the latest cached snapshot immediately, then refresh in the background.
+    const initialId = window.setTimeout(() => load("cached"), 0);
+    const refreshId = window.setTimeout(() => load("refresh"), 300);
     const id = setInterval(() => {
       cycleRef.current += 1;
       const force = cycleRef.current % 4 === 0;
-      load(force);
+      load(force ? "refresh" : "normal");
     }, 15_000);
-    return () => clearInterval(id);
+    return () => {
+      window.clearTimeout(initialId);
+      window.clearTimeout(refreshId);
+      clearInterval(id);
+    };
   }, [load]);
 
-  if (!data) return null;
+  if (!data) return <CostWidgetSkeleton />;
 
   const pct = Math.min((data.thisMonth / data.budget) * 100, 100);
   const barColor =
@@ -303,6 +316,30 @@ export function CostWidget() {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function CostWidgetSkeleton() {
+  return (
+    <div
+      className="flex flex-col gap-3 px-4 py-3 rounded-xl"
+      style={{
+        backgroundColor: "var(--card)",
+        border: "1px solid var(--border)",
+      }}
+    >
+      <div className="flex items-center gap-3 md:gap-4 flex-wrap">
+        <DollarSign className="w-4 h-4 flex-shrink-0" style={{ color: "var(--text-muted)" }} />
+        <div className="h-4 w-20 rounded animate-pulse" style={{ backgroundColor: "var(--card-elevated)" }} />
+        <div className="h-4 w-28 rounded animate-pulse" style={{ backgroundColor: "var(--card-elevated)" }} />
+        <div className="h-1.5 w-28 rounded-full animate-pulse" style={{ backgroundColor: "var(--card-elevated)" }} />
+        <div className="h-8 w-24 rounded-lg ml-auto animate-pulse" style={{ backgroundColor: "var(--card-elevated)" }} />
+      </div>
+      <div className="flex items-center justify-between text-[0.7rem]" style={{ color: "var(--text-muted)" }}>
+        <span>Carregando custos...</span>
+        <RefreshCw className="w-3 h-3 animate-spin" />
+      </div>
     </div>
   );
 }
