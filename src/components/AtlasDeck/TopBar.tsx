@@ -370,7 +370,7 @@ export function TopBar({ isMobile = false, onMenuClick }: TopBarProps) {
               maxWidth: "42rem",
             }}
           >
-            <GlobalSearch />
+            <GlobalSearch onNavigate={() => setShowSearch(false)} />
           </div>
         </div>
       )}

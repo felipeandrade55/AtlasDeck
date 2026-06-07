@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
   Loader2,
   Trash2,
@@ -72,10 +73,26 @@ interface Transcription {
 }
 
 export default function TranscriptionsPage() {
+  return (
+    <Suspense fallback={null}>
+      <TranscriptionsPageInner />
+    </Suspense>
+  );
+}
+
+function TranscriptionsPageInner() {
+  const searchParams = useSearchParams();
   const [items, setItems] = useState<Transcription[]>([]);
   const [configured, setConfigured] = useState(true);
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // Deep-link: /transcriptions?id=<id> opens that transcription directly
+  // (used by the global ⌘K search to jump to a result).
+  useEffect(() => {
+    const id = searchParams.get("id");
+    if (id) setSelectedId(id);
+  }, [searchParams]);
 
   const fetchList = useCallback(async () => {
     try {

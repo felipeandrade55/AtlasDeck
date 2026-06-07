@@ -1,30 +1,46 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Search, FileText, Zap, Calendar, X } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Search, FileText, Zap, Calendar, X, Mic, MessageSquare, Bell } from "lucide-react";
+
+type ResultType = "transcription" | "memory" | "chat" | "reminder" | "event" | "activity" | "task";
 
 interface SearchResult {
-  type: "memory" | "activity" | "task";
+  type: ResultType;
   title: string;
   snippet: string;
+  href?: string;
   path?: string;
   timestamp?: string;
 }
 
-const typeConfig = {
+const typeConfig: Record<ResultType, { icon: typeof FileText; color: string; bg: string; label: string }> = {
+  transcription: { icon: Mic, color: "#22c55e", bg: "rgba(34, 197, 94, 0.1)", label: "Transcrição" },
   memory: { icon: FileText, color: "#3B82F6", bg: "rgba(59, 130, 246, 0.1)", label: "Memória" },
+  chat: { icon: MessageSquare, color: "#06b6d4", bg: "rgba(6, 182, 212, 0.1)", label: "Conversa" },
+  reminder: { icon: Bell, color: "#eab308", bg: "rgba(234, 179, 8, 0.1)", label: "Lembrete" },
+  event: { icon: Calendar, color: "#A855F7", bg: "rgba(168, 85, 247, 0.1)", label: "Agenda" },
   activity: { icon: Zap, color: "var(--accent)", bg: "rgba(255, 59, 48, 0.1)", label: "Atividade" },
   task: { icon: Calendar, color: "#A855F7", bg: "rgba(168, 85, 247, 0.1)", label: "Tarefa" },
 };
 
 interface GlobalSearchProps {
   fullPage?: boolean;
+  onNavigate?: () => void;
 }
 
-export function GlobalSearch({ fullPage = false }: GlobalSearchProps) {
+export function GlobalSearch({ fullPage = false, onNavigate }: GlobalSearchProps) {
+  const router = useRouter();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+
+  const openResult = useCallback((result: SearchResult) => {
+    if (!result.href) return;
+    onNavigate?.();
+    router.push(result.href);
+  }, [router, onNavigate]);
 
   const searchDebounced = useCallback(async (q: string) => {
     if (q.length < 2) {
@@ -60,7 +76,7 @@ export function GlobalSearch({ fullPage = false }: GlobalSearchProps) {
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Buscar atividades, tarefas e documentos..."
+          placeholder="Buscar transcrições, memórias, conversas, lembretes, agenda…"
           className="w-full pl-12 pr-10 py-3 rounded-xl transition-colors focus:outline-none"
           style={{ 
             backgroundColor: "var(--card)", 
@@ -111,9 +127,11 @@ export function GlobalSearch({ fullPage = false }: GlobalSearchProps) {
                 return (
                   <div
                     key={index}
-                    className="p-4 transition-colors cursor-pointer"
-                    style={{ 
-                      borderBottom: index < results.length - 1 ? "1px solid var(--border)" : "none" 
+                    onClick={() => openResult(result)}
+                    className="p-4 transition-colors cursor-pointer hover:brightness-125"
+                    style={{
+                      borderBottom: index < results.length - 1 ? "1px solid var(--border)" : "none",
+                      cursor: result.href ? "pointer" : "default",
                     }}
                   >
                     <div className="flex items-start gap-3">
