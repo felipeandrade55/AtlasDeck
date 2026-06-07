@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { X, Square, Loader2, Mic, AlertCircle, CheckCircle2 } from "lucide-react";
+import { X, Square, Loader2, Mic, AlertCircle, CheckCircle2, Pause, Play } from "lucide-react";
 
 /**
  * Live transcription overlay. Records the mic in ~45s cycles (each cycle
@@ -11,7 +11,7 @@ import { X, Square, Loader2, Mic, AlertCircle, CheckCircle2 } from "lucide-react
  */
 const CHUNK_MS = 45_000;
 
-type Phase = "starting" | "recording" | "finalizing" | "done" | "error";
+type Phase = "starting" | "recording" | "paused" | "finalizing" | "done" | "error";
 
 export function TranscriptionLivePanel({
   onClose,
@@ -22,18 +22,25 @@ export function TranscriptionLivePanel({
 }) {
   const [phase, setPhase] = useState<Phase>("starting");
   const [error, setError] = useState<string | null>(null);
-  const [chunks, setChunks] = useState<string[]>([]); // indexed by seq
+  const [chunks, setChunks] = useState<string[]>([]);
   const [elapsed, setElapsed] = useState(0);
   const [suggestionsCreated, setSuggestionsCreated] = useState<number | null>(null);
+  const [audioLevel, setAudioLevel] = useState(0); // 0–1
 
   const idRef = useRef<string | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const stoppedRef = useRef(false);
+  const pausedRef = useRef(false);
   const seqRef = useRef(0);
   const mimeRef = useRef<string>("audio/webm");
   const startedAtRef = useRef<number>(0);
+  const pausedAtRef = useRef<number>(0);
+  const totalPausedMsRef = useRef<number>(0);
   const cycleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const levelRafRef = useRef<number | null>(null);
 
   const setChunkText = useCallback((seq: number, text: string) => {
     setChunks((prev) => {
@@ -41,6 +48,42 @@ export function TranscriptionLivePanel({
       next[seq] = text;
       return next;
     });
+  }, []);
+
+  // Audio level meter via AnalyserNode
+  const startAudioMeter = useCallback((stream: MediaStream) => {
+    try {
+      const ctx = new AudioContext();
+      audioCtxRef.current = ctx;
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      analyserRef.current = analyser;
+
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      const tick = () => {
+        analyser.getByteFrequencyData(data);
+        const sum = data.reduce((a, b) => a + b, 0);
+        const avg = sum / data.length / 255;
+        setAudioLevel(avg);
+        levelRafRef.current = requestAnimationFrame(tick);
+      };
+      levelRafRef.current = requestAnimationFrame(tick);
+    } catch {
+      // meter is purely cosmetic — ignore failures
+    }
+  }, []);
+
+  const stopAudioMeter = useCallback(() => {
+    if (levelRafRef.current) {
+      cancelAnimationFrame(levelRafRef.current);
+      levelRafRef.current = null;
+    }
+    try { audioCtxRef.current?.close(); } catch {}
+    audioCtxRef.current = null;
+    analyserRef.current = null;
+    setAudioLevel(0);
   }, []);
 
   const uploadChunk = useCallback(async (blob: Blob, seq: number) => {
@@ -55,7 +98,6 @@ export function TranscriptionLivePanel({
         const data = await res.json();
         if (typeof data.text === "string") setChunkText(seq, data.text);
       } else if (res.status === 402) {
-        // Quota exceeded — stop recording and surface the error
         const data = await res.json().catch(() => ({}));
         stoppedRef.current = true;
         if (cycleTimerRef.current) clearTimeout(cycleTimerRef.current);
@@ -82,7 +124,7 @@ export function TranscriptionLivePanel({
       const seq = seqRef.current++;
       const blob = new Blob(parts, { type: mimeRef.current });
       void uploadChunk(blob, seq);
-      if (!stoppedRef.current) startCycle();
+      if (!stoppedRef.current && !pausedRef.current) startCycle();
     };
     rec.start();
     cycleTimerRef.current = setTimeout(() => {
@@ -116,6 +158,7 @@ export function TranscriptionLivePanel({
         startedAtRef.current = Date.now();
         setPhase("recording");
         startCycle();
+        startAudioMeter(stream);
       } catch (err) {
         if (cancelled) return;
         setError(err instanceof Error ? err.message : "Falha ao acessar o microfone");
@@ -128,10 +171,13 @@ export function TranscriptionLivePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Elapsed timer
+  // Elapsed timer (stops while paused)
   useEffect(() => {
     if (phase !== "recording") return;
-    const t = setInterval(() => setElapsed(Math.floor((Date.now() - startedAtRef.current) / 1000)), 1000);
+    const t = setInterval(() => {
+      const active = Date.now() - startedAtRef.current - totalPausedMsRef.current;
+      setElapsed(Math.floor(active / 1000));
+    }, 1000);
     return () => clearInterval(t);
   }, [phase]);
 
@@ -142,11 +188,34 @@ export function TranscriptionLivePanel({
       if (recorderRef.current && recorderRef.current.state !== "inactive") recorderRef.current.stop();
     } catch {}
     streamRef.current?.getTracks().forEach((t) => {
-      try {
-        t.stop();
-      } catch {}
+      try { t.stop(); } catch {}
     });
-  }, []);
+    stopAudioMeter();
+  }, [stopAudioMeter]);
+
+  const handlePause = useCallback(() => {
+    if (stoppedRef.current) return;
+    pausedRef.current = true;
+    pausedAtRef.current = Date.now();
+    // Stop the current cycle early — the chunk is uploaded, no new cycle starts
+    if (cycleTimerRef.current) clearTimeout(cycleTimerRef.current);
+    try {
+      if (recorderRef.current && recorderRef.current.state === "recording") {
+        recorderRef.current.stop(); // onstop won't start new cycle because pausedRef=true
+      }
+    } catch {}
+    stopAudioMeter();
+    setPhase("paused");
+  }, [stopAudioMeter]);
+
+  const handleResume = useCallback(() => {
+    if (stoppedRef.current) return;
+    pausedRef.current = false;
+    totalPausedMsRef.current += Date.now() - pausedAtRef.current;
+    startAudioMeter(streamRef.current!);
+    startCycle();
+    setPhase("recording");
+  }, [startAudioMeter, startCycle]);
 
   const handleStop = useCallback(async () => {
     if (stoppedRef.current) return;
@@ -157,13 +226,13 @@ export function TranscriptionLivePanel({
       setPhase("done");
       return;
     }
-    // Give the last chunk a moment to upload before finalizing.
     await new Promise((r) => setTimeout(r, 1500));
     try {
+      const durationMs = Date.now() - startedAtRef.current - totalPausedMsRef.current;
       const res = await fetch(`/api/transcribe/${id}/finalize`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ duration_ms: Date.now() - startedAtRef.current }),
+        body: JSON.stringify({ duration_ms: durationMs }),
       });
       const data = await res.json().catch(() => ({}));
       setSuggestionsCreated(typeof data.suggestions_created === "number" ? data.suggestions_created : 0);
@@ -178,6 +247,7 @@ export function TranscriptionLivePanel({
   useEffect(() => () => cleanupMedia(), [cleanupMedia]);
 
   const liveText = chunks.filter(Boolean).join(" ");
+  const isActive = phase === "recording" || phase === "paused";
 
   return (
     <div
@@ -193,12 +263,16 @@ export function TranscriptionLivePanel({
           <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}>
             {phase === "recording" ? (
               <span style={{ width: 10, height: 10, borderRadius: "50%", backgroundColor: "var(--error)", animation: "pulse 1.2s infinite" }} />
+            ) : phase === "paused" ? (
+              <span style={{ width: 10, height: 10, borderRadius: "50%", backgroundColor: "var(--warning)" }} />
             ) : (
               <Mic size={18} style={{ color: "var(--accent)" }} />
             )}
             <h2 style={{ fontSize: "1rem", fontWeight: 700, color: "var(--text-primary)" }}>
               {phase === "recording"
                 ? `Transcrevendo · ${fmtTime(elapsed)}`
+                : phase === "paused"
+                ? `Pausado · ${fmtTime(elapsed)}`
                 : phase === "starting"
                 ? "Iniciando…"
                 : phase === "finalizing"
@@ -208,10 +282,15 @@ export function TranscriptionLivePanel({
                 : "Erro"}
             </h2>
           </div>
-          <button onClick={phase === "recording" || phase === "finalizing" ? handleStop : onClose} style={{ color: "var(--text-muted)", background: "none", border: "none", cursor: "pointer" }}>
+          <button onClick={isActive ? handleStop : onClose} style={{ color: "var(--text-muted)", background: "none", border: "none", cursor: "pointer" }}>
             <X size={20} />
           </button>
         </div>
+
+        {/* Audio level meter (only while recording) */}
+        {phase === "recording" && (
+          <AudioMeter level={audioLevel} />
+        )}
 
         {/* Body */}
         <div style={{ padding: "1.25rem", overflowY: "auto", flex: 1 }}>
@@ -239,11 +318,14 @@ export function TranscriptionLivePanel({
                 <p style={{ fontSize: "0.9rem", lineHeight: 1.6, color: "var(--text-primary)", whiteSpace: "pre-wrap" }}>
                   {liveText}
                   {phase === "recording" && <span style={{ opacity: 0.5 }}> ▍</span>}
+                  {phase === "paused" && <span style={{ opacity: 0.6, fontSize: "0.8rem" }}> (pausado)</span>}
                 </p>
               ) : (
                 <p style={{ fontSize: "0.875rem", color: "var(--text-muted)" }}>
                   {phase === "finalizing"
                     ? "Processando a transcrição e extraindo compromissos…"
+                    : phase === "paused"
+                    ? "Gravação pausada. Clique em Retomar para continuar."
                     : "Fale à vontade. O texto aparece a cada bloco (~45s)."}
                 </p>
               )}
@@ -254,12 +336,36 @@ export function TranscriptionLivePanel({
         {/* Footer */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "0.5rem", padding: "0.875rem 1.25rem", borderTop: "1px solid var(--border)" }}>
           {phase === "recording" && (
-            <button
-              onClick={handleStop}
-              style={{ display: "flex", alignItems: "center", gap: "0.5rem", padding: "0.5rem 1rem", borderRadius: "0.5rem", backgroundColor: "var(--error)", color: "white", border: "none", cursor: "pointer", fontWeight: 600 }}
-            >
-              <Square size={16} /> Parar e analisar
-            </button>
+            <>
+              <button
+                onClick={handlePause}
+                style={{ display: "flex", alignItems: "center", gap: "0.5rem", padding: "0.5rem 1rem", borderRadius: "0.5rem", backgroundColor: "transparent", color: "var(--text-secondary)", border: "1px solid var(--border)", cursor: "pointer", fontWeight: 600 }}
+              >
+                <Pause size={16} /> Pausar
+              </button>
+              <button
+                onClick={handleStop}
+                style={{ display: "flex", alignItems: "center", gap: "0.5rem", padding: "0.5rem 1rem", borderRadius: "0.5rem", backgroundColor: "var(--error)", color: "white", border: "none", cursor: "pointer", fontWeight: 600 }}
+              >
+                <Square size={16} /> Parar e analisar
+              </button>
+            </>
+          )}
+          {phase === "paused" && (
+            <>
+              <button
+                onClick={handleResume}
+                style={{ display: "flex", alignItems: "center", gap: "0.5rem", padding: "0.5rem 1rem", borderRadius: "0.5rem", backgroundColor: "var(--accent)", color: "white", border: "none", cursor: "pointer", fontWeight: 600 }}
+              >
+                <Play size={16} /> Retomar
+              </button>
+              <button
+                onClick={handleStop}
+                style={{ display: "flex", alignItems: "center", gap: "0.5rem", padding: "0.5rem 1rem", borderRadius: "0.5rem", backgroundColor: "var(--error)", color: "white", border: "none", cursor: "pointer", fontWeight: 600 }}
+              >
+                <Square size={16} /> Parar e analisar
+              </button>
+            </>
           )}
           {(phase === "starting" || phase === "finalizing") && (
             <span style={{ display: "flex", alignItems: "center", gap: "0.5rem", color: "var(--text-muted)" }}>
@@ -277,6 +383,40 @@ export function TranscriptionLivePanel({
       <style jsx global>{`
         @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
       `}</style>
+    </div>
+  );
+}
+
+/** Bar-graph audio level meter */
+function AudioMeter({ level }: { level: number }) {
+  const BAR_COUNT = 20;
+  const active = Math.round(level * BAR_COUNT * 2.5); // amplify slightly for visibility
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 2, padding: "6px 1.25rem 0", height: 28 }}>
+      {Array.from({ length: BAR_COUNT }, (_, i) => {
+        const lit = i < active;
+        const isHigh = i > BAR_COUNT * 0.75;
+        const isMid = i > BAR_COUNT * 0.5;
+        const color = lit
+          ? isHigh
+            ? "var(--error)"
+            : isMid
+            ? "var(--warning)"
+            : "var(--success)"
+          : "var(--border)";
+        return (
+          <div
+            key={i}
+            style={{
+              flex: 1,
+              borderRadius: 2,
+              height: lit ? `${60 + i * 2}%` : "30%",
+              backgroundColor: color,
+              transition: "height 80ms ease, background-color 80ms ease",
+            }}
+          />
+        );
+      })}
     </div>
   );
 }

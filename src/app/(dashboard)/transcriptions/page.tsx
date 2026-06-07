@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import {
   Loader2,
   Trash2,
@@ -12,6 +13,7 @@ import {
   AlertCircle,
   Mic,
   RefreshCw,
+  MessageSquare,
 } from "lucide-react";
 
 interface SuggestedEvent {
@@ -82,6 +84,13 @@ export default function TranscriptionsPage() {
   return (
     <div className="p-4 md:p-8">
       <div className="mb-6">
+        <Link
+          href="/chat"
+          className="inline-flex items-center gap-1.5 text-sm mb-4"
+          style={{ color: "var(--text-secondary)" }}
+        >
+          <MessageSquare size={15} /> Ir para o Chat
+        </Link>
         <h1 className="text-2xl md:text-3xl font-bold mb-1" style={{ color: "var(--text-primary)", fontFamily: "var(--font-heading)" }}>
           Transcrições
         </h1>
