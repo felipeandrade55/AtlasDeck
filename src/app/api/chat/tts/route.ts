@@ -2,10 +2,9 @@
  * POST /api/chat/tts -> stream MP3 audio for the given text, from
  *                      whichever TTS provider the user selected in
  *                      settings (`tts_provider`: "elevenlabs" or
- *                      "fishaudio"). If the selected provider is not
- *                      configured, falls back to the other provider so
- *                      voice never goes silent because of a wrong
- *                      toggle.
+ *                      "fishaudio"). The selected provider is strict:
+ *                      Fish Audio never falls back to ElevenLabs and
+ *                      ElevenLabs never falls back to Fish Audio.
  * GET  /api/chat/tts -> active provider status (provider name, voice
  *                      id, configured flag) without exposing keys.
  */
@@ -46,24 +45,17 @@ function resolveActive(): ActiveTtsStatus {
     // ignore — fall back to default
   }
 
-  const order: TtsProvider[] =
-    preferred === "fishaudio"
-      ? ["fishaudio", "elevenlabs"]
-      : ["elevenlabs", "fishaudio"];
-
-  for (const provider of order) {
-    const status = provider === "elevenlabs" ? eleven : fish;
-    if (status.configured) {
-      return {
-        provider,
-        configured: true,
-        voiceId: status.voiceId,
-        source: status.source,
-        elevenlabs: eleven,
-        fishaudio: fish,
-        preferred,
-      };
-    }
+  const selectedStatus = preferred === "elevenlabs" ? eleven : fish;
+  if (selectedStatus.configured) {
+    return {
+      provider: preferred,
+      configured: true,
+      voiceId: selectedStatus.voiceId,
+      source: selectedStatus.source,
+      elevenlabs: eleven,
+      fishaudio: fish,
+      preferred,
+    };
   }
 
   return {
@@ -107,8 +99,7 @@ export async function POST(req: NextRequest) {
   if (!active.provider) {
     return NextResponse.json(
       {
-        error:
-          "TTS nao configurado. Configure ElevenLabs ou Fish Audio em Configurações de Voz.",
+        error: `${active.preferred} selecionado, mas nao configurado. Configure este provider em Voz do Jarvis.`,
       },
       { status: 503 },
     );

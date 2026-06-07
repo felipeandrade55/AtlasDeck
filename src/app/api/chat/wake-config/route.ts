@@ -1,6 +1,6 @@
 /**
- * GET   /api/chat/wake-config -> Porcupine wake-word configuration status
- * PATCH /api/chat/wake-config -> persists Porcupine access key + keyword
+ * GET   /api/chat/wake-config -> wake-word configuration status
+ * PATCH /api/chat/wake-config -> persists wake engine + provider settings
  *
  * Browser-friendly: GET never returns the full access key, only a
  * head/tail preview so the UI can confirm what is saved.
@@ -80,7 +80,11 @@ export async function PATCH(req: NextRequest) {
 
   const patch: Record<string, string | null> = {};
 
-  if (body.engine === "openwakeword" || body.engine === "porcupine") {
+  if (
+    body.engine === "webspeech" ||
+    body.engine === "openwakeword" ||
+    body.engine === "porcupine"
+  ) {
     patch.wake_engine = body.engine;
   }
   if (body.accessKey !== undefined) {

@@ -30,6 +30,7 @@ export interface RunnerInput {
   signal?: AbortSignal;
   thinking?: string;
   fastMode?: boolean;
+  mode?: "openclaw" | "quick";
 }
 
 export type RunnerProvider = "ws" | "cli" | "ollama";
@@ -466,6 +467,11 @@ function fallbackMode(): "off" | "cli" | "ollama" | "any" {
 
 export async function* runOpenClawChat(input: RunnerInput): AsyncGenerator<RunnerEvent> {
   const fb = fallbackMode();
+
+  if (input.mode === "quick") {
+    yield* runOllamaFallback(input, "Jarvis rapido selecionado no /chat");
+    return;
+  }
 
   // Allow forcing Ollama via env (kept for backward compat — used during
   // gateway outages or while debugging the runner).

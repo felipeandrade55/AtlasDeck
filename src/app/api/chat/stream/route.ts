@@ -45,6 +45,7 @@ interface ChatStreamBody {
   forceInline?: boolean;
   thinking?: string;
   fastMode?: boolean;
+  mode?: "openclaw" | "quick";
   // Browser geolocation snapshot for this turn — sent by useChatStream
   // when the user has granted permission. Used to override the saved
   // home location while traveling so Jarvis says "São Luís" instead of
@@ -279,6 +280,13 @@ const FORCE_INLINE_HINT =
   "é uma pergunta direta do usuário. Não leia HEARTBEAT.md, não responda " +
   "HEARTBEAT_OK, não eche templates do AGENTS.md. Responda em pt-BR direto.";
 
+const QUICK_MODE_HINT =
+  "\n\n[atlas:quick_mode] Você está no Jarvis rápido do /chat. " +
+  "Responda em português do Brasil, de forma direta e conversacional. " +
+  "Você NÃO tem acesso a tools, navegador, terminal ou skills do OpenClaw neste modo. " +
+  "Se o usuário pedir uma ação operacional (editar arquivo, rodar comando, usar skill, acessar sistema), " +
+  "explique brevemente que isso precisa ser feito pelo modo OpenClaw Skills.";
+
 function sseLine(event: string, data: unknown): string {
   const payload = typeof data === "string" ? data : JSON.stringify(data);
   return `event: ${event}\ndata: ${payload}\n\n`;
@@ -308,6 +316,16 @@ function summarizeToolInput(input: unknown): string {
   } catch {
     return "";
   }
+}
+
+const SUBSTANTIAL_CHAT_RE =
+  /\b(crie|criar|faça|faca|fazer|implemente|implementar|corrija|corrigir|ajuste|ajustar|altere|alterar|edite|editar|rode|rodar|execute|executar|pesquise|pesquisar|analise|analisar|planeje|planejar|resolva|resolver|investigue|investigar|diagnostique|diagnosticar|instale|instalar|configure|configurar|publique|publicar|commit|deploy|teste|testar|debug|debugar|refatore|refatorar|gere|gerar|importe|importar|sincronize|sincronizar)\b/i;
+
+function shouldCreateOperationalArtifacts(prompt: string): boolean {
+  const normalized = prompt.replace(/\s+/g, " ").trim();
+  if (!normalized) return false;
+  if (normalized.length >= 120) return true;
+  return SUBSTANTIAL_CHAT_RE.test(normalized);
 }
 
 function formatMs(ms: number): string {
@@ -368,6 +386,7 @@ export async function POST(req: NextRequest) {
   }
 
   const agentId = body.agentId?.trim() || "main";
+  const chatMode = body.mode === "quick" ? "quick" : "openclaw";
 
   let thread = body.threadId ? getThread(body.threadId) : null;
   if (!thread) {
@@ -394,15 +413,18 @@ export async function POST(req: NextRequest) {
   const turnStart = Date.now();
   const previewSrc = prompt.replace(/\s+/g, " ").trim();
   const preview = previewSrc.length > 80 ? `${previewSrc.slice(0, 77)}…` : previewSrc;
+  const createOperationalArtifacts = shouldCreateOperationalArtifacts(prompt);
   let activityId: string | null = null;
-  try {
-    const act = logActivity("message", `Chat: ${preview}`, "running", {
-      agent: agentId,
-      metadata: { threadId: thread.id, source: "web" },
-    });
-    activityId = act.id;
-  } catch (err) {
-    console.warn("[chat/stream] logActivity failed:", err);
+  if (createOperationalArtifacts) {
+    try {
+      const act = logActivity("message", `Chat: ${preview}`, "running", {
+        agent: agentId,
+        metadata: { threadId: thread.id, source: "web" },
+      });
+      activityId = act.id;
+    } catch (err) {
+      console.warn("[chat/stream] logActivity failed:", err);
+    }
   }
 
   // Always append the inline hint for web sessions to prevent the agent
@@ -420,7 +442,10 @@ export async function POST(req: NextRequest) {
       ? { lat: body.liveLat, lon: body.liveLon }
       : null;
   const userContext = await buildUserContextPreamble(prompt, live);
-  const effectivePrompt = `${userContext}${prompt}${FORCE_INLINE_HINT}`;
+  const effectivePrompt =
+    chatMode === "quick"
+      ? `${userContext}${prompt}${QUICK_MODE_HINT}`
+      : `${userContext}${prompt}${FORCE_INLINE_HINT}`;
 
   // Pre-create assistant message in streaming state so the UI gets an ID up front.
   const assistantMsg = appendMessage({
@@ -432,43 +457,45 @@ export async function POST(req: NextRequest) {
 
   // Auto-promote substantial chat turns into kanban cards so the user
   // can watch Jarvis's real work move through the Live Mission board.
-  // Trivial Q&A (short prompts without work verbs) stays out by design
-  // — see shouldCreateKanbanTask. The card lives at status "inbox" here
-  // and transitions to "in_progress" once the LLM emits its first token
-  // (in the runner loop), then "done"/"failed" in the finally block.
+  // Trivial Q&A stays out of the operational path so "bom dia" and
+  // quick voice turns do not pay a Kanban/activity cost before streaming.
   let kanbanTaskId: string | null = null;
   let kanbanTaskStarted = false;
-  try {
-    const task = createTask({
-      assigned_to: agentId,
-      status: "inbox",
-      title: preview,
-      prompt,
-      metadata: {
-        origin: "chat-stream",
-        threadId: thread.id,
-        source: "web",
-        assistantMessageId: assistantMsg.id,
-      },
-    });
-    kanbanTaskId = task.id;
-  } catch (err) {
-    console.warn("[chat/stream] auto-task creation failed:", err);
+  if (createOperationalArtifacts) {
+    try {
+      const task = createTask({
+        assigned_to: agentId,
+        status: "inbox",
+        title: preview,
+        prompt,
+        metadata: {
+          origin: "chat-stream",
+          threadId: thread.id,
+          source: "web",
+          assistantMessageId: assistantMsg.id,
+        },
+      });
+      kanbanTaskId = task.id;
+    } catch (err) {
+      console.warn("[chat/stream] auto-task creation failed:", err);
+    }
   }
 
   // Bridge chat lifecycle into the Live Mission event bus so the dashboard
   // shows activity even when the turn isn't tied to a formal task. Without
   // this the Live Activity feed stays empty while the agent is working.
-  publishEvent({
-    event_type: "chat.turn_started",
-    agent_id: agentId,
-    payload: {
-      threadId: thread.id,
-      preview,
-      source: "web",
-      taskId: kanbanTaskId,
-    },
-  });
+  if (createOperationalArtifacts) {
+    publishEvent({
+      event_type: "chat.turn_started",
+      agent_id: agentId,
+      payload: {
+        threadId: thread.id,
+        preview,
+        source: "web",
+        taskId: kanbanTaskId,
+      },
+    });
+  }
 
   const history = listMessages({ threadId: thread.id, limit: 50 })
     .filter((m) => m.id !== assistantMsg.id && (m.role === "user" || m.role === "assistant"))
@@ -534,6 +561,7 @@ export async function POST(req: NextRequest) {
           signal: ac.signal,
           thinking: body.thinking,
           fastMode: body.fastMode,
+          mode: chatMode,
         })) {
           handleEvent(evt, send);
           if (evt.type === "done" || evt.type === "error") break;
@@ -568,19 +596,21 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        publishEvent({
-          event_type: "chat.turn_completed",
-          agent_id: agentId,
-          payload: {
-            threadId: thread!.id,
-            ok: Boolean(assembled),
-            duration_ms: Date.now() - turnStart,
-            tokensIn,
-            tokensOut,
-            cost,
-            taskId: kanbanTaskId,
-          },
-        });
+        if (createOperationalArtifacts) {
+          publishEvent({
+            event_type: "chat.turn_completed",
+            agent_id: agentId,
+            payload: {
+              threadId: thread!.id,
+              ok: Boolean(assembled),
+              duration_ms: Date.now() - turnStart,
+              tokensIn,
+              tokensOut,
+              cost,
+              taskId: kanbanTaskId,
+            },
+          });
+        }
 
         // Close out the kanban card. Success → "done" with a result
         // preview (full content lives in chat-db). Empty/error → "failed"

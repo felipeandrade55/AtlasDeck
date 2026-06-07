@@ -15,6 +15,7 @@ export interface SendOptions {
   agentId: string;
   message: string;
   workspace?: string | null;
+  mode?: "openclaw" | "quick";
   /**
    * When true, the server appends a routing hint to the prompt asking
    * the agent to reply inline (used by the "Forçar resposta direta"
@@ -40,16 +41,24 @@ export interface SendOptions {
  * Returns null if unavailable / denied — the server preamble falls back
  * to the saved home in that case.
  */
+let liveGeoCache: { value: { lat: number; lon: number }; expiresAt: number } | null = null;
+
 async function readLiveGeolocation(): Promise<{ lat: number; lon: number } | null> {
   if (typeof navigator === "undefined" || !navigator.geolocation) return null;
+  if (liveGeoCache && liveGeoCache.expiresAt > Date.now()) {
+    return liveGeoCache.value;
+  }
   return new Promise((resolve) => {
     let settled = false;
     const finish = (value: { lat: number; lon: number } | null) => {
       if (settled) return;
       settled = true;
+      if (value) {
+        liveGeoCache = { value, expiresAt: Date.now() + 5 * 60 * 1000 };
+      }
       resolve(value);
     };
-    const watchdog = setTimeout(() => finish(null), 3500);
+    const watchdog = setTimeout(() => finish(null), 900);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         clearTimeout(watchdog);
@@ -59,7 +68,7 @@ async function readLiveGeolocation(): Promise<{ lat: number; lon: number } | nul
         clearTimeout(watchdog);
         finish(null);
       },
-      { maximumAge: 5 * 60 * 1000, timeout: 3000, enableHighAccuracy: false },
+      { maximumAge: 5 * 60 * 1000, timeout: 800, enableHighAccuracy: false },
     );
   });
 }
@@ -95,6 +104,7 @@ export function useChatStream() {
           agentId: opts.agentId,
           message: opts.message,
           workspace: opts.workspace ?? undefined,
+          mode: opts.mode ?? undefined,
           forceInline: opts.forceInline === true ? true : undefined,
           thinking: opts.thinking ?? undefined,
           fastMode: opts.fastMode !== undefined ? opts.fastMode : undefined,

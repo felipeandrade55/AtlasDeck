@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { CheckCircle2, ExternalLink, X } from "lucide-react";
 
-type WakeEngine = "openwakeword" | "porcupine";
+type WakeEngine = "webspeech" | "openwakeword" | "porcupine";
 
 interface WakeConfig {
   engine: WakeEngine;
@@ -29,7 +29,7 @@ interface WakeWordSettingsModalProps {
 export function WakeWordSettingsModal({ open, onClose }: WakeWordSettingsModalProps) {
   const [config, setConfig] = useState<WakeConfig | null>(null);
   const [loading, setLoading] = useState(false);
-  const [engine, setEngine] = useState<WakeEngine>("openwakeword");
+  const [engine, setEngine] = useState<WakeEngine>("webspeech");
   const [accessKey, setAccessKey] = useState("");
   const [keyword, setKeyword] = useState("Jarvis");
   const [threshold, setThreshold] = useState(0.5);
@@ -137,9 +137,16 @@ export function WakeWordSettingsModal({ open, onClose }: WakeWordSettingsModalPr
                 <h3 style={sectionTitle}>Engine ativo</h3>
                 <div style={engineGridStyle}>
                   <EngineCard
+                    label="Web Speech pt-BR"
+                    badge="Padrão · melhor para 'ei Jarvis'"
+                    description="Usa o reconhecimento de fala do navegador em português do Brasil e aliases para Jarvis/Atlas. É o caminho mais confiável hoje para 'ei Jarvis'."
+                    selected={engine === "webspeech"}
+                    onClick={() => setEngine("webspeech")}
+                  />
+                  <EngineCard
                     label="openWakeWord"
-                    badge="Apache 2.0 · sem cadastro"
-                    description="Modelos ONNX rodando 100% no browser. Vem pré-configurado, sem AccessKey."
+                    badge="Apache 2.0 · modelo em inglês"
+                    description="Modelos ONNX rodando 100% no browser. O modelo atual é 'hey_jarvis', então pode falhar com pronúncia pt-BR."
                     selected={engine === "openwakeword"}
                     onClick={() => setEngine("openwakeword")}
                   />
@@ -153,7 +160,26 @@ export function WakeWordSettingsModal({ open, onClose }: WakeWordSettingsModalPr
                 </div>
               </section>
 
-              {engine === "openwakeword" ? (
+              {engine === "webspeech" ? (
+                <section style={statusBox(true)}>
+                  <strong>✅ Pronto para pt-BR</strong>
+                  <div style={{ marginTop: 4, fontSize: 12 }}>
+                    Wake words aceitas: <code>ei Jarvis</code>, <code>Jarvis</code> e{" "}
+                    <code>Atlas</code>, incluindo variações comuns que o Chrome costuma
+                    transcrever.
+                  </div>
+                  <div style={{ marginTop: 10 }}>
+                    <button
+                      type="button"
+                      onClick={handleSave}
+                      disabled={saving}
+                      style={primaryButton(saving)}
+                    >
+                      {saving ? "Salvando…" : "Salvar"}
+                    </button>
+                  </div>
+                </section>
+              ) : engine === "openwakeword" ? (
                 <>
                   <section style={statusBox(config.openwakeword.configured)}>
                     <strong>
@@ -368,7 +394,7 @@ function EngineCard({
 
 const engineGridStyle: CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "1fr 1fr",
+  gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
   gap: 8,
 };
 

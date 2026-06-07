@@ -125,6 +125,7 @@ export default function ChatPage() {
   } | null>(null);
 
   const [thinkingMode, setThinkingMode] = useState<"reasoning" | "instant">("instant");
+  const [chatMode, setChatMode] = useState<"openclaw" | "quick">("openclaw");
 
   useEffect(() => {
     const saved = localStorage.getItem("atlas_chat_thinking_mode");
@@ -133,12 +134,24 @@ export default function ChatPage() {
     } else if (saved === "instant") {
       setThinkingMode("instant");
     }
+    const savedChatMode = localStorage.getItem("atlas_chat_mode");
+    if (savedChatMode === "quick" || savedChatMode === "openclaw") {
+      setChatMode(savedChatMode);
+    }
   }, []);
 
   const toggleThinkingMode = () => {
     setThinkingMode((prev) => {
       const next = prev === "reasoning" ? "instant" : "reasoning";
       localStorage.setItem("atlas_chat_thinking_mode", next);
+      return next;
+    });
+  };
+
+  const toggleChatMode = () => {
+    setChatMode((prev) => {
+      const next = prev === "openclaw" ? "quick" : "openclaw";
+      localStorage.setItem("atlas_chat_mode", next);
       return next;
     });
   };
@@ -506,9 +519,9 @@ export default function ChatPage() {
         threadId: threadId ?? undefined,
         agentId,
         message: text,
+        mode: chatMode,
         forceInline: opts?.forceInline,
-        thinking: thinkingMode === "instant" ? "off" : undefined,
-        fastMode: thinkingMode === "instant" ? true : undefined,
+        thinking: thinkingMode === "reasoning" ? "medium" : undefined,
         onMeta: (meta) => {
           realAssistantId = meta.assistantMessageId;
           if (!activeThreadId) setActiveThreadId(meta.threadId);
@@ -672,6 +685,8 @@ export default function ChatPage() {
       loadThreads,
       ttsEnabled,
       speak,
+      thinkingMode,
+      chatMode,
     ],
   );
 
@@ -729,13 +744,13 @@ export default function ChatPage() {
     },
   });
 
-  // The chat page supports two acoustic wake engines: openWakeWord
+  // The chat page supports Web Speech (best pt-BR default) plus two acoustic wake engines: openWakeWord
   // (Apache-2.0 default — runs ONNX models in the browser, no setup)
   // and Picovoice Porcupine (free tier, more accurate but requires
   // an AccessKey). The user picks via WakeWordSettingsModal; we read
   // the choice from /api/chat/wake-config and activate one hook at a
   // time so they don't fight for the microphone.
-  const [wakeEngine, setWakeEngine] = useState<"openwakeword" | "porcupine">("openwakeword");
+  const [wakeEngine, setWakeEngine] = useState<"webspeech" | "openwakeword" | "porcupine">("webspeech");
   const [openWakeThreshold, setOpenWakeThreshold] = useState(0.5);
 
   const refreshWakeConfig = useCallback(async () => {
@@ -743,10 +758,14 @@ export default function ChatPage() {
       const res = await fetch("/api/chat/wake-config");
       if (!res.ok) return;
       const data = (await res.json()) as {
-        engine?: "openwakeword" | "porcupine";
+        engine?: "webspeech" | "openwakeword" | "porcupine";
         openwakeword?: { threshold?: number };
       };
-      if (data.engine === "openwakeword" || data.engine === "porcupine") {
+      if (
+        data.engine === "webspeech" ||
+        data.engine === "openwakeword" ||
+        data.engine === "porcupine"
+      ) {
         setWakeEngine(data.engine);
       }
       if (typeof data.openwakeword?.threshold === "number") {
@@ -803,7 +822,8 @@ export default function ChatPage() {
   const acousticFailed =
     (wakeEngine === "openwakeword" && openWake.state === "error") ||
     (wakeEngine === "porcupine" && porcupine.state === "error");
-  const webSpeechWakeActive = wakeEnabled && !acousticActive;
+  const webSpeechWakeActive =
+    wakeEnabled && (wakeEngine === "webspeech" || !acousticActive);
 
   const wake = useWakeWord({
     // Same exclusivity rule applies to the Web Speech wake fallback:
@@ -827,6 +847,51 @@ export default function ChatPage() {
       }
     },
   });
+
+  const effectiveWakeState =
+    wakeEngine === "webspeech" || acousticFailed
+      ? wake.state
+      : wakeEngine === "openwakeword"
+      ? openWake.state === "listening"
+        ? "listening"
+        : openWake.state === "activated"
+        ? "activated"
+        : openWake.state === "loading"
+        ? "listening"
+        : wake.state
+      : porcupine.available
+      ? porcupine.state === "listening"
+        ? "listening"
+        : porcupine.state === "activated"
+        ? "activated"
+        : porcupine.state === "loading"
+        ? "listening"
+        : wake.state
+      : wake.state;
+
+  const effectiveWakePhrases =
+    wakeEngine === "webspeech"
+      ? WAKE_PHRASE_LABELS
+      : acousticFailed
+      ? WAKE_PHRASE_LABELS
+      : wakeEngine === "openwakeword"
+      ? ["Hey Jarvis (openWakeWord)"]
+      : porcupine.available
+      ? ["Jarvis (Porcupine)"]
+      : WAKE_PHRASE_LABELS;
+
+  const effectiveWakeLastHeard =
+    wakeEngine === "webspeech"
+      ? wake.lastHeard || "ouvindo via Web Speech pt-BR"
+      : acousticFailed
+      ? wake.lastHeard || "ouvindo via Web Speech"
+      : wakeEngine === "openwakeword"
+      ? openWake.errorMessage
+        ? openWake.errorMessage
+        : `score ${openWake.lastScore.toFixed(2)}`
+      : porcupine.available
+      ? porcupine.errorMessage || "Porcupine ativo"
+      : wake.lastHeard;
 
   return (
     <div
@@ -898,6 +963,19 @@ export default function ChatPage() {
             </select>
             <button
               type="button"
+              onClick={toggleChatMode}
+              style={toggleButtonStyle(chatMode === "quick")}
+              title={
+                chatMode === "quick"
+                  ? "Jarvis rápido: conversa por Ollama local, sem skills do OpenClaw. Clique para voltar ao OpenClaw."
+                  : "OpenClaw Skills: usa o agente completo com skills e memória do OpenClaw. Clique para testar Jarvis rápido."
+              }
+              disabled={stream.isStreaming}
+            >
+              {chatMode === "quick" ? "Jarvis rápido" : "OpenClaw Skills"}
+            </button>
+            <button
+              type="button"
               onClick={() => {
                 // Toggling on requires a user gesture so the browser
                 // grants mic access for the long-lived recogniser
@@ -964,8 +1042,8 @@ export default function ChatPage() {
               style={toggleButtonStyle(thinkingMode === "instant")}
               title={
                 thinkingMode === "instant"
-                  ? "Modo Instantâneo (Ultra-rápido, thinking desligado). Clique para mudar para Modo Raciocínio."
-                  : "Modo Raciocínio (Mais inteligente, gpt-5.5 com thinking ativo). Clique para mudar para Modo Instantâneo."
+                  ? "Modo rápido: usa o padrão do gateway, sem forçar fastMode/thinking. Clique para mudar para Modo Raciocínio."
+                  : "Modo Raciocínio: solicita thinking médio ao gateway. Clique para voltar ao modo rápido."
               }
             >
               {thinkingMode === "instant" ? "⚡ Rápido" : "🧠 Raciocínio"}
@@ -988,53 +1066,10 @@ export default function ChatPage() {
               Importar
             </button>
             <WakeIndicator
-              state={
-                // When the acoustic engine (openWakeWord / Porcupine)
-                // crashed, the page transparently uses Web Speech as
-                // the wake source — the indicator must reflect THAT
-                // state, otherwise the user stares at a red error
-                // even though we're actually listening via Web Speech.
-                acousticFailed
-                  ? wake.state
-                  : wakeEngine === "openwakeword"
-                  ? openWake.state === "listening"
-                    ? "listening"
-                    : openWake.state === "activated"
-                    ? "activated"
-                    : openWake.state === "loading"
-                    ? "listening"
-                    : wake.state
-                  : porcupine.available
-                  ? porcupine.state === "listening"
-                    ? "listening"
-                    : porcupine.state === "activated"
-                    ? "activated"
-                    : porcupine.state === "loading"
-                    ? "listening"
-                    : wake.state
-                  : wake.state
-              }
+              state={effectiveWakeState}
               enabled={wakeEnabled}
-              phrases={
-                acousticFailed
-                  ? WAKE_PHRASE_LABELS
-                  : wakeEngine === "openwakeword"
-                  ? ["Hey Jarvis (openWakeWord)"]
-                  : porcupine.available
-                  ? ["Jarvis (Porcupine)"]
-                  : WAKE_PHRASE_LABELS
-              }
-              lastHeard={
-                acousticFailed
-                  ? wake.lastHeard || "ouvindo via Web Speech"
-                  : wakeEngine === "openwakeword"
-                  ? openWake.errorMessage
-                    ? openWake.errorMessage
-                    : `score ${openWake.lastScore.toFixed(2)}`
-                  : porcupine.available
-                  ? porcupine.errorMessage || "Porcupine ativo"
-                  : wake.lastHeard
-              }
+              phrases={effectiveWakePhrases}
+              lastHeard={effectiveWakeLastHeard}
               onToggle={() => setWakeEnabled((v) => !v)}
             />
             <button
@@ -1047,6 +1082,57 @@ export default function ChatPage() {
             </button>
           </div>
         </header>
+
+        <div style={pipelineBarStyle}>
+          <span
+            style={pipelinePillStyle(wakeEnabled && effectiveWakeState !== "error" ? "ok" : "warn")}
+            title={`Wake engine: ${wakeEngine}; estado: ${effectiveWakeState}`}
+          >
+            Wake: {wakeEnabled ? wakeEngineLabel(wakeEngine) : "desligado"}
+          </span>
+          <span
+            style={pipelinePillStyle(tts.configured && !tts.lastError ? "ok" : "warn")}
+            title={
+              tts.configured
+                ? `Fonte: ${tts.source ?? "desconhecida"}`
+                : "Configure Fish Audio ou ElevenLabs em Voz do Jarvis"
+            }
+          >
+            Voz: {tts.configured ? tts.voiceLabel : `${ttsPreferredLabel(tts.preferred)} não configurado`}
+          </span>
+          <span
+            style={pipelinePillStyle(
+              lastTransport === "ws" ? "ok" : lastTransport ? "warn" : "neutral",
+            )}
+            title="Transporte usado na última resposta do agente"
+          >
+            Agente:{" "}
+            {chatMode === "quick"
+              ? lastTransport
+                ? transportLabel(lastTransport)
+                : "Jarvis rápido"
+              : lastTransport
+              ? transportLabel(lastTransport)
+              : "OpenClaw aguardando teste"}
+          </span>
+          <span
+            style={pipelinePillStyle(
+              !healthCheck
+                ? "neutral"
+                : healthCheck.streamingOk && healthCheck.backendAuthOk
+                ? "ok"
+                : "warn",
+            )}
+            title="Health-check read-only do OpenClaw Gateway"
+          >
+            OpenClaw:{" "}
+            {!healthCheck
+              ? "checando"
+              : healthCheck.streamingOk && healthCheck.backendAuthOk
+              ? "streaming pronto"
+              : "atenção"}
+          </span>
+        </div>
 
         <ImportOpenClawModal
           open={showImportModal}
@@ -1118,7 +1204,7 @@ export default function ChatPage() {
           <div style={bannerStyle}>
             <span style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
               <span>
-                ⚠ TTS ({tts.engine}) falhou — usando voz do browser como fallback.{" "}
+                ⚠ TTS ({tts.engine}) falhou — a voz do navegador está desativada.{" "}
                 <strong>Detalhe:</strong> {tts.lastError}
               </span>
               <button
@@ -1598,6 +1684,27 @@ function TransportBadge({
   );
 }
 
+function wakeEngineLabel(engine: "webspeech" | "openwakeword" | "porcupine"): string {
+  if (engine === "webspeech") return "Web Speech pt-BR";
+  if (engine === "openwakeword") return "openWakeWord";
+  return "Porcupine";
+}
+
+function ttsPreferredLabel(provider: "elevenlabs" | "fishaudio" | null): string {
+  if (provider === "fishaudio") return "FishAudio";
+  if (provider === "elevenlabs") return "ElevenLabs";
+  return "TTS cloud";
+}
+
+function transportLabel(
+  transport: "ws" | "cli" | "ollama" | "unknown",
+): string {
+  if (transport === "ws") return "WS real-time";
+  if (transport === "cli") return "CLI lento";
+  if (transport === "ollama") return "Ollama fallback";
+  return "desconhecido";
+}
+
 function EmptyState() {
   return (
     <div style={emptyStateStyle}>
@@ -1684,6 +1791,40 @@ const controlsStyle: CSSProperties = {
   alignItems: "center",
   gap: 8,
 };
+
+const pipelineBarStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  flexWrap: "wrap",
+  padding: "7px 20px",
+  borderBottom: "1px solid var(--border)",
+  background: "rgba(0,0,0,0.16)",
+  color: "var(--text-secondary)",
+  fontSize: 11,
+};
+
+function pipelinePillStyle(state: "ok" | "warn" | "neutral"): CSSProperties {
+  const color =
+    state === "ok" ? "#10b981" : state === "warn" ? "#f59e0b" : "var(--text-muted)";
+  const bg =
+    state === "ok"
+      ? "rgba(16,185,129,0.10)"
+      : state === "warn"
+      ? "rgba(245,158,11,0.10)"
+      : "rgba(148,163,184,0.08)";
+  return {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+    padding: "3px 8px",
+    borderRadius: 999,
+    border: `1px solid ${color}`,
+    background: bg,
+    color,
+    whiteSpace: "nowrap",
+  };
+}
 
 const selectStyle: CSSProperties = {
   padding: "6px 10px",
@@ -1799,17 +1940,6 @@ const inlineCodeStyle: CSSProperties = {
   fontSize: 11,
 };
 
-const preStyle: CSSProperties = {
-  margin: "6px 0",
-  padding: "8px 10px",
-  background: "rgba(0,0,0,0.35)",
-  borderRadius: 6,
-  fontFamily: "var(--font-mono)",
-  fontSize: 11,
-  color: "var(--text-primary)",
-  overflowX: "auto",
-};
-
 const dismissBtnStyle: CSSProperties = {
   background: "transparent",
   border: "1px solid #f59e0b",
@@ -1837,21 +1967,6 @@ const primaryBtnStyle: CSSProperties = {
 const BUFFERED_CONFIG_SNIPPET = `"blockStreamingDefault": "on",
 "blockStreamingBreak": "text_end",
 "blockStreamingChunk": { "minChars": 50, "maxChars": 200 }`;
-
-// Exemplo de regra condicional para o AGENTS.md — só dispara o
-// HEARTBEAT workflow quando a mensagem do user é literalmente "HEARTBEAT"
-// ou "PING". Para qualquer outra mensagem (saudação, pergunta, comando),
-// segue o fluxo normal do agente.
-const HEARTBEAT_FIX_SNIPPET = `## Heartbeat (apenas para pings de cron)
-
-SE a mensagem do usuário for exatamente "HEARTBEAT" ou "PING"
-(case-insensitive, sem outras palavras), ENTÃO:
-  - Leia HEARTBEAT.md se existir
-  - Responda HEARTBEAT_OK se nada precisa de atenção
-
-CASO CONTRÁRIO (mensagem normal do usuário):
-  - Ignore HEARTBEAT.md
-  - Responda à pergunta diretamente em pt-BR`;
 
 const messageScrollStyle: CSSProperties = {
   flex: 1,

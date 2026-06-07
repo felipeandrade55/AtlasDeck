@@ -786,7 +786,7 @@ export interface MemorySettings {
   owner_whatsapp_number: string | null;
 }
 
-export type WakeEngine = "openwakeword" | "porcupine";
+export type WakeEngine = "webspeech" | "openwakeword" | "porcupine";
 
 export type TtsProvider = "elevenlabs" | "fishaudio";
 
@@ -826,7 +826,7 @@ const DEFAULT_SETTINGS: MemorySettings = {
   tts_provider: "elevenlabs",
   porcupine_access_key: null,
   porcupine_keyword: "Jarvis",
-  wake_engine: "openwakeword",
+  wake_engine: "webspeech",
   openwakeword_threshold: 0.5,
   setup_step: "install",
   setup_completed_at: null,
@@ -937,7 +937,10 @@ export function getSettings(): MemorySettings {
 }
 
 function parseWakeEngine(value: string | undefined): WakeEngine {
-  return value === "porcupine" ? "porcupine" : "openwakeword";
+  if (value === "porcupine" || value === "openwakeword" || value === "webspeech") {
+    return value;
+  }
+  return DEFAULT_SETTINGS.wake_engine;
 }
 
 function parseThreshold(value: string | undefined, fallback: number): number {

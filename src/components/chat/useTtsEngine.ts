@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useSpeechSynthesis } from "./useSpeechSynthesis";
 
 export type TtsEngine = "elevenlabs" | "fishaudio" | "web_speech";
 
@@ -9,22 +8,51 @@ interface ActiveTtsStatus {
   provider: "elevenlabs" | "fishaudio" | null;
   configured: boolean;
   voiceId: string | null;
+  source?: string | null;
+  preferred?: "elevenlabs" | "fishaudio";
+}
+
+const MAX_TTS_CHARS = 4500;
+
+function splitForTts(text: string): string[] {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return [];
+  if (normalized.length <= MAX_TTS_CHARS) return [normalized];
+
+  const chunks: string[] = [];
+  let remaining = normalized;
+  while (remaining.length > MAX_TTS_CHARS) {
+    const window = remaining.slice(0, MAX_TTS_CHARS);
+    const splitAt = Math.max(
+      window.lastIndexOf(". "),
+      window.lastIndexOf("! "),
+      window.lastIndexOf("? "),
+      window.lastIndexOf("; "),
+      window.lastIndexOf(", "),
+      window.lastIndexOf(" "),
+    );
+    const cut = splitAt > MAX_TTS_CHARS * 0.6 ? splitAt + 1 : MAX_TTS_CHARS;
+    chunks.push(remaining.slice(0, cut).trim());
+    remaining = remaining.slice(cut).trim();
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
 }
 
 /**
  * Single TTS entry point used by the chat UI. Prefers the user's
  * selected cloud provider (ElevenLabs or Fish Audio) exposed by
- * `/api/chat/tts`, and silently falls back to Web Speech when neither
- * is configured or the request fails — so the page never goes silent
- * because of a backend hiccup.
+ * `/api/chat/tts`.
  *
  * `engine` and `voiceLabel` let the page render a "Voz: 11labs / fish /
- * web" badge; `cancel` stops playback when the user starts speaking.
+ * not configured" badge; `cancel` stops playback when the user starts speaking.
  */
 export function useTtsEngine() {
-  const fallback = useSpeechSynthesis();
   const [engine, setEngine] = useState<TtsEngine>("web_speech");
-  const [voiceLabel, setVoiceLabel] = useState<string>("Web Speech");
+  const [voiceLabel, setVoiceLabel] = useState<string>("TTS não configurado");
+  const [configured, setConfigured] = useState(false);
+  const [source, setSource] = useState<string | null>(null);
+  const [preferred, setPreferred] = useState<"elevenlabs" | "fishaudio" | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const objectUrlRef = useRef<string | null>(null);
@@ -35,6 +63,9 @@ export function useTtsEngine() {
       const res = await fetch("/api/chat/tts");
       if (!res.ok) return;
       const status = (await res.json()) as ActiveTtsStatus;
+      setConfigured(status.configured);
+      setSource(status.source ?? null);
+      setPreferred(status.preferred ?? status.provider ?? null);
       if (status.configured && status.provider) {
         setEngine(status.provider);
         const name = status.provider === "fishaudio" ? "FishAudio" : "ElevenLabs";
@@ -45,7 +76,7 @@ export function useTtsEngine() {
         );
       } else {
         setEngine("web_speech");
-        setVoiceLabel("Web Speech");
+        setVoiceLabel("TTS não configurado");
       }
     } catch {
       // Keep current engine
@@ -74,8 +105,7 @@ export function useTtsEngine() {
   const cancel = useCallback(() => {
     cancelledRef.current = true;
     cleanupAudio();
-    fallback.cancel();
-  }, [cleanupAudio, fallback]);
+  }, [cleanupAudio]);
 
   const speakViaCloud = useCallback(
     async (text: string): Promise<boolean> => {
@@ -107,6 +137,7 @@ export function useTtsEngine() {
       const blob = await res.blob();
       if (cancelledRef.current) return true;
       const url = URL.createObjectURL(blob);
+      cleanupAudio();
       objectUrlRef.current = url;
 
       const audio = new Audio(url);
@@ -139,19 +170,22 @@ export function useTtsEngine() {
 
       if (engine === "elevenlabs" || engine === "fishaudio") {
         try {
-          const ok = await speakViaCloud(text);
-          if (ok) return;
-        } catch {
-          // fall through to fallback
+          for (const chunk of splitForTts(text)) {
+            if (cancelledRef.current) return;
+            const ok = await speakViaCloud(chunk);
+            if (!ok) return;
+          }
+          return;
+        } catch (err) {
+          setLastError((err as Error).message);
         }
+        return;
       }
-      try {
-        await fallback.speak(text, { lang: "pt-BR" });
-      } catch {
-        // give up silently
-      }
+      setLastError(
+        "Nenhum TTS cloud configurado. Configure Fish Audio ou ElevenLabs em Voz do Jarvis.",
+      );
     },
-    [engine, fallback, speakViaCloud, cancel],
+    [engine, speakViaCloud, cancel],
   );
 
   useEffect(() => () => cleanupAudio(), [cleanupAudio]);
@@ -162,9 +196,13 @@ export function useTtsEngine() {
     refresh,
     engine,
     voiceLabel,
+    configured,
+    source,
+    preferred,
     lastError,
     clearError: () => setLastError(null),
-    supported:
-      fallback.supported || engine === "elevenlabs" || engine === "fishaudio",
+    // Keep `supported` true so callers can surface configuration/provider
+    // errors instead of silently skipping speech.
+    supported: true,
   };
 }
