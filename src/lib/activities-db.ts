@@ -65,6 +65,11 @@ function getDb(): Database.Database {
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
 
+  // NOTE: the `pinned` index is created AFTER the migration below, NOT here.
+  // On a pre-existing DB the table already exists without `pinned`, so
+  // CREATE TABLE IF NOT EXISTS no-ops and a `CREATE INDEX ... ON activities(pinned)`
+  // in this same block would throw "no such column: pinned" — aborting the
+  // whole exec() before the ALTER migration ever runs. That was the bug.
   db.exec(`
     CREATE TABLE IF NOT EXISTS activities (
       id TEXT PRIMARY KEY,
@@ -83,7 +88,6 @@ function getDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_activities_type ON activities(type);
     CREATE INDEX IF NOT EXISTS idx_activities_status ON activities(status);
     CREATE INDEX IF NOT EXISTS idx_activities_agent ON activities(agent);
-    CREATE INDEX IF NOT EXISTS idx_activities_pinned ON activities(pinned);
   `);
 
   // Add pinned column if missing (migration for DBs created before this column).
@@ -99,6 +103,13 @@ function getDb(): Database.Database {
       console.error('[activities-db] migration failed (pinned):', e);
       // Continue — queries that don't touch pinned will still work
     }
+  }
+
+  // Create the pinned index only now that the column is guaranteed to exist.
+  try {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_activities_pinned ON activities(pinned)');
+  } catch (e) {
+    console.error('[activities-db] index creation failed (pinned):', e);
   }
 
   // Migrate from JSON
