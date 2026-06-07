@@ -4,6 +4,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { Cpu, HardDrive, MemoryStick, Network, Server, ShieldCheck, RotateCw, Wifi, Monitor, Play, Square, X, Loader2, Terminal, ArrowDown, ArrowUp, Thermometer, Pause, RefreshCw, Trash2, Plus } from "lucide-react";
 import { OpenClawConfigPanel } from "@/components/OpenClawConfigPanel";
 import { MetricChart } from "@/components/system/MetricChart";
+import { VpsTab } from "@/components/system/vps/VpsTab";
 import type { RangeKey, SeriesResponse } from "@/lib/metrics-db";
 
 const RANGE_OPTIONS: { id: RangeKey; label: string }[] = [
@@ -30,7 +31,7 @@ function colorForPct(pct: number): string {
   return METRIC_PALETTE.error;
 }
 
-type SystemTab = "hardware" | "services" | "openclaw";
+type SystemTab = "hardware" | "services" | "openclaw" | "vps";
 
 interface SystemdService {
   name: string;
@@ -118,6 +119,7 @@ export default function SystemMonitorPage() {
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [selectedTab, setSelectedTab] = useState<SystemTab>("hardware");
+  const [initialVpsId, setInitialVpsId] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<Record<string, boolean>>({});
   const [logsModal, setLogsModal] = useState<LogsModal | null>(null);
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
@@ -126,9 +128,11 @@ export default function SystemMonitorPage() {
     if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
       const tab = params.get("tab") as SystemTab | null;
-      if (tab && ["hardware", "services", "openclaw"].includes(tab)) {
+      if (tab && ["hardware", "services", "openclaw", "vps"].includes(tab)) {
         setSelectedTab(tab);
       }
+      const vps = params.get("vps");
+      if (vps) setInitialVpsId(vps);
     }
   }, []);
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -478,6 +482,7 @@ export default function SystemMonitorPage() {
           { id: "hardware", label: "Hardware", icon: Cpu },
           { id: "services", label: "Serviços", icon: Server },
           { id: "openclaw", label: "OpenClaw", icon: Terminal },
+          { id: "vps", label: "VPS", icon: Network },
         ].map((tab) => {
           const Icon = tab.icon;
           const isActive = selectedTab === tab.id;
@@ -680,6 +685,11 @@ export default function SystemMonitorPage() {
 
       {selectedTab === "openclaw" && (
         <OpenClawConfigPanel />
+      )}
+
+      {/* VPS Tab */}
+      {selectedTab === "vps" && (
+        <VpsTab initialVpsId={initialVpsId} />
       )}
 
       {/* Services Tab */}

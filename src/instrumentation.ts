@@ -86,6 +86,16 @@ export async function register(): Promise<void> {
     console.warn("[instrumentation] health monitor bootstrap failed:", err);
   }
 
+  // VPS health monitor — flips remote VPS hosts offline when their heartbeat
+  // (last ingest) goes stale, firing the Telegram/offline alert. Boots here so
+  // offline detection works with the dashboard closed.
+  try {
+    const { startVpsHealthMonitor } = await import("@/lib/vps-health-monitor");
+    startVpsHealthMonitor();
+  } catch (err) {
+    console.warn("[instrumentation] vps health monitor bootstrap failed:", err);
+  }
+
   // Agent-load watchdog — polls gateway logs for context-usage / idle-timeout
   // so the diagnose card shows headroom and (opt-in) auto-rotates the
   // Telegram session before the next message hits the overflow wall.
