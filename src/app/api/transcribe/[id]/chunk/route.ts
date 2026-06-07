@@ -51,9 +51,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ seq, text: result.text });
   } catch (err) {
     console.error("[/api/transcribe/chunk] failed:", err);
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Falha ao transcrever" },
-      { status: 502 }
-    );
+    const msg = err instanceof Error ? err.message : "Falha ao transcrever";
+    // 429 = quota exceeded / rate limit from OpenAI → surface as 402 so the UI
+    // can show a friendly message instead of nginx turning it into a 502.
+    const status = msg.includes("429") ? 402 : 500;
+    return NextResponse.json({ error: msg }, { status });
   }
 }

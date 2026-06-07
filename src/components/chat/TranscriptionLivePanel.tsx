@@ -54,6 +54,15 @@ export function TranscriptionLivePanel({
       if (res.ok) {
         const data = await res.json();
         if (typeof data.text === "string") setChunkText(seq, data.text);
+      } else if (res.status === 402) {
+        // Quota exceeded — stop recording and surface the error
+        const data = await res.json().catch(() => ({}));
+        stoppedRef.current = true;
+        if (cycleTimerRef.current) clearTimeout(cycleTimerRef.current);
+        try { if (recorderRef.current?.state !== "inactive") recorderRef.current?.stop(); } catch {}
+        streamRef.current?.getTracks().forEach((t) => { try { t.stop(); } catch {} });
+        setError(data.error || "Cota da OpenAI esgotada. Adicione créditos em platform.openai.com/settings/billing");
+        setPhase("error");
       }
     } catch {
       // a failed chunk just leaves a gap; recording continues
