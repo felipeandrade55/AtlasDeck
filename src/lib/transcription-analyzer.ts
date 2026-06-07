@@ -16,7 +16,7 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { readOpenClawConfig } from "@/lib/openclaw-config";
-import { getSettings } from "@/lib/memory-db";
+import { getSettings, type TranscriptionProvider } from "@/lib/memory-db";
 import { generateJson as ollamaGenerateJson } from "@/lib/ollama-client";
 
 const execFileAsync = promisify(execFile);
@@ -302,9 +302,27 @@ function sanitizeEvent(raw: unknown): SuggestedEventDraft | null {
   };
 }
 
-async function analyzeWindow(text: string, nowIso: string, tz: string): Promise<AnalysisResult | null> {
+async function analyzeWindow(
+  text: string,
+  nowIso: string,
+  tz: string,
+  provider: TranscriptionProvider
+): Promise<AnalysisResult | null> {
   const prompt = buildPrompt(text, nowIso, tz);
-  // Try each provider in order; parse the first that yields valid JSON.
+
+  // "ollama": local-only. Never silently fall back to a paid API when the user
+  // explicitly chose the local model.
+  if (provider === "ollama") {
+    const ol = await runOllama(prompt);
+    if (ol) {
+      const parsed = parseAnalysis(ol);
+      if (parsed) return parsed;
+    }
+    return null;
+  }
+
+  // "openai" (default): OpenAI first, then OpenClaw and Ollama as resilience
+  // fallbacks if the API is unavailable.
   const oa = await runOpenAI(prompt);
   if (oa) {
     const parsed = parseAnalysis(oa);
@@ -370,7 +388,7 @@ function heuristic(text: string): AnalysisResult {
 
 export async function analyzeTranscription(
   text: string,
-  opts: { now?: Date; timezone?: string } = {}
+  opts: { now?: Date; timezone?: string; provider?: TranscriptionProvider } = {}
 ): Promise<AnalysisResult> {
   const clean = (text || "").trim();
   if (!clean) return { ...EMPTY_ANALYSIS };
@@ -379,10 +397,18 @@ export async function analyzeTranscription(
   const tz = opts.timezone || "America/Sao_Paulo";
   const nowIso = now.toISOString();
 
+  // Provider comes from settings unless explicitly overridden by the caller.
+  let provider: TranscriptionProvider = opts.provider ?? "openai";
+  if (!opts.provider) {
+    try {
+      provider = getSettings().transcription_provider;
+    } catch {}
+  }
+
   const parts = windows(clean);
   const results: AnalysisResult[] = [];
   for (const part of parts) {
-    const r = await analyzeWindow(part, nowIso, tz);
+    const r = await analyzeWindow(part, nowIso, tz, provider);
     if (r) results.push(r);
   }
 

@@ -728,6 +728,9 @@ export function recordFeedback(
 
 export type ExtractorProvider = "openclaw" | "ollama" | "heuristic";
 
+/** Provider used to analyze transcriptions (summary, tasks, decisions, etc.). */
+export type TranscriptionProvider = "openai" | "ollama";
+
 export interface MemorySettings {
   embedding_provider: string;
   embedding_model: string;
@@ -736,6 +739,8 @@ export interface MemorySettings {
   inject_into_memory_md: boolean;
   extraction_enabled: boolean;
   extractor_provider: ExtractorProvider;
+  /** Which provider analyzes transcriptions. "ollama" uses the local model. */
+  transcription_provider: TranscriptionProvider;
   ollama_model: string;
   welcome_notification_shown: boolean;
   llm_choice_made: boolean;
@@ -800,6 +805,7 @@ const DEFAULT_SETTINGS: MemorySettings = {
   inject_into_memory_md: true,
   extraction_enabled: true,
   extractor_provider: "openclaw",
+  transcription_provider: "openai",
   ollama_model: "qwen2.5:7b",
   welcome_notification_shown: false,
   llm_choice_made: false,
@@ -866,6 +872,13 @@ function parseExtractorProvider(value: string | undefined): ExtractorProvider {
   return DEFAULT_SETTINGS.extractor_provider;
 }
 
+function parseTranscriptionProvider(value: string | undefined): TranscriptionProvider {
+  if (value === "openai" || value === "ollama") {
+    return value;
+  }
+  return DEFAULT_SETTINGS.transcription_provider;
+}
+
 function parseTtsProvider(value: string | undefined): TtsProvider {
   return value === "fishaudio" ? "fishaudio" : "elevenlabs";
 }
@@ -894,6 +907,7 @@ export function getSettings(): MemorySettings {
       (map.get("inject_into_memory_md") ?? "true") === "true",
     extraction_enabled: (map.get("extraction_enabled") ?? "true") === "true",
     extractor_provider: parseExtractorProvider(map.get("extractor_provider")),
+    transcription_provider: parseTranscriptionProvider(map.get("transcription_provider")),
     ollama_model: map.get("ollama_model") ?? DEFAULT_SETTINGS.ollama_model,
     welcome_notification_shown:
       (map.get("welcome_notification_shown") ?? "false") === "true",

@@ -22,6 +22,9 @@ import {
   Download,
   Pencil,
   Sparkles,
+  Settings,
+  Cpu,
+  Cloud,
 } from "lucide-react";
 
 interface SuggestedEvent {
@@ -109,6 +112,8 @@ function TranscriptionsPageInner() {
     }
   }, []);
 
+  const [showConfig, setShowConfig] = useState(false);
+
   useEffect(() => {
     fetchList();
     const t = setInterval(fetchList, 15000);
@@ -129,6 +134,7 @@ function TranscriptionsPageInner() {
 
   return (
     <div className="p-4 md:p-8">
+      {showConfig && <TranscriptionConfigModal onClose={() => setShowConfig(false)} />}
       <div className="mb-6">
         <Link
           href="/chat"
@@ -137,12 +143,24 @@ function TranscriptionsPageInner() {
         >
           <MessageSquare size={15} /> Ir para o Chat
         </Link>
-        <h1 className="text-2xl md:text-3xl font-bold mb-1" style={{ color: "var(--text-primary)", fontFamily: "var(--font-heading)" }}>
-          Transcrições
-        </h1>
-        <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
-          Reuniões e conversas transcritas. Inicie uma nova pelo botão <strong>Transcrever</strong> no Chat.
-        </p>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h1 className="text-2xl md:text-3xl font-bold mb-1" style={{ color: "var(--text-primary)", fontFamily: "var(--font-heading)" }}>
+              Transcrições
+            </h1>
+            <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
+              Reuniões e conversas transcritas. Inicie uma nova pelo botão <strong>Transcrever</strong> no Chat.
+            </p>
+          </div>
+          <button
+            onClick={() => setShowConfig(true)}
+            className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg shrink-0"
+            style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}
+            title="Configurar o provedor de IA da análise (OpenAI ou Ollama)"
+          >
+            <Settings size={15} /> Configurar IA
+          </button>
+        </div>
       </div>
 
       {!configured && (
@@ -785,6 +803,202 @@ function QnaBox({ transcriptionId }: { transcriptionId: string }) {
       </div>
     </div>
   );
+}
+
+interface OllamaModelInfo {
+  name: string;
+  size: number;
+}
+
+interface ConfigState {
+  provider: "openai" | "ollama";
+  ollama_model: string;
+  openai_configured: boolean;
+  ollama: { installed: boolean; running: boolean; models: OllamaModelInfo[] };
+}
+
+function TranscriptionConfigModal({ onClose }: { onClose: () => void }) {
+  const [cfg, setCfg] = useState<ConfigState | null>(null);
+  const [provider, setProvider] = useState<"openai" | "ollama">("openai");
+  const [model, setModel] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/transcribe/config");
+        if (res.ok) {
+          const data: ConfigState = await res.json();
+          setCfg(data);
+          setProvider(data.provider);
+          // Default the model selection to the saved one, or the first installed.
+          setModel(data.ollama_model || data.ollama.models[0]?.name || "");
+        }
+      } catch {
+        setError("Falha ao carregar configuração.");
+      }
+    })();
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const body: { provider: string; ollama_model?: string } = { provider };
+      if (provider === "ollama") body.ollama_model = model;
+      const res = await fetch("/api/transcribe/config", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || "Falha ao salvar");
+      }
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Falha ao salvar");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const ollamaReady = !!cfg?.ollama.running && cfg.ollama.models.length > 0;
+
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)", padding: "1rem" }}
+      onClick={onClose}
+    >
+      <div
+        style={{ width: "100%", maxWidth: 520, backgroundColor: "var(--card)", border: "1px solid var(--border)", borderRadius: "0.75rem", overflow: "hidden" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0.875rem 1.25rem", borderBottom: "1px solid var(--border)" }}>
+          <h2 className="flex items-center gap-2 text-base font-bold" style={{ color: "var(--text-primary)" }}>
+            <Settings size={18} style={{ color: "var(--accent)" }} /> IA da análise de transcrições
+          </h2>
+          <button onClick={onClose} style={{ color: "var(--text-muted)", background: "none", border: "none", cursor: "pointer" }}>
+            <X size={20} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={{ padding: "1.25rem" }}>
+          {!cfg ? (
+            <div className="flex items-center justify-center py-8" style={{ color: "var(--text-muted)" }}>
+              <Loader2 className="animate-spin mr-2" size={18} /> Carregando…
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
+                Escolha quem analisa as transcrições (resumo, tarefas, decisões, tópicos…).
+              </p>
+
+              {/* OpenAI option */}
+              <button
+                onClick={() => setProvider("openai")}
+                className="w-full text-left rounded-lg p-3 flex items-start gap-3"
+                style={{
+                  border: `1px solid ${provider === "openai" ? "var(--accent)" : "var(--border)"}`,
+                  backgroundColor: provider === "openai" ? "color-mix(in srgb, var(--accent) 8%, transparent)" : "transparent",
+                }}
+              >
+                <Cloud size={18} style={{ color: "var(--accent)", marginTop: 2 }} />
+                <div className="flex-1">
+                  <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+                    OpenAI (gpt-4o-mini) <span className="text-[11px] font-normal" style={{ color: "var(--text-muted)" }}>· nuvem, pago</span>
+                  </p>
+                  <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
+                    Melhor qualidade e consistência de JSON. {cfg.openai_configured ? "Chave configurada." : "⚠️ OPENAI_API_KEY não configurada."}
+                  </p>
+                </div>
+                {provider === "openai" && <Check size={16} style={{ color: "var(--accent)" }} />}
+              </button>
+
+              {/* Ollama option */}
+              <button
+                onClick={() => setProvider("ollama")}
+                className="w-full text-left rounded-lg p-3 flex items-start gap-3"
+                style={{
+                  border: `1px solid ${provider === "ollama" ? "var(--accent)" : "var(--border)"}`,
+                  backgroundColor: provider === "ollama" ? "color-mix(in srgb, var(--accent) 8%, transparent)" : "transparent",
+                }}
+              >
+                <Cpu size={18} style={{ color: "var(--success)", marginTop: 2 }} />
+                <div className="flex-1">
+                  <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+                    Ollama <span className="text-[11px] font-normal" style={{ color: "var(--text-muted)" }}>· local, grátis e privado</span>
+                  </p>
+                  <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
+                    {cfg.ollama.running
+                      ? `Rodando · ${cfg.ollama.models.length} modelo(s) instalado(s).`
+                      : cfg.ollama.installed
+                      ? "Instalado, mas não está rodando."
+                      : "Não detectado neste servidor."}
+                  </p>
+                </div>
+                {provider === "ollama" && <Check size={16} style={{ color: "var(--accent)" }} />}
+              </button>
+
+              {/* Ollama model picker */}
+              {provider === "ollama" && (
+                <div className="pl-1">
+                  <label className="text-xs font-semibold block mb-1" style={{ color: "var(--text-secondary)" }}>
+                    Modelo local
+                  </label>
+                  {ollamaReady ? (
+                    <select
+                      value={model}
+                      onChange={(e) => setModel(e.target.value)}
+                      className="w-full text-sm rounded px-2 py-2"
+                      style={inputStyle}
+                    >
+                      {cfg.ollama.models.map((m) => (
+                        <option key={m.name} value={m.name}>
+                          {m.name} ({fmtBytes(m.size)})
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <p className="text-xs rounded-lg p-2" style={{ color: "var(--warning)", backgroundColor: "color-mix(in srgb, var(--warning) 10%, transparent)" }}>
+                      Nenhum modelo disponível. Instale modelos em Configurações → Memória → Ollama (ex.: <code>gemma2:9b</code>, <code>qwen2.5:7b</code>).
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {error && <p className="text-xs" style={{ color: "var(--error)" }}>{error}</p>}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "0.5rem", padding: "0.875rem 1.25rem", borderTop: "1px solid var(--border)" }}>
+          <button onClick={onClose} className="px-3 py-2 text-sm rounded-lg" style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}>
+            Cancelar
+          </button>
+          <button
+            onClick={save}
+            disabled={saving || !cfg || (provider === "ollama" && !model)}
+            className="flex items-center gap-1.5 px-4 py-2 text-sm rounded-lg font-semibold"
+            style={{ backgroundColor: "var(--accent)", color: "white", border: "none", opacity: saving || !cfg || (provider === "ollama" && !model) ? 0.6 : 1 }}
+          >
+            {saving ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />} Salvar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function fmtBytes(bytes: number): string {
+  if (!bytes) return "?";
+  const gb = bytes / 1e9;
+  if (gb >= 1) return `${gb.toFixed(1)} GB`;
+  return `${Math.round(bytes / 1e6)} MB`;
 }
 
 function StatusBadge({ status, inline }: { status: Transcription["status"]; inline?: boolean }) {
