@@ -9,7 +9,22 @@ const PUBLIC_ROUTES = new Set(["/login"]);
 const PUBLIC_ROUTE_PREFIXES = ["/book/"];
 
 // API routes that are always public (auth endpoints + health check + public booking)
-const PUBLIC_API_PREFIXES = ["/api/auth/", "/api/health", "/api/calendar/public/"];
+// VPS agent endpoints are public at the middleware layer because they carry a
+// per-host token (validated inside the route, which the edge middleware can't
+// check), not the admin cookie:
+//   - /api/vps/ingest  → agent metric uploads (route does getHostByToken)
+//   - /api/vps/install → generic installer script (no secrets; token is
+//                        generated on the VPS, so curl|bash works without a cookie)
+// NOTE: keep this list precise — the management routes (/api/vps, /api/vps/[id],
+// /api/vps/[id]/metrics) stay behind the admin cookie. /api/vps/agent.py is
+// already excluded from the matcher (it contains a dot).
+const PUBLIC_API_PREFIXES = [
+  "/api/auth/",
+  "/api/health",
+  "/api/calendar/public/",
+  "/api/vps/ingest",
+  "/api/vps/install",
+];
 
 // API prefixes that may also be authenticated via service token (OpenClaw → AtlasDeck)
 const SERVICE_TOKEN_API_PREFIXES = ["/api/calendar/"];
