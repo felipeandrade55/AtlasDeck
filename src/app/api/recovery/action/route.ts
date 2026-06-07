@@ -12,13 +12,27 @@
  * panel keeps working regardless of how the user launched OpenClaw.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 
 import { gatewayLogs, restartGateway, startGateway, detectGatewayRuntime } from '@/lib/gateway-control';
 import { logActivity } from '@/lib/activities-db';
 
 const execAsync = promisify(exec);
+
+/**
+ * Schedules a self-disruptive command (restarts the dashboard or reboots the
+ * host) to run AFTER a short delay, in a detached process group. This lets the
+ * HTTP response reach the browser before the current process is killed —
+ * otherwise the client gets "Unexpected end of JSON input" on res.json().
+ */
+function scheduleDetached(cmd: string, delayMs = 1500): void {
+  const child = spawn('bash', ['-c', `sleep ${(delayMs / 1000).toFixed(2)}; ${cmd}`], {
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.unref();
+}
 
 type Severity = 'safe' | 'caution' | 'destructive';
 
@@ -274,6 +288,14 @@ const ACTIONS: Record<string, ActionDef> = {
     severity: 'destructive',
     selfDisruptive: true,
   },
+
+  // ─── Reinício do servidor Linux inteiro (VPS) ────────────────
+  'vps-reboot': {
+    cmd: 'systemctl reboot 2>&1 || sudo systemctl reboot 2>&1 || reboot 2>&1 || sudo reboot 2>&1',
+    description: 'Reinicia o servidor Linux (VPS) inteiro — tudo cai e volta em ~1 minuto',
+    severity: 'destructive',
+    selfDisruptive: true,
+  },
 };
 
 interface SafeExecResult {
@@ -347,6 +369,30 @@ export async function POST(request: NextRequest) {
   }
 
   const started = Date.now();
+
+  // Self-disruptive actions (restart the dashboard or reboot the host) kill the
+  // process serving this request. Schedule the command to run shortly AFTER we
+  // return, so the browser receives a clean JSON response instead of a dropped
+  // connection. Only shell-command actions support this path.
+  if (def.selfDisruptive && def.cmd) {
+    scheduleDetached(def.cmd);
+    const durationMs = Date.now() - started;
+    logActivity(
+      'command',
+      `${def.description} (recovery)`,
+      'success',
+      { duration_ms: durationMs, metadata: { action: id, severity: def.severity, scheduled: true } }
+    );
+    return NextResponse.json({
+      success: true,
+      action: id,
+      description: def.description,
+      severity: def.severity,
+      durationMs,
+      selfDisruptive: true,
+      output: 'Comando agendado. A conexão vai cair em instantes — aguarde alguns segundos e recarregue a página.',
+    });
+  }
 
   if (def.run) {
     try {

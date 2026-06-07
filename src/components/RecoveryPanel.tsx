@@ -80,7 +80,7 @@ const QUICK_GROUPS: Array<{
   title: string;
   icon: typeof LifeBuoy;
   intro: string;
-  actions: Array<{ id: string; label: string; icon: typeof RefreshCw; severity: Severity; hint?: string }>;
+  actions: Array<{ id: string; label: string; icon: typeof RefreshCw; severity: Severity; hint?: string; selfDisruptive?: boolean }>;
 }> = [
   {
     title: "Resgate do OpenClaw",
@@ -133,7 +133,8 @@ const QUICK_GROUPS: Array<{
     actions: [
       { id: "pm2-list", label: "Listar PM2", icon: Activity, severity: "safe" },
       { id: "pm2-resurrect", label: "Reanimar PM2", icon: RefreshCw, severity: "caution" },
-      { id: "mission-control-restart", label: "Reiniciar AtlasDeck", icon: ShieldAlert, severity: "destructive", hint: "A página vai cair por alguns segundos" },
+      { id: "mission-control-restart", label: "Reiniciar AtlasDeck", icon: ShieldAlert, severity: "destructive", hint: "A página vai cair por alguns segundos", selfDisruptive: true },
+      { id: "vps-reboot", label: "Reiniciar servidor (VPS)", icon: Server, severity: "destructive", hint: "Reinicia o Linux inteiro — tudo cai e volta em ~1 minuto", selfDisruptive: true },
     ],
   },
 ];
@@ -181,7 +182,7 @@ export function RecoveryPanel() {
   const [statusError, setStatusError] = useState<string | null>(null);
   const [runningAction, setRunningAction] = useState<string | null>(null);
   const [log, setLog] = useState<ActionLogEntry[]>([]);
-  const [confirmAction, setConfirmAction] = useState<{ id: string; label: string; severity: Severity; hint?: string } | null>(null);
+  const [confirmAction, setConfirmAction] = useState<{ id: string; label: string; severity: Severity; hint?: string; selfDisruptive?: boolean } | null>(null);
 
   // AI rescue dialog
   const [aiDialogOpen, setAiDialogOpen] = useState(false);
@@ -212,36 +213,50 @@ export function RecoveryPanel() {
     logEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [log.length]);
 
-  const runAction = useCallback(async (action: { id: string; label: string; severity: Severity }) => {
+  const runAction = useCallback(async (action: { id: string; label: string; severity: Severity; selfDisruptive?: boolean }) => {
     setRunningAction(action.id);
     const startedAt = new Date().toISOString();
+    const appendLog = (entry: ActionLogEntry) => setLog((prev) => [...prev, entry].slice(-50));
     try {
       const res = await fetch("/api/recovery/action", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: action.id }),
       });
-      const data = await res.json();
-      const entry: ActionLogEntry = {
+      // Self-disruptive actions may kill the process before the body arrives —
+      // parse defensively so an empty body doesn't surface as a JSON error.
+      const data = await res.json().catch(() => ({}));
+      appendLog({
         id: `${action.id}-${Date.now()}`,
         action: action.id,
         label: action.label,
         severity: action.severity,
         startedAt,
         durationMs: data.durationMs ?? 0,
-        success: !!data.success,
-        output: data.output || "",
+        success: data.success ?? action.selfDisruptive ?? false,
+        output: data.output || (action.selfDisruptive ? "Reinício em andamento — aguarde alguns segundos e recarregue a página." : ""),
         error: data.error,
-      };
-      setLog((prev) => [...prev, entry].slice(-50));
+      });
       // Refresh status after potentially mutating actions
-      if (action.severity !== "safe") {
+      if (action.severity !== "safe" && !action.selfDisruptive) {
         setTimeout(fetchStatus, 1500);
       }
     } catch (e) {
-      setLog((prev) => [
-        ...prev,
-        {
+      // For self-disruptive actions the dropped connection is expected — the
+      // process is restarting. Report it as in-progress, not a failure.
+      if (action.selfDisruptive) {
+        appendLog({
+          id: `${action.id}-${Date.now()}`,
+          action: action.id,
+          label: action.label,
+          severity: action.severity,
+          startedAt,
+          durationMs: 0,
+          success: true,
+          output: "Reinício em andamento — a conexão caiu, como esperado. Aguarde alguns segundos e recarregue a página.",
+        });
+      } else {
+        appendLog({
           id: `${action.id}-${Date.now()}`,
           action: action.id,
           label: action.label,
@@ -251,14 +266,14 @@ export function RecoveryPanel() {
           success: false,
           output: "",
           error: e instanceof Error ? e.message : String(e),
-        },
-      ].slice(-50));
+        });
+      }
     } finally {
       setRunningAction(null);
     }
   }, [fetchStatus]);
 
-  const handleActionClick = useCallback((action: { id: string; label: string; severity: Severity; hint?: string }) => {
+  const handleActionClick = useCallback((action: { id: string; label: string; severity: Severity; hint?: string; selfDisruptive?: boolean }) => {
     if (action.severity === "destructive" || action.severity === "caution") {
       setConfirmAction(action);
     } else {
