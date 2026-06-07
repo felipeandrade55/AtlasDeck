@@ -17,6 +17,7 @@ import { collectUsage, initDatabase, type CollectionResult, getOpenClawDiagnosti
 import { MODEL_PRICING } from "@/lib/pricing";
 import { addNotification } from "@/lib/notifications";
 import { sendTelegramAlert } from "@/lib/telegram";
+import { logActivity } from "@/lib/activities-db";
 import path from "path";
 
 export const runtime = "nodejs";
@@ -283,6 +284,13 @@ export async function POST(request: NextRequest) {
 
       // Instantly evaluate alerts after changes
       await evaluateCostAlerts(db);
+
+      logActivity(
+        'config',
+        `Configurações de orçamento atualizadas${settings.limitUsd ? ` (limite: $${settings.limitUsd}/${settings.limitTimeframe || 'monthly'})` : ''}`,
+        'success',
+        { metadata: { budget: settings.budget, alertThreshold: settings.alertThreshold, limitTimeframe: settings.limitTimeframe, behaviorMode: settings.behaviorMode } }
+      );
 
       return NextResponse.json({
         success: true,

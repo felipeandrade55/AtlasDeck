@@ -17,6 +17,7 @@ import {
   updateHistoryEntry,
   writeLiveStatus,
 } from "@/lib/update";
+import { logActivity } from "@/lib/activities-db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -92,6 +93,8 @@ export async function POST() {
       error: errorMsg,
     });
   } catch {}
+
+  logActivity('update', errorMsg, wasAlive ? 'success' : 'error', { metadata: { killed: wasAlive, pid } });
 
   return NextResponse.json({
     success: true,

@@ -13,6 +13,7 @@
  */
 import { NextResponse } from "next/server";
 import { activateMemoryMcp } from "@/lib/memory-mcp-orchestrator";
+import { logActivity } from "@/lib/activities-db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -34,6 +35,13 @@ export async function POST(request: Request) {
     agentId: body.agentId,
     skipRestart: body.skipRestart,
   });
+
+  logActivity(
+    'memory',
+    `Memória avançada ${result.ok ? 'ativada' : 'falhou'}`,
+    result.ok ? 'success' : 'error',
+    { metadata: { agentId: body.agentId, summary: result.summary } }
+  );
 
   return NextResponse.json(result, {
     headers: { "Cache-Control": "no-store, max-age=0" },

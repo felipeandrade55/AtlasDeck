@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { readRestoreLiveStatus, writeRestoreLiveStatus } from "@/lib/restore";
+import { logActivity } from "@/lib/activities-db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -58,6 +59,8 @@ export async function POST() {
       error: "Restore cancelado pelo usuário",
       completedAt: new Date().toISOString(),
     });
+
+    logActivity('restore', 'Restore cancelado pelo usuário', 'error', { metadata: { phase: live.currentPhase, pid: live.pid } });
 
     return NextResponse.json({ ok: true });
   } catch (err) {

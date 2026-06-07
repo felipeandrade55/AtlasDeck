@@ -15,6 +15,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { rotateActiveTelegramSession } from "@/lib/telegram-session-rotator";
+import { logActivity } from "@/lib/activities-db";
 
 export const dynamic = "force-dynamic";
 
@@ -34,6 +35,13 @@ export async function POST(request: NextRequest) {
     dryRun: body.dryRun,
     triggeredBy: "manual",
   });
+
+  logActivity(
+    'command',
+    body.dryRun ? 'Rotação de sessão Telegram simulada' : 'Rotação de sessão Telegram executada',
+    result.rotated || body.dryRun ? 'success' : 'error',
+    { metadata: { agentId: body.agentId, chatId: body.chatId, rotated: result.rotated, filePath: result.filePath, rotatedTo: result.rotatedTo } }
+  );
 
   return NextResponse.json(result, {
     status: result.rotated || body.dryRun ? 200 : 409,

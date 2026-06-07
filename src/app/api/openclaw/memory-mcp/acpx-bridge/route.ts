@@ -15,6 +15,7 @@ import fs from "fs";
 import path from "path";
 import { NextResponse } from "next/server";
 import { getOpenClawDir } from "@/lib/openclaw-config";
+import { logActivity } from "@/lib/activities-db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -117,6 +118,8 @@ export async function POST(request: Request) {
   } catch {
     persisted = null;
   }
+
+  logActivity('config', `ACPX bridge ${enabled ? 'ativado' : 'desativado'}`, 'success', { metadata: { before, after: enabled, persisted } });
 
   return NextResponse.json({
     ok: true,

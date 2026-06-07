@@ -21,6 +21,7 @@ import {
   installMcpServer,
   uninstallMcpServer,
 } from "@/lib/openclaw-mcp-config";
+import { logActivity } from "@/lib/activities-db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -52,6 +53,7 @@ export async function POST(request: Request) {
 
   try {
     const result = installMcpServer({ atlasdeckRoot, agentId });
+    logActivity('memory', `MCP server atlasdeck-memory instalado para agente ${agentId}`, 'success', { metadata: { ...result } as Record<string, unknown> });
     return NextResponse.json({
       ok: true,
       ...result,
@@ -59,10 +61,12 @@ export async function POST(request: Request) {
         "Restart the OpenClaw gateway (or send its reload signal) so the new MCP tools become visible to the agent.",
     });
   } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    logActivity('memory', `Falha ao instalar MCP server atlasdeck-memory`, 'error', { metadata: { error: errorMsg } });
     return NextResponse.json(
       {
         ok: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: errorMsg,
       },
       { status: 500 },
     );
@@ -72,12 +76,15 @@ export async function POST(request: Request) {
 export async function DELETE() {
   try {
     const result = uninstallMcpServer();
+    logActivity('memory', 'MCP server atlasdeck-memory desinstalado', 'success', { metadata: result });
     return NextResponse.json({ ok: true, ...result });
   } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    logActivity('memory', 'Falha ao desinstalar MCP server atlasdeck-memory', 'error', { metadata: { error: errorMsg } });
     return NextResponse.json(
       {
         ok: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: errorMsg,
       },
       { status: 500 },
     );

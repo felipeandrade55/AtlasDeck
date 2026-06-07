@@ -26,6 +26,41 @@ const DIGIT_WORDS_PT: Record<string, string> = {
   "9": "nove",
 };
 
+const SMALL_PT: Record<number, string> = {
+  0: "zero", 1: "um", 2: "dois", 3: "três", 4: "quatro", 5: "cinco", 6: "seis", 7: "sete", 8: "oito", 9: "nove",
+  10: "dez", 11: "onze", 12: "doze", 13: "treze", 14: "quatorze", 15: "quinze", 16: "dezesseis", 17: "dezessete", 18: "dezoito", 19: "dezenove",
+};
+
+const TENS_PT: Record<number, string> = {
+  20: "vinte", 30: "trinta", 40: "quarenta", 50: "cinquenta", 60: "sessenta", 70: "setenta", 80: "oitenta", 90: "noventa",
+};
+
+const HUNDREDS_PT: Record<number, string> = {
+  100: "cem", 200: "duzentos", 300: "trezentos", 400: "quatrocentos", 500: "quinhentos", 600: "seiscentos", 700: "setecentos", 800: "oitocentos", 900: "novecentos",
+};
+
+function integerToPortuguese(n: number): string {
+  if (!Number.isInteger(n) || n < 0 || n > 999999) return String(n);
+  if (n < 20) return SMALL_PT[n];
+  if (n < 100) {
+    const ten = Math.floor(n / 10) * 10;
+    const rest = n % 10;
+    return rest ? `${TENS_PT[ten]} e ${SMALL_PT[rest]}` : TENS_PT[ten];
+  }
+  if (n < 1000) {
+    if (n === 100) return HUNDREDS_PT[100];
+    const hundred = Math.floor(n / 100) * 100;
+    const rest = n % 100;
+    const prefix = hundred === 100 ? "cento" : HUNDREDS_PT[hundred];
+    return rest ? `${prefix} e ${integerToPortuguese(rest)}` : prefix;
+  }
+  const thousands = Math.floor(n / 1000);
+  const rest = n % 1000;
+  const prefix = thousands === 1 ? "mil" : `${integerToPortuguese(thousands)} mil`;
+  if (!rest) return prefix;
+  return `${prefix} e ${integerToPortuguese(rest)}`;
+}
+
 function prepareTextForSpeech(text: string): string {
   return text
     .replace(/```[\s\S]*?```/g, " ")
@@ -34,6 +69,7 @@ function prepareTextForSpeech(text: string): string {
     .replace(/\[([^\]]+)]\([^)]+\)/g, "$1")
     .replace(/[\u{1F1E6}-\u{1F1FF}\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\uFE0F\u200D]/gu, " ")
     .replace(/[*_>#~|]/g, " ")
+    .replace(/\b\d{1,6}\b/g, (raw) => integerToPortuguese(Number(raw)))
     .replace(/\d/g, (digit) => DIGIT_WORDS_PT[digit] ?? digit)
     .replace(/\s+/g, " ")
     .trim();

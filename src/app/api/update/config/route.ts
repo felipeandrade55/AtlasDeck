@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { UpdateConfig, readUpdateConfig, writeUpdateConfig } from "@/lib/update";
+import { logActivity } from "@/lib/activities-db";
 
 export async function GET() {
   try {
@@ -35,6 +36,13 @@ export async function PUT(request: NextRequest) {
       patch.lastAutoUpdateAttemptSha = null;
     }
     const config = writeUpdateConfig(patch);
+    const changedKeys = Object.keys(patch).join(', ');
+    logActivity(
+      'update',
+      `Configuração de atualização alterada: ${changedKeys}`,
+      'success',
+      { metadata: patch }
+    );
     return NextResponse.json(config);
   } catch (error) {
     return NextResponse.json(

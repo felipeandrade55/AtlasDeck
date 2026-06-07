@@ -94,6 +94,7 @@ export async function POST(request: Request) {
     if (body.action === 'pin' && body.id) {
       const { togglePinActivity } = await import('@/lib/activities-db');
       const pinned = togglePinActivity(body.id);
+      logActivity('config', pinned ? 'Atividade marcada como favorita' : 'Atividade desmarcada como favorita', 'success', { metadata: { activityId: body.id, pinned } });
       return NextResponse.json({ pinned });
     }
 

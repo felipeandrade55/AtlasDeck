@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { execFileSync } from 'child_process';
+import { logActivity } from '@/lib/activities-db';
 
 import { OPENCLAW_WORKSPACE, WORKSPACE_IDENTITY } from '@/lib/paths';
 import { readOpenClawConfig } from '@/lib/openclaw-config';
@@ -196,6 +197,7 @@ export async function POST(request: Request) {
       const storedPassword = currentPassMatch?.[1]?.trim();
       
       if (storedPassword !== currentPassword) {
+        logActivity('security', 'Tentativa de alteração de senha falhou', 'error', { metadata: { reason: 'incorrect_current_password' } });
         return NextResponse.json({ error: 'Current password is incorrect' }, { status: 401 });
       }
       
@@ -206,6 +208,7 @@ export async function POST(request: Request) {
       );
       
       fs.writeFileSync(ENV_LOCAL_PATH, newEnvContent);
+      logActivity('security', 'Senha de acesso alterada', 'success');
       
       return NextResponse.json({ success: true, message: 'Password updated successfully' });
     }
@@ -213,6 +216,7 @@ export async function POST(request: Request) {
     if (action === 'clear_activity_log') {
       const activitiesPath = path.join(process.cwd(), 'data', 'activities.json');
       fs.writeFileSync(activitiesPath, '[]');
+      logActivity('command', 'Registro de atividades limpo pelo usuário', 'success');
       return NextResponse.json({ success: true, message: 'Activity log cleared' });
     }
     

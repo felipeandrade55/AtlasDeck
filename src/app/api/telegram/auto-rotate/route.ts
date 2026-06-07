@@ -13,6 +13,7 @@ import {
   getAgentLoadWatchdogState,
   setAgentLoadAutoRotate,
 } from "@/lib/agent-load-watchdog";
+import { logActivity } from "@/lib/activities-db";
 
 export const dynamic = "force-dynamic";
 
@@ -34,6 +35,12 @@ export async function POST(request: NextRequest) {
   }
   setAgentLoadAutoRotate(body.enabled);
   const state = getAgentLoadWatchdogState();
+  logActivity(
+    'config',
+    `Auto-rotação de sessão Telegram ${body.enabled ? 'ativada' : 'desativada'}`,
+    'success',
+    { metadata: { enabled: state.enabled } }
+  );
   return NextResponse.json({
     enabled: state.enabled,
     started: state.started,

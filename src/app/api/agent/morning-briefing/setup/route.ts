@@ -13,6 +13,7 @@
 import { NextResponse } from "next/server";
 import { getSettings, setSettings } from "@/lib/memory-db";
 import { startCalendarScheduler, isCalendarSchedulerStarted } from "@/lib/calendar-scheduler";
+import { logActivity } from "@/lib/activities-db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,10 +34,12 @@ export async function GET() {
 export async function POST() {
   setSettings({ morning_briefing_enabled: true });
   startCalendarScheduler();
+  logActivity('config', 'Briefing matinal ativado', 'success', { metadata: { schedule: SCHEDULE } });
   return NextResponse.json({ installed: true, schedule: SCHEDULE });
 }
 
 export async function DELETE() {
   setSettings({ morning_briefing_enabled: false });
+  logActivity('config', 'Briefing matinal desativado', 'success');
   return NextResponse.json({ removed: true });
 }

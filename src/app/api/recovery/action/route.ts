@@ -16,6 +16,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 
 import { gatewayLogs, restartGateway, startGateway, detectGatewayRuntime } from '@/lib/gateway-control';
+import { logActivity } from '@/lib/activities-db';
 
 const execAsync = promisify(exec);
 
@@ -350,24 +351,39 @@ export async function POST(request: NextRequest) {
   if (def.run) {
     try {
       const r = await def.run();
+      const durationMs = Date.now() - started;
+      logActivity(
+        'command',
+        `${def.description} (recovery)`,
+        r.success ? 'success' : 'error',
+        { duration_ms: durationMs, metadata: { action: id, severity: def.severity, output: r.output?.slice(0, 500) } }
+      );
       return NextResponse.json({
         success: r.success,
         action: id,
         description: def.description,
         severity: def.severity,
-        durationMs: Date.now() - started,
+        durationMs,
         output: r.output,
         error: r.error,
       });
     } catch (e) {
+      const durationMs = Date.now() - started;
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      logActivity(
+        'command',
+        `${def.description} (recovery)`,
+        'error',
+        { duration_ms: durationMs, metadata: { action: id, severity: def.severity, error: errorMsg } }
+      );
       return NextResponse.json({
         success: false,
         action: id,
         description: def.description,
         severity: def.severity,
-        durationMs: Date.now() - started,
+        durationMs,
         output: '',
-        error: e instanceof Error ? e.message : String(e),
+        error: errorMsg,
       });
     }
   }
@@ -380,12 +396,19 @@ export async function POST(request: NextRequest) {
   }
 
   const r = await execSafe(def.cmd, def.timeoutMs ?? 15_000);
+  const durationMs = Date.now() - started;
+  logActivity(
+    'command',
+    `${def.description} (recovery)`,
+    r.success ? 'success' : 'error',
+    { duration_ms: durationMs, metadata: { action: id, severity: def.severity, output: r.output?.slice(0, 500) } }
+  );
   return NextResponse.json({
     success: r.success,
     action: id,
     description: def.description,
     severity: def.severity,
-    durationMs: Date.now() - started,
+    durationMs,
     output: r.output,
     error: r.error,
   });

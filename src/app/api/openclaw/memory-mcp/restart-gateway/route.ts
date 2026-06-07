@@ -14,6 +14,7 @@
 import { NextResponse } from "next/server";
 import { restartGateway } from "@/lib/gateway-control";
 import { waitForGateway } from "@/lib/openclaw-gateway-wait";
+import { logActivity } from "@/lib/activities-db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -36,8 +37,16 @@ export async function POST() {
       : `gateway não voltou em ${wait.elapsedMs}ms`,
   ].join(" · ");
 
+  const ok = restart.success && (!("skipped" in wait) ? wait.ready : true);
+  logActivity(
+    'command',
+    `Reinício do gateway (memory MCP) ${ok ? 'concluído' : 'falhou'}`,
+    ok ? 'success' : 'error',
+    { duration_ms: "elapsedMs" in wait ? wait.elapsedMs : undefined, metadata: { runtime: restart.runtime } }
+  );
+
   return NextResponse.json({
-    ok: restart.success && (!("skipped" in wait) ? wait.ready : true),
+    ok,
     restart,
     wait,
     summary,

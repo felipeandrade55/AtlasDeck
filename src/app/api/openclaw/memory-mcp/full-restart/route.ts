@@ -24,6 +24,7 @@ import { NextResponse } from "next/server";
 import { promisify } from "util";
 import { exec } from "child_process";
 import { waitForGateway } from "@/lib/openclaw-gateway-wait";
+import { logActivity } from "@/lib/activities-db";
 
 const execAsync = promisify(exec);
 
@@ -139,20 +140,29 @@ export async function POST() {
     strategy !== null &&
     (("skipped" in wait) ? true : wait.ready);
 
+  const summary = strategy
+    ? `stop+start via ${strategy} · ${
+        "skipped" in wait
+          ? "wait pulado"
+          : wait.ready
+          ? `pronto em ${wait.elapsedMs}ms`
+          : `não voltou em ${wait.elapsedMs}ms`
+      }`
+    : "nenhuma estratégia funcionou";
+
+  logActivity(
+    'command',
+    `Full restart do gateway (memory MCP) ${ok ? 'concluído' : 'falhou'}`,
+    ok ? 'success' : 'error',
+    { metadata: { strategy, summary } }
+  );
+
   return NextResponse.json({
     ok,
     strategy,
     attempts,
     wait,
-    summary: strategy
-      ? `stop+start via ${strategy} · ${
-          "skipped" in wait
-            ? "wait pulado"
-            : wait.ready
-            ? `pronto em ${wait.elapsedMs}ms`
-            : `não voltou em ${wait.elapsedMs}ms`
-        }`
-      : "nenhuma estratégia funcionou",
+    summary,
     hint: ok
       ? "Threads Codex foram destruídas. A próxima mensagem no Telegram cria thread nova que vai PEGAR o atlasdeck-memory."
       : "Falhou. Veja attempts pra entender qual estratégia bateu errado.",

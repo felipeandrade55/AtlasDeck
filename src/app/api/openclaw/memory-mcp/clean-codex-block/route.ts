@@ -20,6 +20,7 @@ import fs from "fs";
 import path from "path";
 import { NextResponse } from "next/server";
 import { getOpenClawDir } from "@/lib/openclaw-config";
+import { logActivity } from "@/lib/activities-db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -92,6 +93,8 @@ export async function POST() {
   const tmpPath = `${filePath}.tmp-${process.pid}`;
   fs.writeFileSync(tmpPath, `${JSON.stringify(next, null, 2)}\n`, "utf-8");
   fs.renameSync(tmpPath, filePath);
+
+  logActivity('memory', 'Bloco codex removido do atlasdeck-memory (MCP)', 'success', { metadata: { removed: before } });
 
   return NextResponse.json({
     ok: true,

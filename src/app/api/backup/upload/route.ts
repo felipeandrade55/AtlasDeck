@@ -7,6 +7,7 @@ import { pipeline } from "stream/promises";
 import { Readable } from "stream";
 
 import { restoreUploadsDir } from "@/lib/restore";
+import { logActivity } from "@/lib/activities-db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -112,6 +113,8 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
+
+  logActivity('backup', `Upload de backup recebido (${(bytesWritten / 1024 / 1024).toFixed(2)} MB)`, 'success', { metadata: { uploadId, sizeBytes: bytesWritten } });
 
   return NextResponse.json({ uploadId, sizeBytes: bytesWritten });
 }

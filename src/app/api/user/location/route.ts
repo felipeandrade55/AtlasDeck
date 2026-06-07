@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSettings, setSettings, upsertMemory } from "@/lib/memory-db";
+import { logActivity } from "@/lib/activities-db";
 
 const LOCATION_MEMORY_TITLE = "Localização da residência do usuário";
 const LOCATION_MEMORY_WORKSPACE = "workspace";
@@ -101,6 +102,13 @@ export async function POST(request: NextRequest) {
     ...addressPatch,
   });
 
+  logActivity(
+    'config',
+    label ? `Localização atualizada: ${label}` : `Localização atualizada: ${lat.toFixed(4)}, ${lon.toFixed(4)}`,
+    'success',
+    { metadata: { lat, lon, label, timezone } }
+  );
+
   // Mirror as a pinned identity memory so RAG / agent prompts surface it
   // naturally. Includes the full street address when present so Jarvis can
   // recall delivery details without needing to hit the location API.
@@ -176,5 +184,6 @@ export async function DELETE() {
     home_address_postal_code: null,
     home_address_reference: null,
   });
+  logActivity('config', 'Localização removida', 'success');
   return NextResponse.json({ ok: true });
 }
