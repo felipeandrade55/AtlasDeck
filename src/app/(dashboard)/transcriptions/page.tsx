@@ -14,6 +14,13 @@ import {
   Mic,
   RefreshCw,
   MessageSquare,
+  ListTodo,
+  Gavel,
+  HelpCircle,
+  Copy,
+  Download,
+  Pencil,
+  Sparkles,
 } from "lucide-react";
 
 interface SuggestedEvent {
@@ -28,6 +35,24 @@ interface SuggestedEvent {
   event_id: string | null;
 }
 
+interface SuggestedTask {
+  id: string;
+  task: string;
+  owner: string | null;
+  due_date: string | null;
+  priority: string | null;
+  source_text: string | null;
+  confidence: number;
+  status: "pending" | "approved" | "rejected";
+  reminder_id: string | null;
+}
+
+interface Decision {
+  decision: string;
+  rationale: string | null;
+  owner: string | null;
+}
+
 interface Transcription {
   id: string;
   title: string;
@@ -36,10 +61,14 @@ interface Transcription {
   text: string;
   summary: string | null;
   key_points: string[];
+  decisions: Decision[];
+  topics: string[];
+  open_questions: string[];
   duration_ms: number | null;
   memory_id: string | null;
   created_at: string;
   suggestions?: SuggestedEvent[];
+  tasks?: SuggestedTask[];
 }
 
 export default function TranscriptionsPage() {
@@ -147,6 +176,9 @@ function TranscriptionDetail({ id, onBack }: { id: string; onBack: () => void })
   const [t, setT] = useState<Transcription | null>(null);
   const [loading, setLoading] = useState(true);
   const [reanalyzing, setReanalyzing] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const [copied, setCopied] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -184,6 +216,52 @@ function TranscriptionDetail({ id, onBack }: { id: string; onBack: () => void })
     }
   };
 
+  const startEditTitle = () => {
+    if (!t) return;
+    setTitleDraft(t.title);
+    setEditingTitle(true);
+  };
+
+  const saveTitle = async () => {
+    const title = titleDraft.trim();
+    if (!title || !t || title === t.title) {
+      setEditingTitle(false);
+      return;
+    }
+    await fetch(`/api/transcribe/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    setEditingTitle(false);
+    await load();
+  };
+
+  const handleCopyMarkdown = async () => {
+    if (!t) return;
+    try {
+      await navigator.clipboard.writeText(buildMarkdown(t));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // clipboard may be blocked — fall back to download
+      handleDownloadMarkdown();
+    }
+  };
+
+  const handleDownloadMarkdown = () => {
+    if (!t) return;
+    const blob = new Blob([buildMarkdown(t)], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${slugify(t.title)}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   if (loading || !t) {
     return (
       <div className="p-8 flex items-center justify-center" style={{ color: "var(--text-muted)" }}>
@@ -193,6 +271,7 @@ function TranscriptionDetail({ id, onBack }: { id: string; onBack: () => void })
   }
 
   const pending = (t.suggestions || []).filter((s) => s.status === "pending");
+  const pendingTasks = (t.tasks || []).filter((s) => s.status === "pending");
   const isAnalyzing = t.status === "analyzing" || reanalyzing;
   const canReanalyze = t.status === "analyzing" || t.status === "error";
 
@@ -203,14 +282,65 @@ function TranscriptionDetail({ id, onBack }: { id: string; onBack: () => void })
       </button>
 
       <div className="flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-xl md:text-2xl font-bold" style={{ color: "var(--text-primary)" }}>{t.title}</h1>
+        <div className="min-w-0 flex-1">
+          {editingTitle ? (
+            <div className="flex items-center gap-2">
+              <input
+                autoFocus
+                value={titleDraft}
+                onChange={(e) => setTitleDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") saveTitle();
+                  if (e.key === "Escape") setEditingTitle(false);
+                }}
+                className="text-xl md:text-2xl font-bold rounded px-2 py-1 w-full"
+                style={inputStyle}
+              />
+              <button onClick={saveTitle} className="p-1.5 rounded" style={{ color: "var(--success)" }}>
+                <Check size={18} />
+              </button>
+              <button onClick={() => setEditingTitle(false)} className="p-1.5 rounded" style={{ color: "var(--text-muted)" }}>
+                <X size={18} />
+              </button>
+            </div>
+          ) : (
+            <h1
+              className="text-xl md:text-2xl font-bold flex items-center gap-2 group cursor-pointer"
+              style={{ color: "var(--text-primary)" }}
+              onClick={startEditTitle}
+              title="Clique para renomear"
+            >
+              <span className="truncate">{t.title}</span>
+              <Pencil size={15} className="opacity-0 group-hover:opacity-60 shrink-0" />
+            </h1>
+          )}
           <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
             {new Date(t.created_at).toLocaleString("pt-BR")} · {fmtDuration(t.duration_ms)} ·{" "}
             <StatusBadge status={t.status} inline />
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
+          {t.status === "analyzed" && (
+            <>
+              <button
+                onClick={handleCopyMarkdown}
+                className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg"
+                style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}
+                title="Copiar ata em Markdown"
+              >
+                {copied ? <Check size={15} style={{ color: "var(--success)" }} /> : <Copy size={15} />}
+                {copied ? "Copiado" : "Copiar"}
+              </button>
+              <button
+                onClick={handleDownloadMarkdown}
+                className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg"
+                style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}
+                title="Baixar ata em Markdown"
+              >
+                <Download size={15} /> .md
+              </button>
+            </>
+          )}
           {canReanalyze && (
             <button
               onClick={handleReanalyze}
@@ -245,7 +375,7 @@ function TranscriptionDetail({ id, onBack }: { id: string; onBack: () => void })
           <div>
             <p className="text-sm font-medium" style={{ color: "var(--error)" }}>Falha na análise</p>
             {t.summary && <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>{t.summary}</p>}
-            <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Use o botão "Re-analisar" para tentar novamente.</p>
+            <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Use o botão “Re-analisar” para tentar novamente.</p>
           </div>
         </div>
       )}
@@ -265,14 +395,42 @@ function TranscriptionDetail({ id, onBack }: { id: string; onBack: () => void })
         </div>
       )}
 
-      {/* Summary + key points */}
-      {(t.summary || t.key_points.length > 0) && (
+      {/* Suggested tasks (action items) approval */}
+      {pendingTasks.length > 0 && (
+        <div className="rounded-xl p-4" style={{ backgroundColor: "color-mix(in srgb, var(--success) 8%, transparent)", border: "1px solid color-mix(in srgb, var(--success) 25%, transparent)" }}>
+          <h2 className="flex items-center gap-2 text-sm font-semibold mb-3" style={{ color: "var(--text-primary)" }}>
+            <ListTodo size={16} style={{ color: "var(--success)" }} />
+            Tarefas sugeridas ({pendingTasks.length}) — aprove para criar um lembrete
+          </h2>
+          <div className="space-y-3">
+            {pendingTasks.map((s) => (
+              <TaskSuggestionCard key={s.id} s={s} transcriptionId={id} onResolved={load} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Summary + key points + topics */}
+      {(t.summary || t.key_points.length > 0 || t.topics.length > 0) && (
         <div className="rounded-xl p-4" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
           {t.summary && (
             <>
               <h2 className="text-sm font-semibold mb-1" style={{ color: "var(--text-primary)" }}>Resumo</h2>
               <p className="text-sm mb-3" style={{ color: "var(--text-secondary)" }}>{t.summary}</p>
             </>
+          )}
+          {t.topics.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              {t.topics.map((topic, i) => (
+                <span
+                  key={i}
+                  className="text-[11px] px-2 py-0.5 rounded-full font-medium"
+                  style={{ color: "var(--accent)", backgroundColor: "color-mix(in srgb, var(--accent) 14%, transparent)" }}
+                >
+                  {topic}
+                </span>
+              ))}
+            </div>
           )}
           {t.key_points.length > 0 && (
             <>
@@ -291,6 +449,46 @@ function TranscriptionDetail({ id, onBack }: { id: string; onBack: () => void })
           )}
         </div>
       )}
+
+      {/* Decisions */}
+      {t.decisions.length > 0 && (
+        <div className="rounded-xl p-4" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
+          <h2 className="flex items-center gap-2 text-sm font-semibold mb-3" style={{ color: "var(--text-primary)" }}>
+            <Gavel size={16} style={{ color: "var(--accent)" }} /> Decisões tomadas
+          </h2>
+          <div className="space-y-2.5">
+            {t.decisions.map((d, i) => (
+              <div key={i} className="text-sm">
+                <p style={{ color: "var(--text-primary)", fontWeight: 500 }}>{d.decision}</p>
+                {(d.rationale || d.owner) && (
+                  <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
+                    {d.rationale}
+                    {d.rationale && d.owner ? " · " : ""}
+                    {d.owner && <>Responsável: {d.owner}</>}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Open questions */}
+      {t.open_questions.length > 0 && (
+        <div className="rounded-xl p-4" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
+          <h2 className="flex items-center gap-2 text-sm font-semibold mb-2" style={{ color: "var(--text-primary)" }}>
+            <HelpCircle size={16} style={{ color: "var(--warning)" }} /> Perguntas em aberto
+          </h2>
+          <ul className="list-disc pl-5 space-y-0.5">
+            {t.open_questions.map((q, i) => (
+              <li key={i} className="text-sm" style={{ color: "var(--text-secondary)" }}>{q}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Q&A */}
+      {t.status === "analyzed" && <QnaBox transcriptionId={id} />}
 
       {/* Full transcript */}
       <div className="rounded-xl p-4" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
@@ -391,6 +589,183 @@ function SuggestionCard({ s, onResolved }: { s: SuggestedEvent; onResolved: () =
   );
 }
 
+function TaskSuggestionCard({
+  s,
+  transcriptionId,
+  onResolved,
+}: {
+  s: SuggestedTask;
+  transcriptionId: string;
+  onResolved: () => void;
+}) {
+  const [task, setTask] = useState(s.task);
+  const [owner, setOwner] = useState(s.owner || "");
+  const [when, setWhen] = useState(isoToLocalInput(s.due_date));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const approve = async () => {
+    setError(null);
+    setBusy(true);
+    try {
+      const dueIso = when ? new Date(when).toISOString() : null;
+      const res = await fetch(`/api/transcribe/${transcriptionId}/tasks/${s.id}/approve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ task, owner: owner || null, due_at: dueIso }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Falha ao aprovar");
+      onResolved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Falha ao aprovar");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reject = async () => {
+    setBusy(true);
+    try {
+      await fetch(`/api/transcribe/${transcriptionId}/tasks/${s.id}/reject`, { method: "POST" });
+      onResolved();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded-lg p-3" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
+      <div className="flex flex-col gap-2">
+        <input
+          value={task}
+          onChange={(e) => setTask(e.target.value)}
+          className="text-sm font-medium rounded px-2 py-1.5 w-full"
+          style={inputStyle}
+        />
+        <div className="flex flex-wrap gap-2">
+          <input
+            value={owner}
+            onChange={(e) => setOwner(e.target.value)}
+            placeholder="Responsável (opcional)"
+            className="text-sm rounded px-2 py-1.5 flex-1 min-w-[140px]"
+            style={inputStyle}
+          />
+          <input
+            type="datetime-local"
+            value={when}
+            onChange={(e) => setWhen(e.target.value)}
+            className="text-sm rounded px-2 py-1.5"
+            style={inputStyle}
+          />
+        </div>
+        {s.source_text && (
+          <p className="text-xs italic" style={{ color: "var(--text-muted)" }}>“{s.source_text}”</p>
+        )}
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] flex items-center gap-2" style={{ color: "var(--text-muted)" }}>
+            confiança {Math.round(s.confidence * 100)}%
+            {s.priority && <PriorityBadge priority={s.priority} />}
+          </span>
+          <div className="flex items-center gap-2">
+            <button onClick={reject} disabled={busy} className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg" style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}>
+              <X size={14} /> Rejeitar
+            </button>
+            <button onClick={approve} disabled={busy} className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg" style={{ backgroundColor: "var(--success)", color: "white", border: "none" }}>
+              {busy ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Aprovar
+            </button>
+          </div>
+        </div>
+        {error && <p className="text-xs" style={{ color: "var(--error)" }}>{error}</p>}
+      </div>
+    </div>
+  );
+}
+
+function PriorityBadge({ priority }: { priority: string }) {
+  const map: Record<string, string> = {
+    alta: "var(--error)",
+    media: "var(--warning)",
+    baixa: "var(--text-muted)",
+  };
+  const color = map[priority] || "var(--text-muted)";
+  return (
+    <span
+      className="text-[10px] px-1.5 py-0.5 rounded-full font-bold uppercase"
+      style={{ color, backgroundColor: `color-mix(in srgb, ${color} 16%, transparent)` }}
+    >
+      {priority}
+    </span>
+  );
+}
+
+function QnaBox({ transcriptionId }: { transcriptionId: string }) {
+  const [question, setQuestion] = useState("");
+  const [answer, setAnswer] = useState<string | null>(null);
+  const [asking, setAsking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const ask = async () => {
+    const q = question.trim();
+    if (!q) return;
+    setAsking(true);
+    setError(null);
+    setAnswer(null);
+    try {
+      const res = await fetch(`/api/transcribe/${transcriptionId}/ask`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ question: q }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Falha ao responder");
+      setAnswer(typeof data.answer === "string" ? data.answer : "(sem resposta)");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Falha ao responder");
+    } finally {
+      setAsking(false);
+    }
+  };
+
+  return (
+    <div className="rounded-xl p-4" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
+      <h2 className="flex items-center gap-2 text-sm font-semibold mb-2" style={{ color: "var(--text-primary)" }}>
+        <Sparkles size={16} style={{ color: "var(--accent)" }} /> Perguntar à IA sobre esta reunião
+      </h2>
+      <div className="flex flex-col gap-2">
+        <textarea
+          value={question}
+          onChange={(e) => setQuestion(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) ask();
+          }}
+          placeholder="Ex: O que ficou combinado sobre o orçamento? Quem ficou responsável por enviar a proposta?"
+          rows={2}
+          className="text-sm rounded px-2 py-1.5 w-full resize-y"
+          style={inputStyle}
+        />
+        <div className="flex items-center justify-between">
+          <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>Ctrl/⌘ + Enter para enviar</span>
+          <button
+            onClick={ask}
+            disabled={asking || !question.trim()}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg"
+            style={{ backgroundColor: "var(--accent)", color: "white", border: "none", opacity: asking || !question.trim() ? 0.6 : 1 }}
+          >
+            {asking ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Perguntar
+          </button>
+        </div>
+        {error && <p className="text-xs" style={{ color: "var(--error)" }}>{error}</p>}
+        {answer && (
+          <div className="rounded-lg p-3 text-sm whitespace-pre-wrap" style={{ backgroundColor: "color-mix(in srgb, var(--accent) 8%, transparent)", color: "var(--text-secondary)", border: "1px solid color-mix(in srgb, var(--accent) 20%, transparent)" }}>
+            {answer}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function StatusBadge({ status, inline }: { status: Transcription["status"]; inline?: boolean }) {
   const map: Record<Transcription["status"], { label: string; color: string }> = {
     recording: { label: "Gravando", color: "var(--error)" },
@@ -436,4 +811,71 @@ function isoToLocalInput(iso: string | null): string {
   if (Number.isNaN(d.getTime())) return "";
   const pad = (n: number) => n.toString().padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** Format an ISO date for display in the Markdown export (or "—"). */
+function fmtDateLabel(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString("pt-BR");
+}
+
+/** Build a Markdown meeting recap from a transcription. */
+function buildMarkdown(t: Transcription): string {
+  const lines: string[] = [];
+  lines.push(`# ${t.title}`, "");
+  lines.push(`**Data:** ${new Date(t.created_at).toLocaleString("pt-BR")} · **Duração:** ${fmtDuration(t.duration_ms)}`, "");
+
+  if (t.topics.length) {
+    lines.push(`**Tópicos:** ${t.topics.join(", ")}`, "");
+  }
+  if (t.summary) {
+    lines.push("## Resumo", "", t.summary, "");
+  }
+  if (t.key_points.length) {
+    lines.push("## Pontos principais", "");
+    t.key_points.forEach((k) => lines.push(`- ${k}`));
+    lines.push("");
+  }
+  if (t.decisions.length) {
+    lines.push("## Decisões", "");
+    t.decisions.forEach((d) => {
+      const extra = [d.rationale, d.owner ? `Responsável: ${d.owner}` : null].filter(Boolean).join(" — ");
+      lines.push(`- ${d.decision}${extra ? ` (${extra})` : ""}`);
+    });
+    lines.push("");
+  }
+  if (t.tasks && t.tasks.length) {
+    lines.push("## Tarefas (action items)", "");
+    t.tasks.forEach((task) => {
+      const meta = [
+        task.owner ? `@${task.owner}` : null,
+        task.due_date ? `prazo ${fmtDateLabel(task.due_date)}` : null,
+        task.priority ? `prioridade ${task.priority}` : null,
+      ].filter(Boolean).join(" · ");
+      lines.push(`- [ ] ${task.task}${meta ? ` — ${meta}` : ""}`);
+    });
+    lines.push("");
+  }
+  if (t.open_questions.length) {
+    lines.push("## Perguntas em aberto", "");
+    t.open_questions.forEach((q) => lines.push(`- ${q}`));
+    lines.push("");
+  }
+  lines.push("## Transcrição completa", "", t.text || "(vazio)", "");
+  return lines.join("\n");
+}
+
+/** Filesystem-safe slug for the downloaded .md filename. */
+function slugify(s: string): string {
+  return (
+    s
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .replace(/[^a-zA-Z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .toLowerCase()
+      .slice(0, 60) || "transcricao"
+  );
 }

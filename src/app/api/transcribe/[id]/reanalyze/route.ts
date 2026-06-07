@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getTranscription, updateTranscription } from "@/lib/transcriptions-db";
 import { analyzeTranscription } from "@/lib/transcription-analyzer";
 import { insertSuggestedEvent, listSuggestedEvents } from "@/lib/calendar-db";
+import { insertSuggestedTask, listSuggestedTasks } from "@/lib/reminders-db";
 import { upsertMemory, getSettings } from "@/lib/memory-db";
 import { logActivity } from "@/lib/activities-db";
 
@@ -23,7 +24,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
 
   if (!t.text.trim()) {
     const updated = updateTranscription(id, { status: "analyzed" });
-    return NextResponse.json({ ...updated, suggestions_created: 0 });
+    return NextResponse.json({ ...updated, suggestions_created: 0, tasks_created: 0 });
   }
 
   updateTranscription(id, { status: "analyzing" });
@@ -57,6 +58,25 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       created += 1;
     }
 
+    // Same dedupe for action items → suggested tasks
+    const existingTasks = listSuggestedTasks({ transcriptionId: id });
+    const existingTaskNames = new Set(existingTasks.map((t) => t.task.toLowerCase()));
+    let tasksCreated = 0;
+    for (const ai of analysis.action_items) {
+      if (ai.confidence < MIN_CONFIDENCE) continue;
+      if (existingTaskNames.has(ai.task.toLowerCase())) continue;
+      insertSuggestedTask({
+        transcription_id: id,
+        task: ai.task,
+        owner: ai.owner,
+        due_date: ai.due_date,
+        priority: ai.priority,
+        source_text: ai.source_text || null,
+        confidence: ai.confidence,
+      });
+      tasksCreated += 1;
+    }
+
     let memoryId: string | null = t.memory_id;
     try {
       const keyPointsBlock = analysis.key_points.length
@@ -87,16 +107,19 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       status: "analyzed",
       summary: analysis.summary || null,
       key_points: analysis.key_points,
+      decisions: analysis.decisions,
+      topics: analysis.topics,
+      open_questions: analysis.open_questions,
       memory_id: memoryId,
     });
 
     try {
       logActivity("agent", `Transcrição re-analisada: ${t.title}`, "success", {
-        metadata: { source: "transcription", transcription_id: id, suggestions: created, memory_id: memoryId },
+        metadata: { source: "transcription", transcription_id: id, suggestions: created, tasks: tasksCreated, memory_id: memoryId },
       });
     } catch {}
 
-    return NextResponse.json({ ...updated, suggestions_created: created });
+    return NextResponse.json({ ...updated, suggestions_created: created, tasks_created: tasksCreated });
   } catch (err) {
     console.error("[/api/transcribe/reanalyze] failed:", err);
     const updated = updateTranscription(id, {

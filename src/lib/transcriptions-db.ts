@@ -25,6 +25,12 @@ export type TranscriptionStatus =
   | "analyzed"
   | "error";
 
+export interface Decision {
+  decision: string;
+  rationale: string | null;
+  owner: string | null;
+}
+
 export interface Transcription {
   id: string;
   title: string;
@@ -33,6 +39,9 @@ export interface Transcription {
   text: string;
   summary: string | null;
   key_points: string[];
+  decisions: Decision[];
+  topics: string[];
+  open_questions: string[];
   duration_ms: number | null;
   memory_id: string | null;
   error: string | null;
@@ -94,18 +103,32 @@ function getDb(): Database.Database {
     );
   `);
 
+  // Migration: meeting-intelligence columns (decisions, topics, open_questions).
+  // Nullable TEXT (JSON) — ALTER TABLE ADD COLUMN rejects NOT NULL on older
+  // SQLite builds; rowToTranscription treats NULL/missing as [].
+  {
+    const cols = db.prepare(`PRAGMA table_info(transcriptions)`).all() as Array<{ name: string }>;
+    const names = new Set(cols.map((c) => c.name));
+    if (!names.has("decisions")) db.exec(`ALTER TABLE transcriptions ADD COLUMN decisions TEXT`);
+    if (!names.has("topics")) db.exec(`ALTER TABLE transcriptions ADD COLUMN topics TEXT`);
+    if (!names.has("open_questions")) db.exec(`ALTER TABLE transcriptions ADD COLUMN open_questions TEXT`);
+  }
+
   globalRef.__atlasdeckTranscriptionsDb = db;
   return db;
 }
 
-function rowToTranscription(row: Record<string, unknown>): Transcription {
-  let keyPoints: string[] = [];
+/** Defensive JSON-array parse (NULL/invalid → []). */
+function parseJsonArray<T>(raw: unknown): T[] {
   try {
-    const parsed = JSON.parse((row.key_points as string) || "[]");
-    if (Array.isArray(parsed)) keyPoints = parsed.map(String);
+    const parsed = JSON.parse((raw as string) || "[]");
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
   } catch {
-    keyPoints = [];
+    return [];
   }
+}
+
+function rowToTranscription(row: Record<string, unknown>): Transcription {
   return {
     id: row.id as string,
     title: row.title as string,
@@ -113,7 +136,10 @@ function rowToTranscription(row: Record<string, unknown>): Transcription {
     language: row.language as string,
     text: (row.text as string) ?? "",
     summary: (row.summary as string | null) ?? null,
-    key_points: keyPoints,
+    key_points: parseJsonArray<string>(row.key_points).map(String),
+    decisions: parseJsonArray<Decision>(row.decisions),
+    topics: parseJsonArray<string>(row.topics).map(String),
+    open_questions: parseJsonArray<string>(row.open_questions).map(String),
     duration_ms: (row.duration_ms as number | null) ?? null,
     memory_id: (row.memory_id as string | null) ?? null,
     error: (row.error as string | null) ?? null,
@@ -188,6 +214,9 @@ export function updateTranscription(
     status?: TranscriptionStatus;
     summary?: string | null;
     key_points?: string[];
+    decisions?: Decision[];
+    topics?: string[];
+    open_questions?: string[];
     duration_ms?: number | null;
     memory_id?: string | null;
     error?: string | null;
@@ -202,6 +231,9 @@ export function updateTranscription(
        status = COALESCE(?, status),
        summary = COALESCE(?, summary),
        key_points = COALESCE(?, key_points),
+       decisions = COALESCE(?, decisions),
+       topics = COALESCE(?, topics),
+       open_questions = COALESCE(?, open_questions),
        duration_ms = COALESCE(?, duration_ms),
        memory_id = COALESCE(?, memory_id),
        error = COALESCE(?, error),
@@ -212,6 +244,9 @@ export function updateTranscription(
     patch.status ?? null,
     patch.summary === undefined ? null : patch.summary,
     patch.key_points ? JSON.stringify(patch.key_points) : null,
+    patch.decisions ? JSON.stringify(patch.decisions) : null,
+    patch.topics ? JSON.stringify(patch.topics) : null,
+    patch.open_questions ? JSON.stringify(patch.open_questions) : null,
     patch.duration_ms ?? null,
     patch.memory_id ?? null,
     patch.error === undefined ? null : patch.error,
@@ -232,14 +267,19 @@ export function deleteTranscription(id: string): boolean {
   return tx();
 }
 
-/** Rebuild the FTS row for one transcription (delete + insert). */
+/**
+ * Rebuild the FTS row for one transcription (delete + insert). Topics are
+ * appended to the `text` column (FTS5 can't ALTER ADD COLUMN) so they become
+ * searchable without recreating the virtual table.
+ */
 function syncFts(t: Transcription): void {
   const db = getDb();
+  const topicsBlock = t.topics.length ? `\n[tópicos] ${t.topics.join(" ")}` : "";
   const tx = db.transaction(() => {
     db.prepare(`DELETE FROM transcriptions_fts WHERE id = ?`).run(t.id);
     db.prepare(
       `INSERT INTO transcriptions_fts (id, title, summary, text) VALUES (?, ?, ?, ?)`
-    ).run(t.id, t.title, t.summary ?? "", t.text);
+    ).run(t.id, t.title, t.summary ?? "", t.text + topicsBlock);
   });
   tx();
 }
