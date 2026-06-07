@@ -10,8 +10,10 @@ import {
 } from "react";
 // handleSend ref forwarded to the wake word hook so the callback can call
 // the latest version without forcing it to be declared before the hook.
-import { Bot, Download, Radio, Settings as SettingsIcon, Volume2, VolumeX, PanelLeftOpen } from "lucide-react";
+import { Bot, Download, Radio, Settings as SettingsIcon, Volume2, VolumeX, PanelLeftOpen, AudioLines, Captions } from "lucide-react";
+import Link from "next/link";
 import { ThreadList } from "@/components/chat/ThreadList";
+import { TranscriptionLivePanel } from "@/components/chat/TranscriptionLivePanel";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { Composer } from "@/components/chat/Composer";
 import { ImportOpenClawModal } from "@/components/chat/ImportOpenClawModal";
@@ -77,6 +79,7 @@ export default function ChatPage() {
   const [showImportModal, setShowImportModal] = useState(false);
   const [showVoiceModal, setShowVoiceModal] = useState(false);
   const [showWakeModal, setShowWakeModal] = useState(false);
+  const [showTranscribe, setShowTranscribe] = useState(false);
   const [wakeEnabled, setWakeEnabled] = useState(true);
   const [wakeTeaser, setWakeTeaser] = useState<string | null>(null);
   // "Modo Conversa" — hands-free voice loop without wake-word. When ON,
@@ -1065,6 +1068,23 @@ export default function ChatPage() {
               <Download size={16} />
               Importar
             </button>
+            <button
+              type="button"
+              onClick={() => setShowTranscribe(true)}
+              style={toggleButtonStyle(false)}
+              title="Transcrever áudio ao vivo (reuniões, conversas)"
+            >
+              <AudioLines size={16} />
+              Transcrever
+            </button>
+            <Link
+              href="/transcriptions"
+              style={{ ...toggleButtonStyle(false), textDecoration: "none" }}
+              title="Ver todas as transcrições"
+            >
+              <Captions size={16} />
+              Transcrições
+            </Link>
             <WakeIndicator
               state={effectiveWakeState}
               enabled={wakeEnabled}
@@ -1159,6 +1179,10 @@ export default function ChatPage() {
             void refreshWakeConfig();
           }}
         />
+
+        {showTranscribe && (
+          <TranscriptionLivePanel onClose={() => setShowTranscribe(false)} />
+        )}
 
         <HeardPanel
           entries={wake.heardLog ?? []}

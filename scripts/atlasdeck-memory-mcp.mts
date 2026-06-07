@@ -113,6 +113,7 @@ let memoryDb: typeof import("../src/lib/memory-db");
 let embeddings: typeof import("../src/lib/embeddings");
 let remindersDb: typeof import("../src/lib/reminders-db");
 let briefingDb: typeof import("../src/lib/whatsapp-briefing-db");
+let transcriptionsDb: typeof import("../src/lib/transcriptions-db");
 
 try {
   ({ McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js"));
@@ -124,6 +125,7 @@ try {
   embeddings = await import("../src/lib/embeddings");
   remindersDb = await import("../src/lib/reminders-db");
   briefingDb = await import("../src/lib/whatsapp-briefing-db");
+  transcriptionsDb = await import("../src/lib/transcriptions-db");
 } catch (err) {
   log("module load failed", err instanceof Error ? err.message : String(err));
   process.exit(7);
@@ -1048,6 +1050,81 @@ server.registerTool(
       const q = new URLSearchParams({ from: args.from, to: args.to });
       const json = await atlasdeckFetch(`/api/calendar/events?${q.toString()}`);
       return asJson({ ok: true, ...((json as Record<string, unknown>) ?? {}) });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
+// ─── Transcription tools (knowledge base over recorded meetings) ────────
+// Let the agent search and read full transcriptions — e.g. Felipe asks on
+// Telegram "me fale sobre a reunião com X" and the agent finds the transcript
+// and talks about it.
+server.registerTool(
+  "transcription_search",
+  {
+    title: "Busca transcrições de reuniões",
+    description:
+      "Busca full-text nas transcrições de áudio gravadas (reuniões, conversas). Use quando Felipe perguntar sobre o que foi falado/combinado numa reunião ('o que ficou decidido na reunião de ontem', 'me fale sobre a call com o cliente X'). Retorna títulos + trechos; depois use transcription_get para ler o texto completo.",
+    inputSchema: {
+      query: z.string().min(1).max(500),
+      limit: z.number().int().min(1).max(20).optional(),
+    },
+  },
+  async (args) => {
+    try {
+      const hits = transcriptionsDb.searchTranscriptions(args.query, args.limit ?? 8);
+      return asJson({ ok: true, hits });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
+server.registerTool(
+  "transcription_get",
+  {
+    title: "Lê uma transcrição completa por id",
+    description:
+      "Retorna o texto integral de uma transcrição (use após transcription_search). Com o texto em mãos, responda/converse sobre o conteúdo como uma base de conhecimento.",
+    inputSchema: { id: z.string().min(1) },
+  },
+  async (args) => {
+    try {
+      const t = transcriptionsDb.getTranscription(args.id);
+      if (!t) return asError(`transcrição ${args.id} não encontrada`);
+      return asJson({
+        id: t.id,
+        title: t.title,
+        summary: t.summary,
+        key_points: t.key_points,
+        created_at: t.created_at,
+        text: t.text,
+      });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
+server.registerTool(
+  "transcription_list",
+  {
+    title: "Lista transcrições recentes",
+    description:
+      "Lista as transcrições mais recentes (título, data, resumo). Útil quando Felipe pergunta 'quais reuniões você transcreveu' ou quer escolher uma para detalhar.",
+    inputSchema: { limit: z.number().int().min(1).max(50).optional() },
+  },
+  async (args) => {
+    try {
+      const items = transcriptionsDb.listTranscriptions(args.limit ?? 15).map((t) => ({
+        id: t.id,
+        title: t.title,
+        summary: t.summary,
+        status: t.status,
+        created_at: t.created_at,
+      }));
+      return asJson({ ok: true, transcriptions: items });
     } catch (err) {
       return asError(err instanceof Error ? err.message : String(err));
     }

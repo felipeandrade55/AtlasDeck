@@ -23,6 +23,9 @@ import type {
   ReminderChannel,
   RescheduleQueueItem,
   RescheduleStatus,
+  SuggestedEvent,
+  SuggestedEventInput,
+  SuggestedEventStatus,
 } from "./calendar-types";
 
 const DB_PATH = path.join(process.cwd(), "data", "calendar.db");
@@ -80,6 +83,24 @@ function getDb(): Database.Database {
 
     CREATE INDEX IF NOT EXISTS idx_reminders_event ON event_reminders(event_id);
     CREATE INDEX IF NOT EXISTS idx_reminders_sent ON event_reminders(sent_at);
+
+    CREATE TABLE IF NOT EXISTS suggested_events (
+      id TEXT PRIMARY KEY,
+      transcription_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      start_at TEXT,
+      end_at TEXT,
+      location TEXT,
+      source_text TEXT,
+      confidence REAL NOT NULL DEFAULT 0.5,
+      status TEXT NOT NULL DEFAULT 'pending',
+      event_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_suggested_status ON suggested_events(status);
+    CREATE INDEX IF NOT EXISTS idx_suggested_transcription ON suggested_events(transcription_id);
 
     CREATE TABLE IF NOT EXISTS availability_rules (
       id TEXT PRIMARY KEY,
@@ -858,6 +879,100 @@ export function listExceptions(parentEventId: string): EventException[] {
     new_event_id: (r.new_event_id as string | null) ?? null,
     created_at: r.created_at as string,
   }));
+}
+
+// ─── Suggested events (transcription → approval queue) ──────────────────
+
+function rowToSuggestedEvent(row: Record<string, unknown>): SuggestedEvent {
+  return {
+    id: row.id as string,
+    transcription_id: row.transcription_id as string,
+    title: row.title as string,
+    description: (row.description as string | null) ?? null,
+    start_at: (row.start_at as string | null) ?? null,
+    end_at: (row.end_at as string | null) ?? null,
+    location: (row.location as string | null) ?? null,
+    source_text: (row.source_text as string | null) ?? null,
+    confidence: (row.confidence as number) ?? 0.5,
+    status: row.status as SuggestedEventStatus,
+    event_id: (row.event_id as string | null) ?? null,
+    created_at: row.created_at as string,
+  };
+}
+
+export function insertSuggestedEvent(input: SuggestedEventInput): SuggestedEvent {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    `INSERT INTO suggested_events (id, transcription_id, title, description, start_at, end_at, location, source_text, confidence)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    input.transcription_id,
+    input.title,
+    input.description ?? null,
+    input.start_at ?? null,
+    input.end_at ?? null,
+    input.location ?? null,
+    input.source_text ?? null,
+    input.confidence ?? 0.5
+  );
+  const row = db.prepare(`SELECT * FROM suggested_events WHERE id = ?`).get(id) as Record<string, unknown>;
+  return rowToSuggestedEvent(row);
+}
+
+export function listSuggestedEvents(opts?: {
+  status?: SuggestedEventStatus;
+  transcriptionId?: string;
+}): SuggestedEvent[] {
+  const db = getDb();
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (opts?.status) {
+    where.push("status = ?");
+    params.push(opts.status);
+  }
+  if (opts?.transcriptionId) {
+    where.push("transcription_id = ?");
+    params.push(opts.transcriptionId);
+  }
+  const sql = `SELECT * FROM suggested_events ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC`;
+  const rows = db.prepare(sql).all(...params) as Record<string, unknown>[];
+  return rows.map(rowToSuggestedEvent);
+}
+
+export function getSuggestedEventById(id: string): SuggestedEvent | null {
+  const db = getDb();
+  const row = db.prepare(`SELECT * FROM suggested_events WHERE id = ?`).get(id) as
+    | Record<string, unknown>
+    | undefined;
+  return row ? rowToSuggestedEvent(row) : null;
+}
+
+export function updateSuggestedEvent(
+  id: string,
+  patch: { status?: SuggestedEventStatus; event_id?: string | null }
+): SuggestedEvent | null {
+  const db = getDb();
+  db.prepare(
+    `UPDATE suggested_events SET
+       status = COALESCE(?, status),
+       event_id = COALESCE(?, event_id)
+     WHERE id = ?`
+  ).run(patch.status ?? null, patch.event_id ?? null, id);
+  return getSuggestedEventById(id);
+}
+
+export function countPendingSuggestedEvents(transcriptionId?: string): number {
+  const db = getDb();
+  const row = transcriptionId
+    ? (db
+        .prepare(`SELECT COUNT(*) AS n FROM suggested_events WHERE status = 'pending' AND transcription_id = ?`)
+        .get(transcriptionId) as { n: number })
+    : (db.prepare(`SELECT COUNT(*) AS n FROM suggested_events WHERE status = 'pending'`).get() as {
+        n: number;
+      });
+  return row.n;
 }
 
 export function runInTransaction<T>(fn: () => T): T {

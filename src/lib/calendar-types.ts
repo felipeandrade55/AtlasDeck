@@ -145,6 +145,39 @@ export interface EventException {
   created_at: string;
 }
 
+export type SuggestedEventStatus = "pending" | "approved" | "rejected";
+
+/**
+ * A calendar event SUGGESTED by analyzing a transcription. Enters an
+ * approval queue: when approved it becomes a real CalendarEvent; when
+ * rejected nothing happens.
+ */
+export interface SuggestedEvent {
+  id: string;
+  transcription_id: string;
+  title: string;
+  description: string | null;
+  start_at: string | null;
+  end_at: string | null;
+  location: string | null;
+  source_text: string | null;
+  confidence: number;
+  status: SuggestedEventStatus;
+  event_id: string | null;
+  created_at: string;
+}
+
+export interface SuggestedEventInput {
+  transcription_id: string;
+  title: string;
+  description?: string | null;
+  start_at?: string | null;
+  end_at?: string | null;
+  location?: string | null;
+  source_text?: string | null;
+  confidence?: number;
+}
+
 export interface ExpandedEvent extends CalendarEvent {
   is_recurring_instance: boolean;
   occurrence_date: string | null;

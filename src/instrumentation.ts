@@ -174,4 +174,14 @@ export async function register(): Promise<void> {
   } catch (err) {
     console.warn("[instrumentation] whatsapp briefing scheduler bootstrap failed:", err);
   }
+
+  // Activity bootstrap — if the activity DB is empty, seed it with real
+  // system-state activities so the dashboard "Atividade Recente" never
+  // looks mocked or static on fresh installs.
+  try {
+    const { bootstrapActivities } = await import("@/lib/activity-bootstrap");
+    await bootstrapActivities();
+  } catch (err) {
+    console.warn("[instrumentation] activity bootstrap failed:", err);
+  }
 }
