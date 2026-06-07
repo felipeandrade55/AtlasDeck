@@ -58,11 +58,14 @@ function getDb(): Database.Database {
     fs.mkdirSync(dataDir, { recursive: true });
   }
 
-  _db = new Database(DB_PATH);
-  _db.pragma('journal_mode = WAL');
-  _db.pragma('synchronous = NORMAL');
+  // Use local `db` — only assign to `_db` after ALL initialization succeeds.
+  // If we assign early and a migration throws, _db stays set to a broken
+  // instance and every subsequent getDb() call returns it without retrying.
+  const db = new Database(DB_PATH);
+  db.pragma('journal_mode = WAL');
+  db.pragma('synchronous = NORMAL');
 
-  _db.exec(`
+  db.exec(`
     CREATE TABLE IF NOT EXISTS activities (
       id TEXT PRIMARY KEY,
       timestamp TEXT NOT NULL,
@@ -83,28 +86,33 @@ function getDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_activities_pinned ON activities(pinned);
   `);
 
-  // Add pinned column if missing (migration)
-  {
-    const cols = _db.prepare('PRAGMA table_info(activities)').all() as Array<{ name: string }>;
-    if (!cols.some(c => c.name === 'pinned')) {
-      // Use DEFAULT only (no NOT NULL) — ALTER TABLE ADD COLUMN rejects NOT NULL
-      // without a constant default on older SQLite builds; nullable + default 0 is equivalent.
-      _db.prepare('ALTER TABLE activities ADD COLUMN pinned INTEGER DEFAULT 0').run();
+  // Add pinned column if missing (migration for DBs created before this column).
+  // Use exec() — more reliable than prepare().run() for DDL.
+  // Drop NOT NULL from ALTER TABLE: older SQLite builds reject NOT NULL even
+  // with a DEFAULT; nullable INTEGER DEFAULT 0 behaves identically here.
+  const existingCols = db.prepare('PRAGMA table_info(activities)').all() as Array<{ name: string }>;
+  if (!existingCols.some(c => c.name === 'pinned')) {
+    try {
+      db.exec('ALTER TABLE activities ADD COLUMN pinned INTEGER DEFAULT 0');
+      console.log('[activities-db] migration: added pinned column');
+    } catch (e) {
+      console.error('[activities-db] migration failed (pinned):', e);
+      // Continue — queries that don't touch pinned will still work
     }
   }
 
   // Migrate from JSON
-  const count = (_db.prepare('SELECT COUNT(*) as n FROM activities').get() as { n: number }).n;
+  const count = (db.prepare('SELECT COUNT(*) as n FROM activities').get() as { n: number }).n;
   if (count === 0) {
     const jsonPath = path.join(process.cwd(), 'data', 'activities.json');
     if (fs.existsSync(jsonPath)) {
       try {
         const data = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
-        const insert = _db.prepare(`
+        const insert = db.prepare(`
           INSERT OR IGNORE INTO activities (id, timestamp, type, description, status, duration_ms, tokens_used, agent, pinned, metadata)
           VALUES (@id, @timestamp, @type, @description, @status, @duration_ms, @tokens_used, @agent, @pinned, @metadata)
         `);
-        const insertMany = _db.transaction((activities: Activity[]) => {
+        const insertMany = db.transaction((activities: Activity[]) => {
           for (const a of activities) {
             insert.run({
               ...a,
@@ -122,6 +130,7 @@ function getDb(): Database.Database {
     }
   }
 
+  _db = db;
   return _db;
 }
 
