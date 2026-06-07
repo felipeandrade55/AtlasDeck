@@ -26,6 +26,7 @@ import {
   Clock,
   Bell,
   Mail,
+  Captions,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -333,6 +334,7 @@ export default function DashboardPage() {
               { href: "/memory", icon: Brain, label: "Memória", color: "#f59e0b" },
               { href: "/skills", icon: Puzzle, label: "Habilidades", color: "#4ade80" },
               { href: "/reminders", icon: Bell, label: "Lembretes", color: "#f472b6" },
+              { href: "/transcriptions", icon: Captions, label: "Transcrições", color: "#818cf8" },
             ].map(({ href, icon: Icon, label, color }) => (
               <Link
                 key={href}
