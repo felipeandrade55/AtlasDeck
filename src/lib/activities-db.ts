@@ -84,12 +84,14 @@ function getDb(): Database.Database {
   `);
 
   // Add pinned column if missing (migration)
-  try {
+  {
     const cols = _db.prepare('PRAGMA table_info(activities)').all() as Array<{ name: string }>;
     if (!cols.some(c => c.name === 'pinned')) {
-      _db.exec('ALTER TABLE activities ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
+      // Use DEFAULT only (no NOT NULL) — ALTER TABLE ADD COLUMN rejects NOT NULL
+      // without a constant default on older SQLite builds; nullable + default 0 is equivalent.
+      _db.prepare('ALTER TABLE activities ADD COLUMN pinned INTEGER DEFAULT 0').run();
     }
-  } catch {}
+  }
 
   // Migrate from JSON
   const count = (_db.prepare('SELECT COUNT(*) as n FROM activities').get() as { n: number }).n;
