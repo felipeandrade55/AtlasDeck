@@ -188,7 +188,27 @@ heartbeat() {
 # um evento terminal de falha. Sem isso a UI fica eternamente em "Compilando…".
 _TERMINAL_EMITTED=false
 _DONE_REACHED=false
+# true somente durante a janela do build em que .next foi movido p/ .next.prev.
+_BUILD_SWAPPED=false
+
+# Se o script morrer com o build no meio (SIGTERM/cancel/erro/exit), restaura o
+# .next anterior bom. Sem isso, um build interrompido deixava .next pela metade
+# e o app passava a servir 500 em TODO chunk (/_next/static/chunks/*.js) — foi
+# exatamente o que quebrou a aba do grafo após um deploy morto no meio do build.
+# (SIGKILL não dispara trap; nesse caso o build roda em background e um novo
+# update reconstrói — mas o swap garante que o .next servido nunca fique parcial.)
+restore_next_if_swapped() {
+  if [[ "$_BUILD_SWAPPED" == "true" ]]; then
+    _BUILD_SWAPPED=false
+    if [ -d "$VPS_DIR/.next.prev" ]; then
+      rm -rf "$VPS_DIR/.next" 2>/dev/null || true
+      mv "$VPS_DIR/.next.prev" "$VPS_DIR/.next" 2>/dev/null || true
+    fi
+  fi
+}
+
 emit_terminal() {
+  restore_next_if_swapped
   if [[ "$_TERMINAL_EMITTED" == "true" ]] || [[ -z "$STATUS_FILE" ]]; then
     return 0
   fi
@@ -928,6 +948,7 @@ cd "$VPS_DIR"
 if [ -d ".next" ]; then
   rm -rf .next.prev 2>/dev/null || true
   mv .next .next.prev
+  _BUILD_SWAPPED=true  # trap restaura .next.prev se o script morrer agora
   info ".next anterior preservado em .next.prev (restaurado se build falhar)"
 fi
 
@@ -956,12 +977,14 @@ if [ $BUILD_EXIT -ne 0 ]; then
     mv .next.prev .next
     warn ".next anterior restaurado — app continua servindo a versão antiga"
   fi
+  _BUILD_SWAPPED=false  # já restaurado acima; trap não deve mexer
   record "Build" "fail" "$(elapsed $T)"
   phase_status "build" "fail" "$(elapsed $T)" "build exit $BUILD_EXIT"
   exit 1
 fi
 
-# Build OK — descarta backup do .next anterior
+# Build OK — o novo .next está completo; descarta backup e fecha a janela de swap
+_BUILD_SWAPPED=false
 rm -rf .next.prev 2>/dev/null || true
 
 ok "Build concluído"
