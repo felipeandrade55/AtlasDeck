@@ -214,7 +214,6 @@ function RedesignedDashboardHome({ stats, agents, onAgentsClick }: DashboardHome
           </div>
 
           <TodayFocusPanel stats={stats} agents={agents} />
-          <VpsBriefingCard />
         </div>
 
         <div className="xl:col-span-4">
@@ -224,7 +223,7 @@ function RedesignedDashboardHome({ stats, agents, onAgentsClick }: DashboardHome
 
       <section className="grid grid-cols-1 xl:grid-cols-12 gap-4 md:gap-6">
         <div className="xl:col-span-8">
-          <SystemPulse stats={stats} />
+          <VpsBriefingCard />
         </div>
         <div className="xl:col-span-4">
           <DashboardSection title="Anotações rápidas" action={null}>
@@ -232,6 +231,12 @@ function RedesignedDashboardHome({ stats, agents, onAgentsClick }: DashboardHome
               <Notepad />
             </div>
           </DashboardSection>
+        </div>
+      </section>
+
+      <section className="grid grid-cols-1 xl:grid-cols-12 gap-4 md:gap-6">
+        <div className="xl:col-span-12">
+          <SystemPulse stats={stats} />
         </div>
       </section>
 
