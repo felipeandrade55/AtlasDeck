@@ -80,10 +80,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       const keyPointsBlock = analysis.key_points.length
         ? `\nPontos principais:\n- ${analysis.key_points.join("\n- ")}`
         : "";
+      const decisionsBlock = analysis.decisions.length
+        ? `\nDecisões:\n- ${analysis.decisions.map((d) => d.decision).join("\n- ")}`
+        : "";
       const content =
-        `${analysis.summary}${keyPointsBlock}\n\n` +
+        `${analysis.summary}${keyPointsBlock}${decisionsBlock}\n\n` +
         `Transcrição completa disponível (id=${id}). ` +
         `Use a ferramenta transcription_get para ler o texto integral.`;
+      const hasDecisions = analysis.decisions.length > 0;
+      const tags = ["transcricao", ...(hasDecisions ? ["reuniao", "decisao"] : [])];
       const mem = upsertMemory({
         workspace: MEMORY_WORKSPACE,
         agent_id: "main",
@@ -92,8 +97,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         content: content.slice(0, 4000),
         summary: analysis.summary.slice(0, 280) || null,
         source: "import",
-        tags: ["transcricao"],
-        importance: 0.6,
+        tags,
+        importance: hasDecisions ? 0.8 : 0.65,
         language: "pt-BR",
       });
       memoryId = mem.id;

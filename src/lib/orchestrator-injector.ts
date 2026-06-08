@@ -20,6 +20,8 @@ import { listTasks } from "@/lib/tasks-db";
 import { getPreferencesForPrompt } from "@/lib/preference-model";
 import { getOrchestrationSettings, isAutonomousFor } from "@/lib/orchestration-settings";
 import { renderToolDocs, TOOL_DEFINITIONS } from "@/lib/orchestrator-tools";
+import { listEventsInRange } from "@/lib/calendar-db";
+import { listMemories } from "@/lib/memory-db";
 
 const BEGIN = "<!-- BEGIN ATLASDECK ORCHESTRATOR — do not edit; this section regenerates -->";
 const END = "<!-- END ATLASDECK ORCHESTRATOR -->";
@@ -111,6 +113,45 @@ function buildPayload(orchestrator: AgentLike, peers: Array<AgentLike & { role?:
   const prefs = getPreferencesForPrompt(orchestrator.id, 6);
   const prefsBlock = prefs ? prefs : "_(ainda sem preferências aprendidas)_";
 
+  // Calendar: last 48h + next 7 days
+  const now = new Date();
+  const past48h = new Date(now.getTime() - 48 * 60 * 60 * 1000).toISOString();
+  const next7d = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  let calendarBlock = "_(nenhum evento nos próximos 7 dias)_";
+  try {
+    const events = listEventsInRange(past48h, next7d).filter((e) => e.status !== "cancelled");
+    if (events.length) {
+      const fmtDate = (iso: string) => {
+        const d = new Date(iso);
+        const pad = (n: number) => String(n).padStart(2, "0");
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      };
+      calendarBlock = events
+        .map((e) => {
+          const past = new Date(e.start_at) < now ? "[passado]" : "[futuro]";
+          const loc = e.location ? ` @ ${e.location}` : "";
+          return `- ${past} ${fmtDate(e.start_at)} — **${e.title}**${loc}`;
+        })
+        .join("\n");
+    }
+  } catch {}
+
+  // Recent meeting memories (episodic, tag "transcricao", last 5)
+  let meetingsBlock = "_(nenhuma reunião registrada recentemente)_";
+  try {
+    const { memories } = listMemories({ type: "episodic", sort: "created", limit: 20, archived: false });
+    const meeting = memories.filter((m) => m.tags.includes("transcricao")).slice(0, 5);
+    if (meeting.length) {
+      meetingsBlock = meeting
+        .map((m) => {
+          const date = m.created_at.slice(0, 10);
+          const summary = m.summary || m.content.slice(0, 160);
+          return `- **${m.title}** (${date}): ${summary}`;
+        })
+        .join("\n");
+    }
+  } catch {}
+
   const toolList = TOOL_DEFINITIONS.map((t) => `- **${t.name}** — ${t.description.split(".")[0]}.`).join("\n");
 
   return [
@@ -134,6 +175,12 @@ function buildPayload(orchestrator: AgentLike, peers: Array<AgentLike & { role?:
     "",
     `#### Preferências aprendidas do usuário`,
     prefsBlock,
+    "",
+    `#### Agenda (últimas 48h + próximos 7 dias)`,
+    calendarBlock,
+    "",
+    `#### Reuniões recentes (memória)`,
+    meetingsBlock,
     "",
     `---`,
     "",
