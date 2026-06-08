@@ -21,6 +21,7 @@ import { HealthCheckPanel } from "@/components/memory/HealthCheckPanel";
 import { OnboardingWizard } from "@/components/memory/OnboardingWizard";
 import { MemoryGraphView } from "@/components/graph/MemoryGraphView";
 import { useToast } from "@/components/Toast";
+import { useIsMobile } from "@/hooks/useMediaQuery";
 import { PROTECTED_FILES, MEMORY_DIR } from "@/lib/memory-files";
 
 type ViewMode = "edit" | "preview";
@@ -48,6 +49,7 @@ function slugify(input: string): string {
 
 export default function MemoryPage() {
   const toast = useToast();
+  const isMobile = useIsMobile();
 
   const [activeTab, setActiveTab] = useState<Tab>("files");
 
@@ -340,7 +342,25 @@ export default function MemoryPage() {
   );
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        // The dashboard <main> only sets min-height (no definite height), so a
+        // plain height:100% collapses to content height. That's fine for the
+        // scrolling tabs, but the graph canvas (absolutely positioned, no
+        // intrinsic height) shrank to a thin band. For the graph tab, anchor to
+        // the viewport instead — discounting the top bar (48px), status bar
+        // (32px, desktop only) and the <main> padding (24px desktop / 16px
+        // mobile, both sides). Other tabs keep their natural scroll behaviour.
+        height:
+          activeTab === "graph"
+            ? isMobile
+              ? "calc(100vh - 80px)"
+              : "calc(100vh - 128px)"
+            : "100%",
+      }}
+    >
       {/* Page header */}
       <div style={{ padding: "24px 24px 12px 24px", flexShrink: 0 }}>
         <h1
