@@ -22,6 +22,7 @@ import {
   Activity,
   Info,
   DollarSign,
+  Ban,
 } from "lucide-react";
 
 type Urgency = "low" | "normal" | "medium" | "high" | "urgent";
@@ -311,6 +312,18 @@ export default function BriefingPage() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <Link
+            href="/whatsapp/blocklist"
+            className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded"
+            style={{
+              backgroundColor: "rgba(239,68,68,0.10)",
+              color: "#fca5a5",
+              border: "1px solid rgba(239,68,68,0.35)",
+            }}
+          >
+            <Ban className="w-3.5 h-3.5" />
+            Números bloqueados
+          </Link>
           <button
             onClick={() => void fetchData()}
             disabled={loading}

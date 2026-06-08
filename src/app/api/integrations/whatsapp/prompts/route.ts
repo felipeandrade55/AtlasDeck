@@ -29,6 +29,7 @@ import {
   setMessagePrefixOverride,
   clearMessagePrefixOverride,
 } from "@/lib/whatsapp-prompts-local";
+import { withBlocklistRule } from "@/lib/whatsapp-blocklist";
 import { logActivity } from "@/lib/activities-db";
 
 export const dynamic = "force-dynamic";
@@ -142,7 +143,10 @@ export async function PUT(req: NextRequest) {
           raw.channels.whatsapp && typeof raw.channels.whatsapp === "object"
             ? (raw.channels.whatsapp as Record<string, unknown>)
             : {};
-        const effective = shouldClear ? def : prompt;
+        // Prepend the blocklist rule so a custom/cleared prompt never drops
+        // the "ignore these numbers" guard (operationModeToChannelConfig does
+        // the same on the mode/PUT paths).
+        const effective = withBlocklistRule(shouldClear ? def : prompt);
         if (effective) wa.messagePrefix = effective;
         else delete wa.messagePrefix;
         raw.channels.whatsapp = wa;
