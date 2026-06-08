@@ -660,6 +660,27 @@ export function getLinksFor(id: string): MemoryLinkRow[] {
   }));
 }
 
+/**
+ * Returns every edge in the link graph at once. Powers the graph view
+ * (Obsidian-style). The table is small and indexed on from_id/to_id/kind,
+ * so a full scan is trivial even with thousands of links.
+ */
+export function getAllLinks(): MemoryLinkRow[] {
+  const db = getDb();
+  const rows = db
+    .prepare(`SELECT * FROM memory_links ORDER BY weight DESC`)
+    .all() as Record<string, unknown>[];
+  return rows.map((r) => ({
+    id: r.id as string,
+    from_id: r.from_id as string,
+    to_id: r.to_id as string,
+    kind: r.kind as LinkKind,
+    weight: Number(r.weight),
+    source: r.source as MemoryLinkRow["source"],
+    created_at: r.created_at as string,
+  }));
+}
+
 export interface ExtractionCursor {
   session_id: string;
   agent_id: string;

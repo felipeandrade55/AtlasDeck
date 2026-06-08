@@ -10,6 +10,7 @@ import {
   FileText,
   Settings as SettingsIcon,
   Sparkles,
+  Network,
 } from "lucide-react";
 import { FileTree, FileNode } from "@/components/FileTree";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
@@ -18,11 +19,12 @@ import { MemoryList } from "@/components/memory/MemoryList";
 import { MemorySettings } from "@/components/memory/MemorySettings";
 import { HealthCheckPanel } from "@/components/memory/HealthCheckPanel";
 import { OnboardingWizard } from "@/components/memory/OnboardingWizard";
+import { MemoryGraphView } from "@/components/graph/MemoryGraphView";
 import { useToast } from "@/components/Toast";
 import { PROTECTED_FILES, MEMORY_DIR } from "@/lib/memory-files";
 
 type ViewMode = "edit" | "preview";
-type Tab = "files" | "memories" | "setup" | "settings";
+type Tab = "files" | "memories" | "graph" | "setup" | "settings";
 
 interface Workspace {
   id: string;
@@ -380,6 +382,12 @@ export default function MemoryPage() {
             onClick={() => setActiveTab("memories")}
           />
           <TabButton
+            label="Grafo"
+            icon={<Network size={14} />}
+            active={activeTab === "graph"}
+            onClick={() => setActiveTab("graph")}
+          />
+          <TabButton
             label="Setup"
             icon={<Sparkles size={14} />}
             active={activeTab === "setup"}
@@ -565,6 +573,26 @@ export default function MemoryPage() {
           {activeTab === "memories" &&
             (selectedWorkspace ? (
               <MemoryList workspace={selectedWorkspace} />
+            ) : (
+              <div
+                style={{
+                  flex: 1,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  color: "var(--text-muted)",
+                  fontSize: 14,
+                }}
+              >
+                Selecione um workspace
+              </div>
+            ))}
+
+          {activeTab === "graph" &&
+            (selectedWorkspace ? (
+              <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+                <MemoryGraphView workspace={selectedWorkspace} />
+              </div>
             ) : (
               <div
                 style={{
