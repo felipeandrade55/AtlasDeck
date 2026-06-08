@@ -9,6 +9,7 @@ import { WeatherWidget } from "@/components/WeatherWidget";
 import { CostWidget } from "@/components/CostWidget";
 import { Notepad } from "@/components/Notepad";
 import { BriefingCard } from "@/components/BriefingCard";
+import { VpsBriefingCard } from "@/components/VpsBriefingCard";
 import {
   Activity,
   CheckCircle,
@@ -213,6 +214,7 @@ function RedesignedDashboardHome({ stats, agents, onAgentsClick }: DashboardHome
           </div>
 
           <TodayFocusPanel stats={stats} agents={agents} />
+          <VpsBriefingCard />
         </div>
 
         <div className="xl:col-span-4">
