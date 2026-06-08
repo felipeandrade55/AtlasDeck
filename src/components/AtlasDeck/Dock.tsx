@@ -17,6 +17,7 @@ import {
   Settings,
   History,
   MessageCircle,
+  NotebookPen,
 } from "lucide-react";
 
 const dockItems = [
@@ -25,6 +26,7 @@ const dockItems = [
   { href: "/system", label: "Monitor do Sistema", icon: Monitor },
   { href: "/files", label: "Arquivos", icon: FolderOpen },
   { href: "/memory", label: "Memória", icon: Brain },
+  { href: "/notes", label: "Notas", icon: NotebookPen },
   { href: "/agents", label: "Agentes", icon: Bot },
   { href: "/office", label: "Escritório", icon: Building2 },
   { href: "/activity", label: "Atividades", icon: Activity },
