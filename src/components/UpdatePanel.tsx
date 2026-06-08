@@ -503,8 +503,13 @@ export function UpdatePanel() {
   const heartbeatAgeMs = liveStatus?.lastHeartbeat
     ? Date.now() - new Date(liveStatus.lastHeartbeat).getTime() + elapsedTick * 0
     : 0;
-  const buildStuck =
-    currentPhaseName === "build" &&
+  // Stale heartbeat in ANY running phase (not only build) almost certainly
+  // means the deploy.sh subprocess died mid-update. Previously this was gated
+  // to currentPhaseName === "build", so a stall during health-check / pm2
+  // restart left the user with no cancel affordance at all.
+  const phaseStuck =
+    liveStatus?.status === "running" &&
+    !!currentPhaseName &&
     !!liveStatus?.lastHeartbeat &&
     heartbeatAgeMs > STUCK_THRESHOLD_MS;
 
@@ -945,14 +950,26 @@ export function UpdatePanel() {
                 </span>
                 <span>·</span>
                 <span>{liveStatus.fromSha} → {liveStatus.toSha}</span>
+                {liveStatus.status === "running" && (
+                  <>
+                    <span>·</span>
+                    <button
+                      onClick={cancelUpdate}
+                      className="underline hover:no-underline"
+                      style={{ color: "#ef4444", fontWeight: 600 }}
+                    >
+                      Cancelar
+                    </button>
+                  </>
+                )}
               </div>
             )}
 
-            {/* Stuck-build banner: build phase + no heartbeat for >STUCK_THRESHOLD_MS.
-                The deploy.sh emits heartbeats every 5s during build, so 60s+ of
-                silence almost certainly means the build process is dead or hung.
-                Surfaces a cancel button so user isn't stuck waiting forever. */}
-            {buildStuck && (
+            {/* Stuck banner: any running phase with no heartbeat for
+                >STUCK_THRESHOLD_MS. deploy.sh emits heartbeats every 5s during
+                its long phases (build, install, health-check), so prolonged
+                silence almost certainly means the subprocess is dead or hung. */}
+            {phaseStuck && (
               <div
                 className="mt-3 p-3 rounded-lg flex items-start gap-3"
                 style={{
@@ -966,13 +983,14 @@ export function UpdatePanel() {
                 />
                 <div className="flex-1">
                   <div className="text-sm font-semibold mb-1" style={{ color: "#ef4444" }}>
-                    Build parece travado
+                    Atualização parece travada
                   </div>
                   <div className="text-xs mb-2" style={{ color: "var(--text-secondary)" }}>
-                    Nenhum heartbeat há {formatHeartbeatAge(heartbeatAgeMs)}. Normalmente o
-                    build emite sinal a cada 5s. Verifique no servidor com{" "}
-                    <code className="font-mono">ps aux | grep next-build</code> e{" "}
-                    <code className="font-mono">tail data/update-current.log</code>.
+                    Nenhum heartbeat há {formatHeartbeatAge(heartbeatAgeMs)}
+                    {currentPhaseLabel ? ` (fase: ${currentPhaseLabel})` : ""}. O
+                    processo de atualização provavelmente parou. Verifique no
+                    servidor com <code className="font-mono">pm2 logs atlasdeck</code> e{" "}
+                    <code className="font-mono">tail data/update-current.log</code>, ou cancele.
                   </div>
                   <button
                     onClick={cancelUpdate}

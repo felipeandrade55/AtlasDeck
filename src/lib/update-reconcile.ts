@@ -160,10 +160,13 @@ export async function reconcile(
     }
   }
 
-  // Touch heartbeat from log activity too (if we got new logs, process is alive)
-  if (newLogLines.length > 0) {
-    updatedLive.lastHeartbeat = new Date().toISOString();
-  }
+  // NB: we deliberately do NOT bump lastHeartbeat just because we read new log
+  // lines. On a fresh SSE/page connection the offset starts at 0, so the whole
+  // log is re-read and counted as "new" — stamping `now` here made every page
+  // refresh reset the dead-man timer, so a deploy.sh that died mid-phase looked
+  // alive forever and never auto-reconciled. Liveness now comes only from real
+  // signals: explicit heartbeat events (their own ts, handled above), phase
+  // event timestamps, and the artifact file mtimes checked in getActiveUpdate.
 
   // Persist if anything changed
   const changed =

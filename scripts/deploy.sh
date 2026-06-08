@@ -682,13 +682,43 @@ if $NEEDS_INSTALL; then
   # flag, npm ci omite devDependencies — e o build precisa delas (tsx,
   # @tailwindcss/postcss, @types/*). Causava "Cannot find module" no
   # build phase e o app ficava sem .next (apagado antes do build).
-  if npm ci --include=dev 2>/dev/null; then
-    ok "npm ci concluído (com devDependencies)"
-  else
-    warn "npm ci falhou (lock file desatualizado?) — usando npm install..."
-    npm install --include=dev
-    ok "npm install concluído (com devDependencies)"
+  #
+  # Rodamos em background + heartbeat a cada 5s: npm ci/install compila
+  # binários nativos (better-sqlite3 etc.) e pode ficar minutos em silêncio.
+  # Sem heartbeat, o detector de "update travado" (UI) e o auto-reconcile
+  # por heartbeat-stale (getActiveUpdate) disparavam falso durante uma
+  # instalação legítima. Log completo em /tmp/npm-install.log.
+  (
+    if npm ci --include=dev > /tmp/npm-install.log 2>&1; then
+      exit 0
+    fi
+    echo "npm ci falhou — tentando npm install..." >> /tmp/npm-install.log
+    npm install --include=dev >> /tmp/npm-install.log 2>&1
+  ) &
+  INSTALL_PID=$!
+
+  PROGRESS_COUNTER=0
+  while kill -0 $INSTALL_PID 2>/dev/null; do
+    sleep 5
+    PROGRESS_COUNTER=$((PROGRESS_COUNTER + 5))
+    info "Instalando dependências... ${PROGRESS_COUNTER}s"
+    heartbeat
+  done
+
+  set +e
+  wait $INSTALL_PID
+  INSTALL_EXIT=$?
+  set -e
+
+  if [ $INSTALL_EXIT -ne 0 ]; then
+    err "Falha ao instalar dependências (exit $INSTALL_EXIT) — veja /tmp/npm-install.log"
+    tail -20 /tmp/npm-install.log 2>/dev/null || true
+    record "npm install" "fail" "$(elapsed $T)"
+    phase_status "npm-install" "fail" "$(elapsed $T)" "npm install exit $INSTALL_EXIT"
+    exit 1
   fi
+
+  ok "Dependências instaladas (com devDependencies)"
   record "npm install" "ok" "$(elapsed $T)"
   phase_status "npm-install" "ok" "$(elapsed $T)"
 else
@@ -1046,14 +1076,36 @@ is_pm2_managed_pid() {
 }
 
 # ─── LIBERA PORTA SÓ SE FOR ÓRFÃO REAL ───────────────────────────────────────
-PORT_PID=$(lsof -ti :"$APP_PORT" 2>/dev/null | head -1 || true)
-if [[ -n "$PORT_PID" ]]; then
-  if is_pm2_managed_pid "$PORT_PID"; then
-    info "Porta $APP_PORT ocupada pelo PID $PORT_PID (gerenciado pelo PM2 — pm2 restart cuidará disso)"
-  else
-    warn "Porta $APP_PORT ocupada pelo PID $PORT_PID (fora do PM2) — liberando..."
-    kill -9 "$PORT_PID" 2>/dev/null || true
+# Mata TODOS os holders da porta que não são do PM2 (antes pegava só o `head -1`,
+# então um par "npm wrapper + node filho" deixava o filho segurando a :$APP_PORT
+# e o health check batia HTTP 000 pra sempre). Depois confirma que a porta
+# liberou de fato — kill -9 não fecha o socket instantaneamente em todo kernel.
+_collect_port_orphans() {
+  local p
+  ORPHAN_PIDS=""
+  for p in $(lsof -ti :"$APP_PORT" 2>/dev/null || true); do
+    [[ -z "$p" ]] && continue
+    if is_pm2_managed_pid "$p"; then
+      info "Porta $APP_PORT: PID $p é gerenciado pelo PM2 (pm2 restart cuida)"
+    else
+      ORPHAN_PIDS="${ORPHAN_PIDS:+$ORPHAN_PIDS }$p"
+    fi
+  done
+}
+
+_collect_port_orphans
+if [[ -n "$ORPHAN_PIDS" ]]; then
+  warn "Porta $APP_PORT ocupada por processo(s) fora do PM2: $ORPHAN_PIDS — liberando..."
+  for _try in 1 2 3 4 5; do
+    for p in $ORPHAN_PIDS; do kill -9 "$p" 2>/dev/null || true; done
     sleep 1
+    _collect_port_orphans
+    [[ -z "$ORPHAN_PIDS" ]] && break
+    warn "Porta $APP_PORT ainda ocupada ($ORPHAN_PIDS) — re-tentando (${_try}/5)"
+  done
+  if [[ -n "$ORPHAN_PIDS" ]]; then
+    err "Não consegui liberar a porta $APP_PORT (ainda: $ORPHAN_PIDS) — o health check pode falhar"
+  else
     ok "Porta $APP_PORT liberada"
   fi
 fi
