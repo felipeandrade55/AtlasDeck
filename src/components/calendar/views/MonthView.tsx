@@ -25,7 +25,8 @@ export function MonthView({ focusDate, events, blocks, onCreateAt, onSelectEvent
   const eventsByDay = useMemo(() => {
     const map = new Map<string, ExpandedEvent[]>();
     for (const ev of events) {
-      const key = new Date(ev.start_at).toISOString().slice(0, 10);
+      const d = new Date(ev.start_at);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
       const list = map.get(key) ?? [];
       list.push(ev);
       map.set(key, list);
@@ -41,7 +42,7 @@ export function MonthView({ focusDate, events, blocks, onCreateAt, onSelectEvent
       const d = new Date(start);
       d.setHours(0, 0, 0, 0);
       while (d <= end) {
-        const key = d.toISOString().slice(0, 10);
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
         const list = map.get(key) ?? [];
         list.push(b);
         map.set(key, list);
@@ -87,7 +88,7 @@ export function MonthView({ focusDate, events, blocks, onCreateAt, onSelectEvent
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gridAutoRows: "minmax(110px, 1fr)" }}>
         {days.map((d, i) => {
-          const key = d.toISOString().slice(0, 10);
+          const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
           const dayEvents = eventsByDay.get(key) ?? [];
           const dayBlocks = blocksByDay.get(key) ?? [];
           const today = isSameDay(d, new Date());

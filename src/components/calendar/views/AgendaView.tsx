@@ -46,14 +46,16 @@ export function AgendaView({ events, blocks, onSelectEvent }: Props) {
     }
     items.sort((a, b) => a.start.getTime() - b.start.getTime());
 
-    const map = new Map<string, AgendaItem[]>();
+    const map = new Map<string, { date: Date; items: AgendaItem[] }>();
     for (const it of items) {
-      const key = new Date(it.start).toISOString().slice(0, 10);
-      const list = map.get(key) ?? [];
-      list.push(it);
-      map.set(key, list);
+      // Use local date components to avoid UTC-midnight shift (e.g. BRT = UTC-3)
+      const d = it.start;
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      const bucket = map.get(key) ?? { date: new Date(d.getFullYear(), d.getMonth(), d.getDate()), items: [] };
+      bucket.items.push(it);
+      map.set(key, bucket);
     }
-    return Array.from(map.entries()).map(([key, list]) => ({ key, date: new Date(key), items: list }));
+    return Array.from(map.entries()).map(([key, { date, items: list }]) => ({ key, date, items: list }));
   }, [events, blocks]);
 
   if (groups.length === 0) {
