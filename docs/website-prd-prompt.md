@@ -51,6 +51,8 @@ e 1–2 linhas de benefício (não só descrição técnica).
   markdown + highlight de código + render de tool-calls inline.
 - **Voz completa:** fala→texto (Web Speech / Whisper local), texto→fala (Web Speech / ElevenLabs
   / Fish Audio) e **wake word** ("Atlas"/"Jarvis") — converse sem tocar no teclado.
+- **Transcrição ao vivo no Chat:** gravação pelo microfone em ciclos, medidor de áudio,
+  pausar/retomar, link direto para a sessão transcrita e tratamento amigável de cota OpenAI.
 - Importa o histórico de sessões existentes do OpenClaw como contexto.
 
 **B) Orquestração Multi-Agente ("Live Mission")**
@@ -65,17 +67,24 @@ e 1–2 linhas de benefício (não só descrição técnica).
 - **Extração automática** de fatos das conversas (sem você pedir), **busca semântica** (embeddings
   locais Xenova) + **FTS5**, **AUTO-RECALL** injetado no `MEMORY.md`, **wizard de identidade**
   (gera IDENTITY/SOUL/USER.md por entrevista em PT-BR), **servidor MCP de memória** e memória proativa.
+- **Notas persistentes:** página de notas com busca, pins, cores e edição inline; o bloco rápido
+  da dashboard usa a mesma base para virar conhecimento consultável.
 
 **D) Observabilidade & Operação**
-- **Dashboard** com visão geral: status dos agentes, atividade recente, custos do mês, briefing diário, clima, notepad.
-- **System Monitor:** CPU/RAM/Disco/Rede em tempo real, PM2/Docker, firewall, Tailscale, serviços.
+- **Dashboard inicial redesenhada:** foco no que mais importa no dia a dia — clima, Recados
+  WhatsApp, custos, links rápidos e "Resumo do dia" — com rollback para o layout legado.
+- **System Monitor:** CPU/RAM/Disco/Rede em tempo real, PM2/Docker, firewall, Tailscale, serviços
+  e aba de **monitoramento multi-VPS** com agente instalável, ingestão de métricas e alertas.
 - **Sessões:** todas as conversas dos agentes com contador de tokens, barra de contexto e transcript viewer.
 - **Activity Feed** com heatmap e gráficos; **Logs ao vivo** (tail PM2); **Terminal** read-only com allowlist; **Git**.
-- **Busca global** unificada (memórias + atividades).
+- **Busca global ⌘K** unificada cobrindo transcrições, memórias, conversas, lembretes, agenda,
+  atividades e tarefas, com deep-links para abrir o item exato.
 
 **E) Custos & Analytics**
 - Análise de custo real das sessões do OpenClaw, **orçamento mensal**, **alertas** (Telegram),
   **trava automática** ao estourar limite, breakdown por modelo e por agente, projeções.
+- Card de custos com carregamento rápido: mostra snapshot em cache imediatamente e atualiza a
+  coleta completa em segundo plano.
 
 **F) Automação & Produtividade**
 - **Cron Manager** visual (timeline semanal, histórico, disparo manual), **Workflows**,
@@ -83,6 +92,10 @@ e 1–2 linhas de benefício (não só descrição técnica).
 - **Calendário** com eventos, bookings e links de agendamento compartilháveis (integração Google Calendar).
 - **E-mail** (cliente IMAP/SMTP nativo), **WhatsApp** e **Telegram** (contas, rotação de sessão,
   diagnóstico "Doctor", ingestão de briefing).
+- **Inteligência de reuniões:** transcrições viram resumo, tópicos, decisões, perguntas em aberto,
+  Q&A, action items e sugestões aprováveis de calendário/lembretes.
+- **Reanálise com IA configurável:** análise pós-transcrição pode usar OpenAI ou Ollama, com
+  reprocessamento de sessões já analisadas ou presas.
 
 **G) Escritório 3D (feature flagship / "wow")**
 - Ambiente 3D interativo (React Three Fiber) com **um avatar por agente**, reagindo em tempo real
@@ -94,7 +107,8 @@ e 1–2 linhas de benefício (não só descrição técnica).
   entrevista de identidade, pareia Telegram.
 - **Segurança:** todas as rotas autenticadas, rate-limiting (5 tentativas → lockout 15min), cookie
   httpOnly/secure, allowlist no terminal.
-- **Auto-update, backup/restore, recovery, "AI Rescue"** e diagnóstico de gateway. **PWA instalável.**
+- **Auto-update, backup/restore, recovery, "AI Rescue"**, reboot do VPS, cancelamento de restore
+  e diagnóstico de gateway. **PWA instalável.**
 
 ### 4. Objetivos do site e métricas
 
@@ -152,20 +166,27 @@ de marketing vazio. PT-BR natural (o app usa pt-BR), com opção de alternar par
 3. **Problema → Solução** — 2–3 linhas: "Agentes de IA são caixas-pretas: você não vê custo,
    não controla, não conversa direto. O AtlasDeck dá olhos, voz e comando."
 4. **Bloco de features principais** (cards/tabs para os grupos A–G), cada um com micro-screenshot/GIF.
+   Dar destaque especial aos módulos recentes: **Transcrições & Reuniões**, **Busca Global**,
+   **Monitoramento VPS**, **Notas** e **E-mail nativo**.
 5. **Seção destaque "Escritório 3D"** — embed/vídeo interativo, copy sobre visualizar agentes
    trabalhando em tempo real (o "wow factor").
-6. **"Como funciona"** — 3–4 passos: (1) `git clone` no workspace OpenClaw, (2) configure `.env`
+6. **Seção "Transcrições & Reuniões com IA"** — mostrar o fluxo: gravar no Chat → transcrever
+   ao vivo → analisar com OpenAI/Ollama → extrair decisões, action items e sugestões aprováveis
+   de calendário/lembretes → salvar em memória.
+7. **"Como funciona"** — 3–4 passos: (1) `git clone` no workspace OpenClaw, (2) configure `.env`
    + senha, (3) `npm run build && start`, (4) abra e converse. Mostrar snippet de terminal real.
-7. **Memória & Orquestração** — seção mais técnica com diagrama (extração → embeddings → AUTO-RECALL;
+8. **Memória & Orquestração** — seção mais técnica com diagrama (extração → embeddings → AUTO-RECALL;
    delegação → Kanban → review → learner).
-8. **Privacidade & Segurança** — "Roda no seu servidor", rotas autenticadas, rate-limit, sem telemetria oculta.
-9. **Prova social / comunidade** — estrelas GitHub, Discord, depoimentos (placeholders), contribuidores.
-10. **Pricing** — 3 colunas: **Self-host (Grátis, MIT)** · **Cloud (em breve — lista de espera)** ·
+9. **Operação & Infra** — dashboard redesenhada, custos, logs, System Monitor, monitoramento
+   multi-VPS, recovery/reboot e alertas.
+10. **Privacidade & Segurança** — "Roda no seu servidor", rotas autenticadas, rate-limit, sem telemetria oculta.
+11. **Prova social / comunidade** — estrelas GitHub, Discord, depoimentos (placeholders), contribuidores.
+12. **Pricing** — 3 colunas: **Self-host (Grátis, MIT)** · **Cloud (em breve — lista de espera)** ·
     **Suporte/Sponsor**. CTA de e-mail para a lista de espera.
-11. **FAQ** — "Preciso do OpenClaw?", "Funciona sem GPU?", "Roda local com Ollama?", "Meus dados saem do servidor?",
-    "Quais modelos suporta?", "É realmente grátis?".
-12. **CTA final** — repete hero CTA + Discord.
-13. **Rodapé** — links, licença, social, e-mail.
+13. **FAQ** — "Preciso do OpenClaw?", "Funciona sem GPU?", "Roda local com Ollama?", "Meus dados saem do servidor?",
+    "Quais modelos suporta?", "É realmente grátis?", "Transcrição exige OpenAI?", "Posso monitorar mais de um VPS?".
+14. **CTA final** — repete hero CTA + Discord.
+15. **Rodapé** — links, licença, social, e-mail.
 
 ### 10. Design system (ALINHAR ao app real — não inventar)
 
@@ -201,7 +222,10 @@ Use exatamente a linguagem visual do produto para consistência:
 ### 12. Conteúdo/assets a produzir
 
 - Screenshots reais (já existem em `docs/screenshots/`: dashboard, sessions, costs, system, office3d).
-- GIFs/loops curtos: chat com voz, Kanban Live Mission evoluindo, Escritório 3D, memória AUTO-RECALL.
+- Screenshots adicionais a capturar: dashboard inicial nova, transcrições/reuniões, busca global
+  ⌘K, notas, cliente de e-mail e monitoramento VPS.
+- GIFs/loops curtos: chat com voz, transcrição ao vivo com medidor de áudio, análise de reunião
+  virando action items, Kanban Live Mission evoluindo, Escritório 3D, memória AUTO-RECALL.
 - Diagrama "como funciona" e diagrama de arquitetura (OpenClaw + AtlasDeck + SQLite + MCP).
 - Logo/wordmark "AtlasDeck" (derivar do accent vermelho + tipografia Sora).
 
@@ -231,7 +255,7 @@ Use exatamente a linguagem visual do produto para consistência:
 - **Repo:** `github.com/felipeandrade55/AtlasDeck` · **Licença:** MIT.
 - **Runtime base:** OpenClaw (`openclaw.ai`, docs `docs.openclaw.ai`, Discord da comunidade).
 - **Requisitos:** Node 18+ (testado 22), OpenClaw no mesmo host, PM2/systemd, Caddy (HTTPS).
-- **Páginas do app (27):** dashboard, agents, office (3D), actions, system, logs, terminal, git,
+- **Páginas do app (29):** dashboard, agents, office (3D), actions, system, logs, terminal, git,
   workflows, activity, memory, files, cron, sessions, search, analytics, reports, skills, calendar,
-  costs, emails, whatsapp, reminders, chat, settings, about, welcome.
+  costs, emails, whatsapp, reminders, chat, transcriptions, notes, settings, about, welcome.
 - **Paleta/tipografia:** ver §10 (extraída de `src/app/globals.css` e `src/config/branding.ts`).

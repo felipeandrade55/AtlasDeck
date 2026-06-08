@@ -892,6 +892,200 @@ server.registerTool(
   },
 );
 
+server.registerTool(
+  "calendar_get_booking_link",
+  {
+    title: "Pega (ou cria) o link público de agendamento do Felipe",
+    description:
+      "Modo Assessor: retorna o LINK PÚBLICO que você manda pra pessoa marcar um horário sozinha (auto-atendimento). O link só mostra horários livres do Felipe. ANTES de mandar, dê uma olhada na agenda (calendar_list_events) pra ter contexto. Se NÃO existir link ativo, este tool CRIA um automaticamente (título/duração informados ou padrão 'Reunião com Felipe' 30min). DEPOIS que a pessoa marcar, use calendar_list_bookings pra perceber o agendamento. ATENÇÃO: marcação por link entra como PEDIDO pendente da aprovação do Felipe — nunca prometa que está confirmado.",
+    inputSchema: {
+      durationMinutes: z
+        .number()
+        .int()
+        .min(15)
+        .max(480)
+        .optional()
+        .describe("Duração desejada da reunião em minutos (padrão: 30). Usado pra escolher/criar o link certo."),
+      title: z
+        .string()
+        .optional()
+        .describe("Título do link, se precisar criar um (padrão: 'Reunião com Felipe')."),
+    },
+  },
+  async (args) => {
+    try {
+      const duration = args.durationMinutes ?? 30;
+      const listed = (await atlasdeckFetch(`/api/calendar/booking-links`)) as {
+        links?: Array<{
+          id: string;
+          title: string;
+          duration_minutes: number;
+          active: boolean;
+          publicUrl?: string;
+        }>;
+        shareable?: boolean;
+      };
+      const active = (listed.links ?? []).filter((l) => l.active);
+      // Prefer an active link whose duration matches what we want; else any active.
+      const match =
+        active.find((l) => l.duration_minutes === duration) ?? active[0] ?? null;
+
+      if (match) {
+        return asJson({
+          ok: true,
+          created: false,
+          shareable: listed.shareable !== false,
+          link: {
+            title: match.title,
+            durationMinutes: match.duration_minutes,
+            url: match.publicUrl,
+          },
+          hint:
+            listed.shareable === false
+              ? "ATENÇÃO: a URL pública não está configurada (aponta pra localhost) — o link pode não abrir pra pessoa. Prefira marcar direto com calendar_create_event."
+              : "Mande essa URL pra pessoa marcar. Depois cheque calendar_list_bookings pra ver quando ela marcar.",
+        });
+      }
+
+      // No active link — create a default one on the fly.
+      const created = (await atlasdeckFetch(`/api/calendar/booking-links`, {
+        method: "POST",
+        body: JSON.stringify({
+          title: args.title?.trim() || "Reunião com Felipe",
+          duration_minutes: duration,
+        }),
+      })) as {
+        link?: { title: string; duration_minutes: number; publicUrl?: string };
+        shareable?: boolean;
+      };
+      if (!created.link?.publicUrl) {
+        return asError("Não consegui obter a URL do link de agendamento criado.");
+      }
+      return asJson({
+        ok: true,
+        created: true,
+        shareable: created.shareable !== false,
+        link: {
+          title: created.link.title,
+          durationMinutes: created.link.duration_minutes,
+          url: created.link.publicUrl,
+        },
+        hint:
+          created.shareable === false
+            ? "ATENÇÃO: a URL pública não está configurada (aponta pra localhost) — o link pode não abrir pra pessoa. Prefira marcar direto com calendar_create_event."
+            : "Criei um link novo. Mande essa URL pra pessoa marcar; depois cheque calendar_list_bookings.",
+      });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
+server.registerTool(
+  "calendar_list_bookings",
+  {
+    title: "Lista pedidos de agendamento feitos pelo link",
+    description:
+      "Modo Assessor: use pra PERCEBER quando alguém marcou pelo link público de agendamento. Retorna os pedidos recentes com nome, contato, horário e status. status='pending' = aguardando aprovação do Felipe (foi isso que a pessoa acabou de fazer pelo link); 'approved' = o Felipe já confirmou. Útil pra confirmar pra pessoa que o pedido dela chegou ('Recebi seu pedido pra terça 14h, vou confirmar com o Felipe').",
+    inputSchema: {
+      status: z
+        .enum(["pending", "approved", "rejected", "cancelled"])
+        .optional()
+        .describe("Filtra por status. Omita pra ver pedidos pendentes + aprovados."),
+      sinceHours: z
+        .number()
+        .int()
+        .min(1)
+        .max(720)
+        .optional()
+        .describe("Só pedidos criados nas últimas N horas (padrão: 72)."),
+    },
+  },
+  async (args) => {
+    try {
+      const json = (await atlasdeckFetch(`/api/calendar/bookings`)) as {
+        bookings?: Array<{
+          id: string;
+          name: string;
+          requester_email: string;
+          requester_phone: string | null;
+          message: string | null;
+          start_at: string;
+          end_at: string;
+          status: string;
+          created_at: string;
+        }>;
+      };
+      const sinceHours = args.sinceHours ?? 72;
+      const cutoff = Date.now() - sinceHours * 60 * 60 * 1000;
+      const wanted = args.status
+        ? new Set([args.status])
+        : new Set(["pending", "approved"]);
+      const bookings = (json.bookings ?? [])
+        .filter((b) => wanted.has(b.status))
+        .filter((b) => new Date(b.created_at).getTime() >= cutoff)
+        .map((b) => ({
+          name: b.name,
+          email: b.requester_email,
+          phone: b.requester_phone,
+          message: b.message,
+          startAt: b.start_at,
+          endAt: b.end_at,
+          status: b.status,
+          createdAt: b.created_at,
+        }));
+      return asJson({ ok: true, count: bookings.length, bookings });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
+server.registerTool(
+  "notify_owner",
+  {
+    title: "Avisa o Felipe na hora (Telegram + painel)",
+    description:
+      "Modo Assessor: use quando algo for URGENTE e você disser à pessoa que vai tentar contato com o Felipe. Dispara um alerta REAL no Telegram do Felipe e uma notificação no painel, na hora. Não use pra recado comum (pra isso basta o whatsapp_briefing_log) — só pra urgências de verdade.",
+    inputSchema: {
+      message: z
+        .string()
+        .min(1)
+        .max(1000)
+        .describe("O que avisar o Felipe (curto e direto). Ex: 'João está com BGP caído, diz que é urgente e pediu retorno imediato.'"),
+      urgency: z
+        .enum(["normal", "high", "urgent"])
+        .optional()
+        .describe("Nível (padrão: 'high'). Use 'urgent' só pra emergências reais."),
+      fromName: z
+        .string()
+        .optional()
+        .describe("Nome de quem mandou o recado, se souber."),
+    },
+  },
+  async (args) => {
+    try {
+      const json = (await atlasdeckFetch(`/api/agent/notify-owner`, {
+        method: "POST",
+        body: JSON.stringify({
+          message: args.message,
+          urgency: args.urgency ?? "high",
+          fromName: args.fromName ?? null,
+        }),
+      })) as { ok?: boolean; channels?: { dashboard?: boolean; telegram?: boolean } };
+      return asJson({
+        ok: json.ok ?? false,
+        channels: json.channels ?? {},
+        hint: json.channels?.telegram
+          ? "Felipe foi avisado no Telegram. Pode dizer à pessoa que você já o acionou."
+          : "Aviso registrado no painel. Felipe vê assim que olhar o dashboard.",
+      });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
 // ─── WhatsApp operation mode get/set ────────────────────────────────────
 // Lets the user say "muda o whatsapp pro modo passivo" via Telegram or
 // WhatsApp itself and the agent flips it without any UI/curl.
