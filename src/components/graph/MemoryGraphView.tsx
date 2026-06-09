@@ -59,16 +59,16 @@ export function MemoryGraphView({
   const [selected, setSelected] = useState<GraphNode | null>(null);
   const [focusRequest, setFocusRequest] = useState<{ id: string; nonce: number } | null>(null);
   const [fitNonce, setFitNonce] = useState(0);
+  const [rebuilding, setRebuilding] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
   const nonceRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
-    // Reset the view for the new workspace — synchronous resets are intentional.
-    /* eslint-disable react-hooks/set-state-in-effect */
+    // Reset the view for the new workspace / rebuild — synchronous resets are intentional.
     setLoading(true);
     setError(null);
     setSelected(null);
-    /* eslint-enable react-hooks/set-state-in-effect */
     const qs = workspace ? `?workspace=${encodeURIComponent(workspace)}` : "";
     fetch(`/api/memory/graph${qs}`, { cache: "no-store" })
       .then(async (res) => {
@@ -87,6 +87,24 @@ export function MemoryGraphView({
     return () => {
       cancelled = true;
     };
+  }, [workspace, reloadNonce]);
+
+  const rebuild = useCallback(async () => {
+    setRebuilding(true);
+    try {
+      const res = await fetch("/api/memory/links/rebuild", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(workspace ? { workspace } : {}),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // Pull the freshly rebuilt edges back into the view.
+      setReloadNonce((n) => n + 1);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRebuilding(false);
+    }
   }, [workspace]);
 
   const toggleType = useCallback((t: MemoryType) => {
@@ -172,6 +190,8 @@ export function MemoryGraphView({
             showLabels={showLabels}
             onToggleLabels={() => setShowLabels((v) => !v)}
             onRecenter={() => setFitNonce((n) => n + 1)}
+            onRebuild={rebuild}
+            rebuilding={rebuilding}
             nodeCount={data!.nodes.length}
             rightActions={builtInRight}
             hidden={controlsHidden}

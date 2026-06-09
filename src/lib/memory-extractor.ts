@@ -16,8 +16,7 @@ import {
   setCursor,
   upsertMemory,
   setMemoryEmbedding,
-  searchSimilar,
-  createLink,
+  autoLinkMemory,
   getSettings,
   type MemoryType,
   type MemoryRow,
@@ -383,17 +382,7 @@ export async function extractMemoriesForSession(
           provider.dim,
         );
 
-        const similar = searchSimilar(vectors[0], {
-          workspace: ctx.workspace,
-          excludeIds: [memory.id],
-          k: 5,
-          minScore: 0.85,
-        });
-        for (const hit of similar) {
-          if (createLink(memory.id, hit.memory.id, "related", "cosine", hit.score)) {
-            linked++;
-          }
-        }
+        linked += autoLinkMemory(memory.id);
       } catch (embedErr) {
         if (process.env.MEMORY_DEBUG === "1") {
           console.warn(

@@ -5,7 +5,7 @@
  * a label toggle and a recenter button. Mode-specific buttons (open
  * fullscreen / native fullscreen / back) are injected via `rightActions`.
  */
-import { Search, Tag, Crosshair, X } from "lucide-react";
+import { Search, Tag, Crosshair, X, Waypoints, Loader2 } from "lucide-react";
 import type { MemoryType } from "@/lib/memory-db";
 import { MEMORY_TYPES, TYPE_COLORS, TYPE_LABELS } from "@/lib/graph-theme";
 
@@ -17,6 +17,9 @@ interface Props {
   showLabels: boolean;
   onToggleLabels: () => void;
   onRecenter: () => void;
+  /** Recompute semantic + tag links across the whole corpus. Omitted in TV mode. */
+  onRebuild?: () => void;
+  rebuilding?: boolean;
   nodeCount: number;
   rightActions?: React.ReactNode;
   /** Fade out + disable (ambient/TV auto-hide). */
@@ -31,6 +34,8 @@ export function GraphControls({
   showLabels,
   onToggleLabels,
   onRecenter,
+  onRebuild,
+  rebuilding = false,
   nodeCount,
   rightActions,
   hidden = false,
@@ -213,6 +218,40 @@ export function GraphControls({
       >
         <Crosshair size={15} />
       </button>
+
+      {/* Rebuild connections */}
+      {onRebuild && (
+        <button
+          type="button"
+          onClick={onRebuild}
+          disabled={rebuilding}
+          title="Reconstruir conexões (religar memórias por similaridade e tags)"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            height: 34,
+            padding: "0 12px",
+            borderRadius: 8,
+            border: "1px solid var(--border)",
+            backgroundColor: "rgba(26,26,26,0.85)",
+            backdropFilter: "blur(8px)",
+            color: "var(--text-secondary)",
+            fontSize: 12,
+            fontWeight: 600,
+            cursor: rebuilding ? "default" : "pointer",
+            opacity: rebuilding ? 0.7 : 1,
+            pointerEvents: pe,
+          }}
+        >
+          {rebuilding ? (
+            <Loader2 size={14} className="animate-spin" />
+          ) : (
+            <Waypoints size={14} />
+          )}
+          {rebuilding ? "Religando…" : "Reconstruir"}
+        </button>
+      )}
 
       {/* Node count */}
       <span

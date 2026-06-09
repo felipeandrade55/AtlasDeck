@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   upsertMemory,
   setMemoryEmbedding,
-  searchSimilar,
-  createLink,
+  autoLinkMemory,
   type MemoryType,
 } from "@/lib/memory-db";
 import { embedTexts } from "@/lib/embeddings";
@@ -81,15 +80,8 @@ export async function POST(request: NextRequest) {
       );
       embedded = true;
 
-      const similar = searchSimilar(vectors[0], {
-        workspace,
-        excludeIds: [memory.id],
-        k: 5,
-        minScore: 0.85,
-      });
-      for (const hit of similar) {
-        createLink(memory.id, hit.memory.id, "related", "cosine", hit.score);
-      }
+      // Connect the new memory to its semantic + tag neighbours.
+      autoLinkMemory(memory.id);
     } catch (err) {
       if (process.env.MEMORY_DEBUG === "1") {
         console.warn("[memory/create] embedding failed:", err);

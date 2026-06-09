@@ -103,7 +103,7 @@ export interface MemoryLinkRow {
   to_id: string;
   kind: LinkKind;
   weight: number;
-  source: "cosine" | "llm" | "manual";
+  source: "cosine" | "llm" | "manual" | "tag";
   created_at: string;
 }
 
@@ -679,6 +679,217 @@ export function getAllLinks(): MemoryLinkRow[] {
     source: r.source as MemoryLinkRow["source"],
     created_at: r.created_at as string,
   }));
+}
+
+/**
+ * Tuning for automatic "related" linking.
+ *
+ * The embedding model (all-MiniLM-L6-v2, mean-pooled + normalized) places
+ * genuinely related memories in the ~0.45–0.7 cosine band; only near-duplicates
+ * sit above ~0.8. The original 0.85 threshold therefore linked almost nothing
+ * and left the graph as disconnected dust. We link the "related" band and
+ * complement it with shared-tag edges so the graph reads like an Obsidian vault.
+ */
+export const AUTO_LINK_MIN_SCORE = 0.5;
+export const AUTO_LINK_K = 8;
+/** Tags shared by more than this many memories are too generic to link pairwise. */
+export const AUTO_LINK_MAX_TAG_FANOUT = 24;
+
+/** Order an undirected pair so each edge is stored once (smaller id first). */
+function canonicalPair(a: string, b: string): [string, string] {
+  return a < b ? [a, b] : [b, a];
+}
+
+/** Non-archived memories in the same workspace sharing ≥1 tag (excluding self). */
+function findByTags(
+  workspace: string,
+  tags: string[],
+  excludeId: string,
+): string[] {
+  const uniq = [...new Set(tags.map((t) => t.trim()).filter(Boolean))];
+  if (uniq.length === 0) return [];
+  const db = getDb();
+  const likeClauses = uniq.map(() => "tags LIKE ?").join(" OR ");
+  const params: unknown[] = [
+    workspace,
+    excludeId,
+    ...uniq.map((t) => `%${JSON.stringify(t)}%`),
+  ];
+  const rows = db
+    .prepare(
+      `SELECT id FROM memories
+       WHERE workspace = ? AND archived = 0 AND id != ? AND (${likeClauses})`,
+    )
+    .all(...params) as Array<{ id: string }>;
+  return rows.map((r) => r.id);
+}
+
+/**
+ * Connect one memory to the rest of the graph. Creates:
+ *   - semantic "related" edges to its cosine-nearest neighbours (source "cosine")
+ *   - "related" edges to memories sharing at least one tag (source "tag")
+ *
+ * Edges are canonicalized so each undirected pair is stored once. Safe to call
+ * repeatedly — the UNIQUE(from,to,kind) constraint makes re-links no-ops.
+ * Returns the number of NEW edges created.
+ */
+export function autoLinkMemory(
+  memoryId: string,
+  opts: { minScore?: number; k?: number; maxTagFanout?: number } = {},
+): number {
+  const mem = getMemoryById(memoryId);
+  if (!mem || mem.archived) return 0;
+  let created = 0;
+
+  // Semantic neighbours (requires an embedding).
+  const emb = getMemoryEmbedding(memoryId);
+  if (emb) {
+    const hits = searchSimilar(emb, {
+      workspace: mem.workspace,
+      excludeIds: [memoryId],
+      k: opts.k ?? AUTO_LINK_K,
+      minScore: opts.minScore ?? AUTO_LINK_MIN_SCORE,
+    });
+    for (const hit of hits) {
+      const [a, b] = canonicalPair(memoryId, hit.memory.id);
+      if (createLink(a, b, "related", "cosine", hit.score)) created++;
+    }
+  }
+
+  // Shared-tag neighbours. Skip when the tag set is too generic (hairball guard).
+  if (mem.tags.length > 0) {
+    const maxFanout = opts.maxTagFanout ?? AUTO_LINK_MAX_TAG_FANOUT;
+    const peers = findByTags(mem.workspace, mem.tags, memoryId);
+    if (peers.length <= maxFanout) {
+      for (const peerId of peers) {
+        const [a, b] = canonicalPair(memoryId, peerId);
+        // Tag links are a coarser signal than cosine → modest weight.
+        if (createLink(a, b, "related", "tag", 0.5)) created++;
+      }
+    }
+  }
+
+  return created;
+}
+
+export interface RebuildLinksResult {
+  memories: number;
+  cosineLinks: number;
+  tagLinks: number;
+  total: number;
+}
+
+/**
+ * Rebuild the entire automatic link graph. Wipes machine-generated edges
+ * (source "cosine"/"tag") and recomputes them for every non-archived memory,
+ * preserving user/LLM-curated edges (source "manual"/"llm").
+ *
+ * This is the backfill that connects memories created before auto-linking
+ * existed — or under the old, too-strict threshold. Runs in one transaction.
+ */
+export function rebuildAllLinks(
+  opts: {
+    workspace?: string;
+    minScore?: number;
+    k?: number;
+    maxTagFanout?: number;
+  } = {},
+): RebuildLinksResult {
+  const db = getDb();
+  const minScore = opts.minScore ?? AUTO_LINK_MIN_SCORE;
+  const k = opts.k ?? AUTO_LINK_K;
+  const maxTagFanout = opts.maxTagFanout ?? AUTO_LINK_MAX_TAG_FANOUT;
+
+  // 1. Drop machine-generated edges (keep manual/llm).
+  if (opts.workspace) {
+    db.prepare(
+      `DELETE FROM memory_links
+       WHERE source IN ('cosine','tag')
+         AND from_id IN (SELECT id FROM memories WHERE workspace = ?)`,
+    ).run(opts.workspace);
+  } else {
+    db.prepare(
+      `DELETE FROM memory_links WHERE source IN ('cosine','tag')`,
+    ).run();
+  }
+
+  // 2. Load candidate memories.
+  const where = opts.workspace
+    ? "WHERE workspace = ? AND archived = 0"
+    : "WHERE archived = 0";
+  const params = opts.workspace ? [opts.workspace] : [];
+  const rows = db
+    .prepare(`SELECT id, workspace, tags, embedding_dim FROM memories ${where}`)
+    .all(...params) as Array<{
+    id: string;
+    workspace: string;
+    tags: string | null;
+    embedding_dim: number | null;
+  }>;
+
+  // 3. Build a workspace-scoped tag index: "ws\0tag" -> [ids].
+  const tagIndex = new Map<string, string[]>();
+  for (const r of rows) {
+    const tags = r.tags ? safeJsonArray(r.tags) : [];
+    for (const t of tags) {
+      const key = `${r.workspace} ${t.trim()}`;
+      if (!t.trim()) continue;
+      if (!tagIndex.has(key)) tagIndex.set(key, []);
+      tagIndex.get(key)!.push(r.id);
+    }
+  }
+
+  const insert = db.prepare(
+    `INSERT OR IGNORE INTO memory_links (id, from_id, to_id, kind, weight, source)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+
+  let cosineLinks = 0;
+  let tagLinks = 0;
+
+  const tx = db.transaction(() => {
+    // 3a. Cosine edges first so the stronger semantic weight wins the pair.
+    for (const r of rows) {
+      if (r.embedding_dim == null) continue;
+      const emb = getMemoryEmbedding(r.id);
+      if (!emb) continue;
+      const hits = searchSimilar(emb, {
+        workspace: r.workspace,
+        excludeIds: [r.id],
+        k,
+        minScore,
+      });
+      for (const hit of hits) {
+        const [a, b] = canonicalPair(r.id, hit.memory.id);
+        const info = insert.run(randomUUID(), a, b, "related", hit.score, "cosine");
+        if (info.changes > 0) cosineLinks++;
+      }
+    }
+
+    // 3b. Tag edges — pairwise within each (non-generic) tag bucket.
+    const seenTagPair = new Set<string>();
+    for (const ids of tagIndex.values()) {
+      if (ids.length < 2 || ids.length > maxTagFanout) continue;
+      for (let i = 0; i < ids.length; i++) {
+        for (let j = i + 1; j < ids.length; j++) {
+          const [a, b] = canonicalPair(ids[i], ids[j]);
+          const pk = `${a} ${b}`;
+          if (seenTagPair.has(pk)) continue;
+          seenTagPair.add(pk);
+          const info = insert.run(randomUUID(), a, b, "related", 0.5, "tag");
+          if (info.changes > 0) tagLinks++;
+        }
+      }
+    }
+  });
+  tx();
+
+  return {
+    memories: rows.length,
+    cosineLinks,
+    tagLinks,
+    total: cosineLinks + tagLinks,
+  };
 }
 
 export interface ExtractionCursor {
