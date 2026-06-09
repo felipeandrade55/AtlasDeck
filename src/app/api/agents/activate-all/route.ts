@@ -106,8 +106,15 @@ export async function POST() {
       const existing = config.agents.list.find((a: any) => a.id === t.id);
 
       if (existing) {
-        // Sync supreme content only — keep model/workspace/telegram as-is.
+        // Sync supreme content. Also RE-ALIGN the model to the orchestrator's
+        // (inheritedModel): this makes a Modo Supremo run double as a repair —
+        // agents left with an invalid model by an earlier version get fixed
+        // in one click (no SSH needed). Workspace/Telegram stay as-is; the
+        // user can re-pick a model manually afterward.
         existing.name = t.name;
+        if (inheritedModel) {
+          existing.model = JSON.parse(JSON.stringify(inheritedModel));
+        }
         updated.push(t.id);
         promptTargets.push({ id: t.id, workspace: existing.workspace, system_prompt: t.system_prompt });
       } else {
