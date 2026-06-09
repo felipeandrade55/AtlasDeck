@@ -1,8 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, LayoutGrid, Layers } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
+import { MissionGroups } from "./MissionGroups";
+import { MissionTree } from "./MissionTree";
 import { TaskDetailPanel } from "./TaskDetailPanel";
 import { LiveActivityFeed } from "./LiveActivityFeed";
 import { type LiveEvent, type Task, type TaskStatus } from "./types";
@@ -32,6 +34,7 @@ export function LiveMissionTab({ agents }: Props) {
   const [events, setEvents] = useState<LiveEvent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filterAgent, setFilterAgent] = useState<string>("");
+  const [viewMode, setViewMode] = useState<"status" | "mission">("status");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const refreshTaskTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -173,18 +176,58 @@ export function LiveMissionTab({ agents }: Props) {
           <RefreshCw className={`w-3 h-3 ${refreshing ? "animate-spin" : ""}`} />
           Refresh
         </button>
+
+        {/* View toggle: por status (kanban) vs por missão (agrupado) */}
+        <div className="flex items-center rounded border overflow-hidden" style={{ borderColor: "var(--border)" }}>
+          <button
+            type="button"
+            onClick={() => setViewMode("status")}
+            className="flex items-center gap-1 text-[11px] px-2 py-1 transition-colors"
+            style={{
+              background: viewMode === "status" ? "var(--accent)" : "transparent",
+              color: viewMode === "status" ? "white" : "var(--text-muted)",
+              border: "none",
+              cursor: "pointer",
+            }}
+          >
+            <LayoutGrid className="w-3 h-3" />
+            Status
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode("mission")}
+            className="flex items-center gap-1 text-[11px] px-2 py-1 transition-colors"
+            style={{
+              background: viewMode === "mission" ? "var(--accent)" : "transparent",
+              color: viewMode === "mission" ? "white" : "var(--text-muted)",
+              border: "none",
+              cursor: "pointer",
+            }}
+          >
+            <Layers className="w-3 h-3" />
+            Missão
+          </button>
+        </div>
+
         <span className="text-[10px] text-zinc-500 ml-auto">
           {tasks.length} task{tasks.length !== 1 ? "s" : ""} · {events.length} eventos
         </span>
       </div>
 
-      {/* Kanban (full width) */}
-      <KanbanBoard
-        tasks={tasks}
-        selectedTaskId={selectedId}
-        onSelectTask={setSelectedId}
-        onStatusChange={handleStatusChange}
-      />
+      {/* Árvore da missão (orquestração ao vivo) */}
+      <MissionTree tasks={tasks} agents={agents} onSelectTask={setSelectedId} />
+
+      {/* Board: por status (kanban) ou por missão (agrupado) */}
+      {viewMode === "status" ? (
+        <KanbanBoard
+          tasks={tasks}
+          selectedTaskId={selectedId}
+          onSelectTask={setSelectedId}
+          onStatusChange={handleStatusChange}
+        />
+      ) : (
+        <MissionGroups tasks={tasks} selectedTaskId={selectedId} onSelectTask={setSelectedId} />
+      )}
 
       {/* Detail + Activity Feed below */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">

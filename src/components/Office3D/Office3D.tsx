@@ -18,6 +18,8 @@ import PlantPot from './PlantPot';
 import WallClock from './WallClock';
 import FirstPersonControls from './FirstPersonControls';
 import MovingAvatar from './MovingAvatar';
+import MeetingTable from './MeetingTable';
+import { MEETING_SEATS, MEETING_MIN_PARTICIPANTS, MEETING_TABLE_CENTER } from './meetingConfig';
 
 /**
  * Normalize agent-health states + legacy aliases into the 7-state vocab.
@@ -280,6 +282,52 @@ export default function Office3D() {
     return map;
   }, [dynamicAgents]);
 
+  /**
+   * Meeting logic: when ≥ MEETING_MIN specialists have a task in flight at
+   * the same time, the team convenes at the meeting table. The orchestrator
+   * (main/jarvis) takes the head seat; each active specialist gets the next
+   * seat. Returns a map agent_id → seat tuple consumed by MovingAvatar.
+   */
+  const ACTIVE_TASK_STATUSES = useMemo(
+    () => new Set(['assigned', 'in_progress', 'testing', 'planning', 'review']),
+    [],
+  );
+  const { meetingSeatById, meetingActive, meetingCount } = useMemo(() => {
+    const activeSpecialists: string[] = [];
+    for (const a of dynamicAgents) {
+      if (a.id === 'main' || a.id === 'jarvis') continue;
+      const tasks = activeByAgent.get(a.id);
+      if (!tasks) continue;
+      let active = false;
+      for (const st of tasks.values()) {
+        if (ACTIVE_TASK_STATUSES.has(st)) {
+          active = true;
+          break;
+        }
+      }
+      if (active) activeSpecialists.push(a.id);
+    }
+
+    const map = new Map<string, [number, number, number]>();
+    if (activeSpecialists.length < MEETING_MIN_PARTICIPANTS) {
+      return { meetingSeatById: map, meetingActive: false, meetingCount: 0 };
+    }
+
+    // Head seat (index 0) for the orchestrator if it exists on the roster.
+    const mainId = dynamicAgents.find((a) => a.id === 'main' || a.id === 'jarvis')?.id;
+    let seatIdx = 0;
+    if (mainId) {
+      map.set(mainId, MEETING_SEATS[0]);
+      seatIdx = 1;
+    }
+    for (const id of activeSpecialists) {
+      if (seatIdx >= MEETING_SEATS.length) break; // table full — extras stay at desks
+      map.set(id, MEETING_SEATS[seatIdx]);
+      seatIdx += 1;
+    }
+    return { meetingSeatById: map, meetingActive: true, meetingCount: map.size };
+  }, [dynamicAgents, activeByAgent, ACTIVE_TASK_STATUSES]);
+
   const handleDeskClick = (agentId: string) => {
     setSelectedAgent(agentId);
   };
@@ -326,6 +374,9 @@ export default function Office3D() {
     { position: new Vector3(7, 0, 6), radius: 0.5 },
     { position: new Vector3(-9, 0, 0), radius: 0.4 },
     { position: new Vector3(9, 0, 0), radius: 0.4 },
+    // Mesa de reunião — wanderers desviam; participantes sentados ignoram
+    // este obstáculo (vão direto ao assento via meetingSeat).
+    { position: new Vector3(MEETING_TABLE_CENTER[0], 0, MEETING_TABLE_CENTER[2]), radius: 2.2 },
   ];
 
   return (
@@ -366,6 +417,9 @@ export default function Office3D() {
             />
           ))}
 
+          {/* Mesa de reunião (sempre presente; acende quando há reunião) */}
+          <MeetingTable active={meetingActive} attendees={meetingCount} />
+
           {/* Avatares móviles */}
           {dynamicAgents.map((agent) => (
             <MovingAvatar
@@ -376,6 +430,7 @@ export default function Office3D() {
               obstacles={obstacles}
               otherAvatarPositions={avatarPositions}
               deskPositions={deskPositions}
+              meetingSeat={meetingSeatById.get(agent.id) ?? null}
               onPositionUpdate={handleAvatarPositionUpdate}
             />
           ))}

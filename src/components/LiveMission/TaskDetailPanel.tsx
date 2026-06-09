@@ -171,6 +171,13 @@ export function TaskDetailPanel({ task, allTasks, onMutated, onSelectTask }: Pro
             )}
           </div>
           <h3 className="text-base font-bold text-white leading-tight">{task.title || task.prompt.slice(0, 80)}</h3>
+          {(task.delegated_by || task.assigned_to) && (
+            <div className="text-[10px] text-zinc-400 mt-1 flex items-center gap-1.5">
+              <span className="px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-300 border border-purple-500/25">
+                {task.delegated_by ? `${task.delegated_by} → ${task.assigned_to ?? "?"}` : `→ ${task.assigned_to}`}
+              </span>
+            </div>
+          )}
           <p className="text-[11px] text-zinc-400 mt-1 line-clamp-3">{task.prompt}</p>
         </div>
         <div className="flex flex-col items-end gap-1 text-[10px] text-zinc-500 flex-shrink-0">

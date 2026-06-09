@@ -30,6 +30,7 @@ import { sendMail, type MailMessageType } from "@/lib/mailbox-db";
 import { recordHeartbeat } from "@/lib/agent-health";
 import { snapshotAgent } from "@/lib/task-dispatcher";
 import { logActivity } from "@/lib/activities-db";
+import { publishEvent } from "@/lib/live-events";
 
 export type OrchestratorToolName =
   | "delegate_to"
@@ -207,7 +208,7 @@ function inEnum<T extends string>(value: string, allowed: readonly T[], key: str
 
 interface DelegateArgs {
   agent_id: string; task: string; title?: string; context?: string;
-  parent_task_id?: string; depends_on?: string[];
+  parent_task_id?: string; depends_on?: string[]; parent_agent_id?: string;
 }
 function parseDelegate(raw: unknown): DelegateArgs {
   const o = asObj(raw);
@@ -218,6 +219,7 @@ function parseDelegate(raw: unknown): DelegateArgs {
     context: optString(o, "context"),
     parent_task_id: optString(o, "parent_task_id"),
     depends_on: optStringArray(o, "depends_on"),
+    parent_agent_id: optString(o, "parent_agent_id"),
   };
 }
 
@@ -319,9 +321,12 @@ export async function executeTool(
     switch (name) {
       case "delegate_to": {
         const args = parseDelegate(rawArgs);
+        // Who is delegating. The orchestrator is the entry point (Jarvis =
+        // "main") unless the caller explicitly names a different parent.
+        const delegatedBy = args.parent_agent_id ?? "main";
         const task = createTask({
           parent_task_id: args.parent_task_id ?? null,
-          delegated_by: null,
+          delegated_by: delegatedBy,
           assigned_to: args.agent_id,
           status: "inbox",
           title: args.title || args.task.slice(0, 80),
@@ -332,23 +337,36 @@ export async function executeTool(
         const updated = updateTask(task.id, { workspace_path: ws.relativePath });
         sendMail({
           task_id: task.id,
-          from_agent_id: null,
+          from_agent_id: delegatedBy,
           to_agent_id: args.agent_id,
           subject: "Nova tarefa delegada",
           body: args.task.slice(0, 400),
           message_type: "inter_agent",
         });
+        // Dedicated delegation event so the dashboard can show the
+        // orchestration ("main → dev") distinctly from a plain chat task.
+        publishEvent({
+          event_type: "task.delegated",
+          task_id: task.id,
+          agent_id: delegatedBy,
+          payload: {
+            delegated_by: delegatedBy,
+            assigned_to: args.agent_id,
+            title: task.title,
+          },
+        });
         logActivity("task", `Tool delegate_to: ${args.agent_id}`, "success", {
           agent: args.agent_id,
-          metadata: { task_id: task.id },
+          metadata: { task_id: task.id, delegated_by: delegatedBy },
         });
         return { ok: true, tool: name, result: { task: updated ?? task } };
       }
 
       case "decompose": {
         const args = parseDecompose(rawArgs);
+        const decomposedBy = args.parent_agent_id ?? "main";
         const parent = createTask({
-          delegated_by: args.parent_agent_id ?? null,
+          delegated_by: decomposedBy,
           assigned_to: null,
           status: "planning",
           title: args.parent_prompt.slice(0, 80),
@@ -370,7 +388,7 @@ export async function executeTool(
           });
           const child = createTask({
             parent_task_id: parent.id,
-            delegated_by: args.parent_agent_id ?? null,
+            delegated_by: decomposedBy,
             assigned_to: sub.agent_id,
             status: "inbox",
             title: sub.title || sub.task.slice(0, 80),
@@ -380,9 +398,20 @@ export async function executeTool(
           const ws = ensureTaskWorkspace(child.id);
           const updatedChild = updateTask(child.id, { workspace_path: ws.relativePath });
           created.push(updatedChild ?? child);
+          publishEvent({
+            event_type: "task.delegated",
+            task_id: child.id,
+            agent_id: decomposedBy,
+            payload: {
+              delegated_by: decomposedBy,
+              assigned_to: sub.agent_id,
+              title: child.title,
+              parent_task_id: parent.id,
+            },
+          });
         }
         logActivity("task", `Tool decompose: ${args.subtasks.length} subtasks`, "success", {
-          metadata: { parent_task_id: parent.id },
+          metadata: { parent_task_id: parent.id, delegated_by: decomposedBy },
         });
         return { ok: true, tool: name, result: { parent, subtasks: created } };
       }

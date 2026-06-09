@@ -92,6 +92,7 @@ export function LiveActivityFeed({ events, onSelectTask }: Props) {
 }
 
 function colorFor(type: string): string {
+  if (type === "task.delegated") return "#a855f7";
   if (type.startsWith("task.")) return "#3b82f6";
   if (type.startsWith("mailbox.")) return "#a855f7";
   if (type.startsWith("agent.")) return "#10b981";
@@ -105,6 +106,8 @@ function describe(e: LiveEvent): string {
   switch (e.event_type) {
     case "task.created":
       return `📥 nova task → ${e.payload.title ?? ""} ${tail}`.trim();
+    case "task.delegated":
+      return `🔀 ${e.payload.delegated_by ?? "main"} → ${e.payload.assigned_to ?? "?"}: ${String(e.payload.title ?? "").slice(0, 50)}`.trim();
     case "task.status_changed":
       return `🔄 ${e.payload.from} → ${e.payload.to} · ${e.payload.title ?? ""}`.trim();
     case "task.checkpoint":

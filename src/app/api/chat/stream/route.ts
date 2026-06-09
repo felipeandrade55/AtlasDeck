@@ -349,12 +349,24 @@ function summarizeToolInput(input: unknown): string {
 }
 
 const SUBSTANTIAL_CHAT_RE =
-  /\b(crie|criar|faça|faca|fazer|implemente|implementar|corrija|corrigir|ajuste|ajustar|altere|alterar|edite|editar|rode|rodar|execute|executar|pesquise|pesquisar|analise|analisar|planeje|planejar|resolva|resolver|investigue|investigar|diagnostique|diagnosticar|instale|instalar|configure|configurar|publique|publicar|commit|deploy|teste|testar|debug|debugar|refatore|refatorar|gere|gerar|importe|importar|sincronize|sincronizar)\b/i;
+  /\b(crie|criar|faça|faca|fazer|implemente|implementar|corrija|corrigir|ajuste|ajustar|altere|alterar|edite|editar|rode|rodar|execute|executar|pesquise|pesquisar|analise|analisar|planeje|planejar|resolva|resolver|investigue|investigar|diagnostique|diagnosticar|instale|instalar|configure|configurar|publique|publicar|commit|deploy|teste|testar|debug|debugar|refatore|refatorar|gere|gerar|importe|importar|sincronize|sincronizar|escreva|escrever|redija|redigir|monte|montar|elabore|elaborar|desenvolva|desenvolver|prepare|preparar|projete|projetar|calcule|calcular|revise|revisar|traduza|traduzir|resuma|resumir|organize|organizar|liste|listar|compare|comparar|otimize|otimizar|agende|agendar)\b/i;
 
+/**
+ * A user message becomes a tracked "mission" (kanban task) only when it
+ * expresses an actionable request — i.e. carries an action-intent verb.
+ *
+ * We removed the old "any message ≥120 chars" trigger: it turned long
+ * chitchat ("por aqui tudo certo, queria saber se a gente pode…") into
+ * missions and polluted the board. Greetings/small-talk ("boa noite",
+ * "tudo certo?") have no action verb, so they're naturally excluded; a real
+ * request still passes even when it starts with a greeting ("oi, cria um
+ * artigo pra mim" → matches "cria"). Delegated subtasks (delegate_to /
+ * decompose) appear in the board regardless — this only gates the
+ * top-level chat-turn task.
+ */
 function shouldCreateOperationalArtifacts(prompt: string): boolean {
   const normalized = prompt.replace(/\s+/g, " ").trim();
   if (!normalized) return false;
-  if (normalized.length >= 120) return true;
   return SUBSTANTIAL_CHAT_RE.test(normalized);
 }
 

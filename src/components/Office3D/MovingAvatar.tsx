@@ -5,6 +5,7 @@ import { useFrame } from '@react-three/fiber';
 import { Group, Vector3 } from 'three';
 import VoxelAvatar from './VoxelAvatar';
 import type { AgentConfig, AgentState } from './agentsConfig';
+import { MEETING_TABLE_CENTER } from './meetingConfig';
 
 interface Obstacle {
   position: Vector3;
@@ -42,6 +43,13 @@ interface MovingAvatarProps {
    * currently delegating to or reviewing.
    */
   deskPositions: Map<string, Vector3>;
+  /**
+   * When set, this avatar is in a meeting: it walks to this seat and stays
+   * there facing the table, overriding all desk/idle behavior. Null/absent =
+   * normal behavior. Tuple (not Vector3) so prop identity is stable across
+   * renders for the effect dependency.
+   */
+  meetingSeat?: [number, number, number] | null;
   onPositionUpdate: (id: string, pos: Vector3) => void;
 }
 
@@ -54,10 +62,12 @@ export default function MovingAvatar({
   obstacles,
   otherAvatarPositions,
   deskPositions,
+  meetingSeat,
   onPositionUpdate
 }: MovingAvatarProps) {
   const state = stateProp ?? IDLE_STATE;
   const groupRef = useRef<Group>(null);
+  const inMeeting = !!meetingSeat;
 
   /**
    * What's the "anchor" of this avatar this frame?
@@ -158,7 +168,13 @@ export default function MovingAvatar({
    * the office actually looks lived-in.
    */
   const focusKey = state.focusAgentId ?? '';
+  const meetingKey = meetingSeat ? meetingSeat.join(',') : '';
   useEffect(() => {
+    // In a meeting: lock the target to the seat and don't reroll/wander.
+    if (meetingSeat) {
+      setTargetPos(new Vector3(meetingSeat[0], meetingSeat[1], meetingSeat[2]));
+      return;
+    }
     const reroll = () => {
       const anchor = computeAnchorTarget();
       if (anchor && isPositionFree(anchor)) {
@@ -229,13 +245,33 @@ export default function MovingAvatar({
       clearInterval(interval);
     };
     // We intentionally include focusKey so Jarvis re-targets immediately
-    // when the orchestrator focus flips to a different sub-agent.
+    // when the orchestrator focus flips to a different sub-agent, and
+    // meetingKey so entering/leaving a meeting re-runs this.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.status, focusKey]);
+  }, [state.status, focusKey, meetingKey]);
 
   // Mover suavemente hacia el objetivo
   useFrame((frameState, delta) => {
     if (!groupRef.current) return;
+
+    // Meeting mode: walk straight to the seat (ignore obstacle gate so the
+    // avatar can reach the table) and face the table center once there.
+    if (inMeeting) {
+      const seatV = targetPos;
+      const newPos = currentPos.current.clone().lerp(seatV, delta * 1.6);
+      currentPos.current.copy(newPos);
+      groupRef.current.position.copy(currentPos.current);
+      onPositionUpdate(agent.id, currentPos.current.clone());
+      const toCenter = new Vector3(
+        MEETING_TABLE_CENTER[0] - currentPos.current.x,
+        0,
+        MEETING_TABLE_CENTER[2] - currentPos.current.z,
+      );
+      if (toCenter.length() > 0.05) {
+        groupRef.current.rotation.y = Math.atan2(toCenter.x, toCenter.z);
+      }
+      return;
+    }
 
     // idle wanders quickly; orchestrator rotating between desks (delegating)
     // is brisk; working/thinking move slow (more "settled"); stuck/offline

@@ -148,8 +148,15 @@ function TaskCard({ task, selected, dragging, onSelect, onDragStart, onDragEnd }
         {task.title || task.prompt.slice(0, 50)}
       </div>
       <div className="flex items-center justify-between mt-1 gap-1">
-        <span className="text-[9px] text-zinc-400 truncate" title={task.assigned_to || undefined}>
-          {task.assigned_to ? `→ ${task.assigned_to}` : "—"}
+        <span
+          className="text-[9px] text-zinc-400 truncate"
+          title={task.delegated_by ? `${task.delegated_by} → ${task.assigned_to ?? "?"}` : task.assigned_to || undefined}
+        >
+          {task.delegated_by
+            ? `${task.delegated_by} → ${task.assigned_to ?? "?"}`
+            : task.assigned_to
+            ? `→ ${task.assigned_to}`
+            : "—"}
         </span>
         {task.depends_on.length > 0 && (
           <span title={`depende de ${task.depends_on.length}`} className="text-[9px] text-amber-300 flex items-center gap-0.5">

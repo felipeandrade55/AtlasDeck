@@ -23,6 +23,7 @@ const DB_PATH = path.join(process.cwd(), "data", "tasks.db");
 
 export type LiveEventType =
   | "task.created"
+  | "task.delegated"
   | "task.status_changed"
   | "task.checkpoint"
   | "task.completed"
