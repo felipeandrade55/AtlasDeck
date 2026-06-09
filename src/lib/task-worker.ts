@@ -86,6 +86,16 @@ async function executeTask(task: Task): Promise<void> {
       status: "complete",
     });
 
+    // Anti-cascade: a specialist run by the worker must DO the work itself,
+    // never re-delegate. The sub-agent has the same delegate_to/decompose MCP
+    // tools as the orchestrator, so without this it can spawn a second task
+    // (the confusing "two cards at once") and, worse, an unbounded chain.
+    const workerPrompt =
+      `${task.prompt}\n\n[atlas:worker] Você é um sub-agente especialista executando uma ` +
+      `tarefa que JÁ foi delegada a você. FAÇA o trabalho você mesmo e entregue o resultado ` +
+      `aqui. NÃO chame delegate_to, decompose nem nenhuma ferramenta de delegação — você é o ` +
+      `executor final, não o orquestrador.`;
+
     let output = "";
     let tokensIn = 0;
     let tokensOut = 0;
@@ -96,7 +106,7 @@ async function executeTask(task: Task): Promise<void> {
     try {
       for await (const evt of runOpenClawChat({
         agentId,
-        prompt: task.prompt,
+        prompt: workerPrompt,
         threadId: thread.id,
         workspace: task.workspace_path ?? null,
         signal: ac.signal,
