@@ -33,6 +33,7 @@ export interface AgentTemplate {
   suggested_skills: string[];
   personality: string;
   system_prompt: string;
+  briefing_checklist?: string[];
   default_cost_caps?: { per_task_cents?: number; per_day_cents?: number };
 }
 

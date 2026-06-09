@@ -27,6 +27,21 @@ export interface AgentMetaEntry {
   cost_caps?: AgentCostCaps;
   template_id?: string;
   /**
+   * Custom system prompt written to the agent's workspace MEMORY.md so
+   * OpenClaw loads it as persistent context on every session boot.
+   * Populated from the template's system_prompt on create and editable
+   * by the user afterwards via the agent form.
+   */
+  system_prompt?: string;
+  /**
+   * Domain-specific questions the orchestrator (Jarvis) should make sure
+   * are answered BEFORE delegating to this agent. Surfaced in the
+   * orchestrator's MEMORY.md so it can run a consultative intake on vague
+   * user requests instead of delegating blindly. Populated from the
+   * template's briefing_checklist on create.
+   */
+  briefing_checklist?: string[];
+  /**
    * Records that this agent "rides on" another agent's Telegram bot — set
    * to the parent agent id (e.g. `"main"`). When present, the agents API
    * intentionally DOES NOT create a `channels.telegram.accounts[<this id>]`
@@ -75,6 +90,8 @@ export function getAgentMeta(id: string): AgentMetaEntry {
     override_autonomous: entry.override_autonomous ?? "inherit",
     cost_caps: entry.cost_caps ?? {},
     template_id: entry.template_id,
+    system_prompt: entry.system_prompt,
+    briefing_checklist: entry.briefing_checklist ?? [],
     shares_bot_with: entry.shares_bot_with,
   };
 }
@@ -107,6 +124,14 @@ export function setAgentMeta(id: string, meta: Partial<AgentMetaEntry>): void {
     next.cost_caps = caps;
   }
   if (meta.template_id !== undefined) next.template_id = meta.template_id || undefined;
+  if (meta.system_prompt !== undefined) {
+    next.system_prompt = typeof meta.system_prompt === "string" ? meta.system_prompt || undefined : undefined;
+  }
+  if (meta.briefing_checklist !== undefined) {
+    next.briefing_checklist = Array.isArray(meta.briefing_checklist)
+      ? meta.briefing_checklist.filter((s) => typeof s === "string" && s.trim()).map((s) => s.trim())
+      : [];
+  }
   if (meta.shares_bot_with !== undefined) {
     // Empty string clears the relationship (agent now owns its own bot or
     // has none); a real id sets it.

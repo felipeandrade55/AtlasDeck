@@ -20,7 +20,7 @@ import {
   type AgentCostCaps,
   type AgentMetaEntry,
 } from "@/lib/agents-meta";
-import { refreshAllOrchestrators } from "@/lib/orchestrator-injector";
+import { refreshAllOrchestrators, injectAgentSystemPrompt } from "@/lib/orchestrator-injector";
 import { normalizeWorkspacePath } from "@/lib/workspace-migration";
 
 /**
@@ -42,6 +42,7 @@ async function refreshOrchestratorsBestEffort(
         meta[a.id]?.role ??
         (a.id === "main" || a.id === "jarvis" ? "orchestrator" : "specialist"),
       specialty: meta[a.id]?.specialty ?? [],
+      briefing_checklist: meta[a.id]?.briefing_checklist ?? [],
     }));
     await refreshAllOrchestrators(peers);
   } catch (e) {
@@ -270,6 +271,8 @@ interface Agent {
   override_autonomous: AgentAutonomousOverride;
   cost_caps: AgentCostCaps;
   template_id?: string;
+  system_prompt?: string;
+  briefing_checklist?: string[];
 }
 
 /**
@@ -495,6 +498,8 @@ export async function GET() {
         override_autonomous: meta.override_autonomous ?? "inherit",
         cost_caps: meta.cost_caps ?? {},
         template_id: meta.template_id,
+        system_prompt: meta.system_prompt,
+        briefing_checklist: meta.briefing_checklist ?? [],
       };
     });
 
@@ -581,9 +586,29 @@ export async function POST(request: Request) {
       override_autonomous: body.override_autonomous,
       cost_caps: body.cost_caps,
       template_id: body.template_id,
+      system_prompt: typeof body.system_prompt === "string" ? body.system_prompt : undefined,
+      briefing_checklist: Array.isArray(body.briefing_checklist) ? body.briefing_checklist : undefined,
     });
 
     config.agents.list.push(newAgent);
+
+    // Auto-link: add the new agent to every orchestrator's allowAgents so
+    // the orchestrator can delegate to it immediately without a manual edit.
+    // Only links non-orchestrator agents (specialists/reviewers).
+    const newAgentRole: string = body.role || "specialist";
+    if (newAgentRole !== "orchestrator") {
+      const allMeta = getAllAgentMeta();
+      for (const existing of config.agents.list) {
+        if (existing.id === body.id) continue;
+        const existingRole = allMeta[existing.id]?.role ?? (existing.id === "main" || existing.id === "jarvis" ? "orchestrator" : "specialist");
+        if (existingRole === "orchestrator") {
+          if (!existing.subagents) existing.subagents = { allowAgents: [] };
+          if (!existing.subagents.allowAgents.includes(body.id)) {
+            existing.subagents.allowAgents.push(body.id);
+          }
+        }
+      }
+    }
 
     // Telegram config: merge, NEVER replace. Older code rewrote the entire
     // accounts[id] object even when the user didn't touch the Telegram fields,
@@ -664,6 +689,11 @@ export async function POST(request: Request) {
         metadata: { id: newAgent.id, model: newAgent.model?.primary, workspace: newAgent.workspace },
       });
     } catch {}
+    // Write custom system_prompt into the agent's workspace MEMORY.md so
+    // OpenClaw loads it as persistent context on boot.
+    if (typeof body.system_prompt === "string" && body.system_prompt.trim()) {
+      void injectAgentSystemPrompt(newAgent, body.system_prompt);
+    }
     // Swarm changed — regenerate the orchestrator memory block so Jarvis
     // sees the new sub-agent on its next session boot.
     void refreshOrchestratorsBestEffort(config.agents.list);
@@ -706,7 +736,9 @@ export async function PUT(request: Request) {
       body.inherit_jarvis_skills !== undefined ||
       body.override_autonomous !== undefined ||
       body.cost_caps !== undefined ||
-      body.template_id !== undefined
+      body.template_id !== undefined ||
+      body.system_prompt !== undefined ||
+      body.briefing_checklist !== undefined
     ) {
       setAgentMeta(body.id, {
         role: body.role,
@@ -716,6 +748,8 @@ export async function PUT(request: Request) {
         override_autonomous: body.override_autonomous,
         cost_caps: body.cost_caps,
         template_id: body.template_id,
+        system_prompt: typeof body.system_prompt === "string" ? body.system_prompt : undefined,
+        briefing_checklist: Array.isArray(body.briefing_checklist) ? body.briefing_checklist : undefined,
       });
     }
     // Defensive: if a legacy `ui` key crept in from old code or hand edits,
@@ -848,6 +882,10 @@ export async function PUT(request: Request) {
         metadata: { id: body.id, fields: changed },
       });
     } catch {}
+    // Sync custom prompt to the agent's workspace MEMORY.md.
+    if (body.system_prompt !== undefined) {
+      void injectAgentSystemPrompt(agent, body.system_prompt);
+    }
     void refreshOrchestratorsBestEffort(config.agents.list);
     return NextResponse.json({ success: true });
   } catch (error: any) {

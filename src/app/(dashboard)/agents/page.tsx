@@ -18,6 +18,7 @@ import {
   ArrowRight,
   Cpu,
   Sparkles,
+  Zap,
 } from "lucide-react";
 import { AgentOrganigrama } from "@/components/AgentOrganigrama";
 import { AgentTemplatePicker, type AgentTemplate } from "@/components/AgentTemplatePicker";
@@ -65,6 +66,8 @@ interface Agent {
   override_autonomous?: "inherit" | "force_manual" | "force_auto";
   cost_caps?: { per_task_cents?: number | null; per_day_cents?: number | null };
   template_id?: string;
+  system_prompt?: string;
+  briefing_checklist?: string[];
 }
 
 export default function AgentsPage() {
@@ -102,11 +105,17 @@ export default function AgentsPage() {
   const [formCostPerTask, setFormCostPerTask] = useState<string>("");
   const [formCostPerDay, setFormCostPerDay] = useState<string>("");
   const [formTemplateId, setFormTemplateId] = useState<string | undefined>(undefined);
+  const [formSystemPrompt, setFormSystemPrompt] = useState("");
+  // briefing_checklist editado como texto, uma pergunta por linha
+  const [formBriefingChecklist, setFormBriefingChecklist] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
 
   // Gateway auto-restart after saving an agent (so the new model takes effect)
   const [restarting, setRestarting] = useState(false);
   const [restartResult, setRestartResult] = useState<ClientRestartResult | null>(null);
+
+  // "Modo Supremo" — bulk-activate the whole specialist squad at once
+  const [supremeRunning, setSupremeRunning] = useState(false);
 
   // Existing Telegram account IDs — surfaced as suggestions so the user picks
   // an agent ID that matches a configured bot account (otherwise Telegram
@@ -168,6 +177,8 @@ export default function AgentsPage() {
     setFormCostPerTask("");
     setFormCostPerDay("");
     setFormTemplateId(undefined);
+    setFormSystemPrompt("");
+    setFormBriefingChecklist("");
     setErrorMsg("");
     setShowModal(true);
     void fetchTelegramAccountIds();
@@ -196,6 +207,8 @@ export default function AgentsPage() {
         : "",
     );
     setFormTemplateId(t.id);
+    if (t.system_prompt) setFormSystemPrompt(t.system_prompt);
+    if (Array.isArray(t.briefing_checklist)) setFormBriefingChecklist(t.briefing_checklist.join("\n"));
   };
 
   const handleOpenEdit = (agent: Agent) => {
@@ -223,6 +236,8 @@ export default function AgentsPage() {
       typeof agent.cost_caps?.per_day_cents === "number" ? String(agent.cost_caps.per_day_cents) : "",
     );
     setFormTemplateId(agent.template_id);
+    setFormSystemPrompt(agent.system_prompt || "");
+    setFormBriefingChecklist((agent.briefing_checklist || []).join("\n"));
     setErrorMsg("");
     setShowModal(true);
   };
@@ -281,6 +296,11 @@ export default function AgentsPage() {
         per_day_cents: formCostPerDay.trim() ? Number(formCostPerDay) : null,
       },
       template_id: formTemplateId,
+      system_prompt: formSystemPrompt.trim(),
+      briefing_checklist: formBriefingChecklist
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean),
     };
     if (useSharedBot) {
       payload.shareBotWith = formShareBotWith.trim();
@@ -320,6 +340,113 @@ export default function AgentsPage() {
     }
   };
 
+  // Modo Supremo: cria/atualiza todo o squad de especialistas dos templates
+  // e conecta todos ao Jarvis (main) de uma vez só.
+  const handleActivateAll = async () => {
+    if (
+      !confirm(
+        "⚡ Modo Supremo\n\nIsto vai criar (ou atualizar) todos os agentes especialistas a partir dos templates, com prompts aprimorados, e conectar todos ao Jarvis (main) para delegação automática.\n\nAgentes que você já tem serão sincronizados para a versão melhorada (nome, prompt e checklist). Modelo e Telegram dos existentes são preservados.\n\nContinuar?",
+      )
+    )
+      return;
+
+    setSupremeRunning(true);
+    setErrorMsg("");
+    try {
+      const res = await fetch("/api/agents/activate-all", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setErrorMsg(data.error || "Falha ao ativar o Modo Supremo.");
+        setSupremeRunning(false);
+        return;
+      }
+      await fetchAgents();
+      // Restart do gateway para os novos agentes/modelos entrarem em vigor.
+      if (getAutoRestartPref()) {
+        setRestarting(true);
+        setRestartResult(null);
+        const result = await restartGatewayClient();
+        setRestartResult(result);
+        setRestarting(false);
+        if (result.success) {
+          setTimeout(() => setRestartResult((r) => (r?.success ? null : r)), 5000);
+        }
+      }
+    } catch {
+      setErrorMsg("Erro de conexão ao ativar o Modo Supremo.");
+    } finally {
+      setSupremeRunning(false);
+    }
+  };
+
+  // Desativa o Modo Supremo: desconecta todos os especialistas do Jarvis
+  // (sem apagar ninguém). Reversível — reativar reconecta tudo.
+  const handleDeactivateAll = async () => {
+    if (
+      !confirm(
+        "Desativar o Modo Supremo?\n\nO Jarvis (main) volta a operar sozinho. Todos os especialistas serão DESCONECTADOS da delegação, mas continuam existindo com seus prompts e configs intactos.\n\nReative quando quiser para reconectar tudo. Continuar?",
+      )
+    )
+      return;
+
+    setSupremeRunning(true);
+    setErrorMsg("");
+    try {
+      const res = await fetch("/api/agents/activate-all", { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) {
+        setErrorMsg(data.error || "Falha ao desativar o Modo Supremo.");
+        setSupremeRunning(false);
+        return;
+      }
+      await fetchAgents();
+      if (getAutoRestartPref()) {
+        setRestarting(true);
+        setRestartResult(null);
+        const result = await restartGatewayClient();
+        setRestartResult(result);
+        setRestarting(false);
+        if (result.success) {
+          setTimeout(() => setRestartResult((r) => (r?.success ? null : r)), 5000);
+        }
+      }
+    } catch {
+      setErrorMsg("Erro de conexão ao desativar o Modo Supremo.");
+    } finally {
+      setSupremeRunning(false);
+    }
+  };
+
+  // Liga/desliga um agente individual do squad do Jarvis (allowAgents dos
+  // orquestradores), com um clique no card.
+  const handleToggleSquad = async (agentId: string, linked: boolean) => {
+    try {
+      const res = await fetch("/api/agents/squad-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId, linked }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setErrorMsg(data.error || "Falha ao alterar o squad.");
+        return;
+      }
+      await fetchAgents();
+      if (getAutoRestartPref()) {
+        setRestarting(true);
+        setRestartResult(null);
+        const result = await restartGatewayClient();
+        setRestartResult(result);
+        setRestarting(false);
+        if (result.success) {
+          setTimeout(() => setRestartResult((r) => (r?.success ? null : r)), 5000);
+        }
+      }
+    } catch {
+      setErrorMsg("Erro de conexão ao alterar o squad.");
+    }
+  };
+
   const handleDelete = async (id: string) => {
     if (!confirm(`Deseja realmente remover o agente ${id}? Isto limpará suas delegações correspondentes.`)) return;
 
@@ -355,6 +482,16 @@ export default function AgentsPage() {
   };
 
   const selectedAgent = agents.find(a => a.id === selectedAgentId);
+
+  // Estado do squad derivado do allowAgents dos orquestradores.
+  const isOrchestrator = (a: Agent) =>
+    a.role === "orchestrator" || a.id === "main" || a.id === "jarvis";
+  const squadLinkedIds = new Set<string>();
+  agents.forEach((a) => {
+    if (isOrchestrator(a)) (a.allowAgents || []).forEach((id) => squadLinkedIds.add(id));
+  });
+  // "Modo Supremo ativo" = pelo menos um especialista conectado a um orquestrador.
+  const squadActive = squadLinkedIds.size > 0;
 
   if (loading && agents.length === 0) {
     return (
@@ -396,14 +533,41 @@ export default function AgentsPage() {
           </p>
         </div>
         
-        <button
-          onClick={handleOpenCreate}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg font-semibold transition-all hover:scale-105"
-          style={{ backgroundColor: "var(--accent)", color: "white", border: "none", cursor: "pointer" }}
-        >
-          <Plus className="w-4 h-4" />
-          Adicionar Agente
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={squadActive ? handleDeactivateAll : handleActivateAll}
+            disabled={supremeRunning}
+            title={
+              squadActive
+                ? "Desconecta todos os especialistas do Jarvis (reversível, não apaga ninguém)"
+                : "Cria/atualiza todos os especialistas dos templates e conecta ao Jarvis"
+            }
+            className="flex items-center gap-2 px-4 py-2 rounded-lg font-semibold transition-all hover:scale-105 disabled:opacity-60 disabled:cursor-not-allowed"
+            style={{
+              background: squadActive
+                ? "transparent"
+                : "linear-gradient(135deg, #a855f7, #6366f1)",
+              color: squadActive ? "#c4b5fd" : "white",
+              border: squadActive ? "1px solid rgba(168, 85, 247, 0.5)" : "none",
+              cursor: supremeRunning ? "not-allowed" : "pointer",
+            }}
+          >
+            <Zap className="w-4 h-4" />
+            {supremeRunning
+              ? "Processando..."
+              : squadActive
+              ? "Desativar Modo Supremo"
+              : "Modo Supremo"}
+          </button>
+          <button
+            onClick={handleOpenCreate}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg font-semibold transition-all hover:scale-105"
+            style={{ backgroundColor: "var(--accent)", color: "white", border: "none", cursor: "pointer" }}
+          >
+            <Plus className="w-4 h-4" />
+            Adicionar Agente
+          </button>
+        </div>
       </div>
 
       {/* KPI Cards */}
@@ -663,6 +827,36 @@ export default function AgentsPage() {
                         </span>
                       ))}
                     </div>
+                  </div>
+                )}
+
+                {/* Liga/desliga este agente do squad do Jarvis (só especialistas) */}
+                {!isOrchestrator(agent) && (
+                  <div className="flex justify-between items-center pt-2 border-t" style={{ borderColor: "var(--border)" }}>
+                    <span style={{ color: "var(--text-muted)" }}>
+                      No squad do Jarvis
+                      <span className="ml-1" style={{ color: squadLinkedIds.has(agent.id) ? "#4ade80" : "var(--text-muted)" }}>
+                        {squadLinkedIds.has(agent.id) ? "• conectado" : "• desligado"}
+                      </span>
+                    </span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleToggleSquad(agent.id, !squadLinkedIds.has(agent.id));
+                      }}
+                      title={squadLinkedIds.has(agent.id) ? "Remover do squad do Jarvis" : "Adicionar ao squad do Jarvis"}
+                      className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0"
+                      style={{
+                        backgroundColor: squadLinkedIds.has(agent.id) ? "#22c55e" : "#3f3f46",
+                        border: "none",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <span
+                        className="inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform"
+                        style={{ transform: squadLinkedIds.has(agent.id) ? "translateX(18px)" : "translateX(3px)" }}
+                      />
+                    </button>
                   </div>
                 )}
               </div>
@@ -1057,6 +1251,36 @@ export default function AgentsPage() {
                   />
                   <span className="text-[10px] text-zinc-500 block">
                     Usado pelo orquestrador para decidir quem deve receber cada tarefa.
+                  </span>
+                </label>
+
+                <label className="block space-y-1">
+                  <span className="text-xs font-bold text-zinc-400 uppercase tracking-wide">Prompt do Agente</span>
+                  <textarea
+                    value={formSystemPrompt}
+                    onChange={(e) => setFormSystemPrompt(e.target.value)}
+                    rows={5}
+                    placeholder={"Ex: Você é o agente Writer — especialista em escrita. Responsabilidades:\n- Produzir textos ajustando tom conforme o público.\n- Pedir o objetivo e o público-alvo se não estiverem claros.\n\nAo concluir, sinalize task.complete com o resultado."}
+                    className="w-full px-3 py-2 rounded-lg text-xs outline-none bg-zinc-900 border text-zinc-200 font-mono leading-relaxed resize-y"
+                    style={{ borderColor: "var(--border)", minHeight: "100px" }}
+                  />
+                  <span className="text-[10px] text-zinc-500 block">
+                    Instrui o agente sobre seu papel, responsabilidades e formato de entrega. Pré-preenchido ao escolher um template — editável livremente. Salvo no MEMORY.md do workspace para o OpenClaw carregar na inicialização.
+                  </span>
+                </label>
+
+                <label className="block space-y-1">
+                  <span className="text-xs font-bold text-zinc-400 uppercase tracking-wide">Checklist de Briefing (consultivo)</span>
+                  <textarea
+                    value={formBriefingChecklist}
+                    onChange={(e) => setFormBriefingChecklist(e.target.value)}
+                    rows={4}
+                    placeholder={"Uma pergunta por linha. Ex:\nObjetivo do texto (informar / vender / engajar)\nPúblico-alvo e nível de conhecimento\nFormato e canal (blog, e-mail, landing)"}
+                    className="w-full px-3 py-2 rounded-lg text-xs outline-none bg-zinc-900 border text-zinc-200 leading-relaxed resize-y"
+                    style={{ borderColor: "var(--border)", minHeight: "80px" }}
+                  />
+                  <span className="text-[10px] text-zinc-500 block">
+                    Uma pergunta por linha. O Jarvis usa isso para entrevistar você antes de delegar a este agente, quando o pedido vier vago — assim o especialista recebe um briefing completo.
                   </span>
                 </label>
 

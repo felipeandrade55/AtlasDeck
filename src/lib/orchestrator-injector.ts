@@ -80,17 +80,23 @@ function splice(existing: string, payload: string): string {
   return base ? `${base}\n\n${block}\n` : `${block}\n`;
 }
 
-function buildPayload(orchestrator: AgentLike, peers: Array<AgentLike & { role?: string; specialty?: string[] }>): string {
+function buildPayload(
+  orchestrator: AgentLike,
+  peers: Array<AgentLike & { role?: string; specialty?: string[]; briefing_checklist?: string[] }>,
+): string {
   const settings = getOrchestrationSettings();
   const autonomous = isAutonomousFor(undefined); // global flag (orchestrators usually inherit)
 
   const subAgents = peers.filter((a) => a.id !== orchestrator.id);
   const subList = subAgents.length
     ? subAgents
-        .map(
-          (a) =>
-            `- \`${a.id}\` — ${a.name || a.id} · papel: ${a.role || "specialist"} · skills: ${(a.specialty ?? []).join(", ") || "(generalista)"}`,
-        )
+        .map((a) => {
+          const head = `- \`${a.id}\` — ${a.name || a.id} · papel: ${a.role || "specialist"} · skills: ${(a.specialty ?? []).join(", ") || "(generalista)"}`;
+          const checklist = (a.briefing_checklist ?? []).filter((q) => q && q.trim());
+          if (!checklist.length) return head;
+          const items = checklist.map((q) => `    - ${q}`).join("\n");
+          return `${head}\n  Antes de delegar, confirme com o usuário:\n${items}`;
+        })
         .join("\n")
     : "_(nenhum sub-agente cadastrado ainda)_";
 
@@ -158,6 +164,16 @@ function buildPayload(orchestrator: AgentLike, peers: Array<AgentLike & { role?:
     `### Você é o orquestrador "${orchestrator.id}"`,
     `Sua função: delegar tarefas para sub-agentes especializados, revisar resultados e entregar o briefing ao usuário.`,
     "",
+    `#### Comportamento Consultivo (IMPORTANTE)`,
+    `Muitos usuários fazem pedidos vagos ("crie um relatório financeiro", "escreva um artigo"). NÃO delegue às cegas — enriqueça o pedido primeiro:`,
+    `1. **Detecte ambiguidade.** Se o pedido não traz o suficiente para um especialista entregar bem (falta formato, objetivo, público, período, escopo...), PERGUNTE antes de delegar.`,
+    `2. **Use o checklist de briefing do sub-agente alvo** (listado abaixo em "Sub-agentes disponíveis") para saber o que perguntar. Pergunte só o que está faltando.`,
+    `3. **Seja conciso:** no máximo 3-4 perguntas de cada vez, as de maior impacto.`,
+    `4. **Sempre ofereça um default** para cada pergunta ("se não disser, eu faço X"), para o usuário poder responder "tanto faz, segue" sem travar.`,
+    `5. Quando tiver as respostas (ou o usuário disser para seguir com os defaults), monte um briefing completo e aí sim delegue via \`delegate_to\`, passando esse briefing no campo \`context\`.`,
+    `6. Pedidos simples e claros NÃO precisam de entrevista — delegue direto.`,
+    `Você fala direto com o usuário no chat; para perguntar basta responder em texto e aguardar a próxima mensagem (não precisa de tool para isso).`,
+    "",
     `**Modo Autônomo (global):** ${autonomous ? "🚀 LIGADO (executa sem pedir aprovação)" : "🛑 DESLIGADO (sempre pedir aprovação)"}`,
     `**Aprovação humana antes de \"done\":** ${settings.require_user_approval ? "obrigatória" : "desligada"}`,
     `**Cost caps:** ${settings.cost_caps_enforce ? "aplicados pelo dispatcher" : "advisory only"}`,
@@ -205,7 +221,7 @@ function buildPayload(orchestrator: AgentLike, peers: Array<AgentLike & { role?:
  */
 export async function injectOrchestratorContext(
   orchestrator: AgentLike,
-  peers: Array<AgentLike & { role?: string; specialty?: string[] }>,
+  peers: Array<AgentLike & { role?: string; specialty?: string[]; briefing_checklist?: string[] }>,
 ): Promise<OrchestratorInjectionResult> {
   if (!orchestrator.workspace) {
     return {
@@ -267,12 +283,74 @@ export async function injectOrchestratorContext(
   };
 }
 
+const PROMPT_BEGIN = "<!-- BEGIN ATLASDECK AGENT PROMPT — do not edit; regenerates on save -->";
+const PROMPT_END = "<!-- END ATLASDECK AGENT PROMPT -->";
+
+function splicePrompt(existing: string, systemPrompt: string): string {
+  const block = `${PROMPT_BEGIN}\n## Instruções do Agente\n\n${systemPrompt.trim()}\n${PROMPT_END}`;
+  const beginIdx = existing.indexOf(PROMPT_BEGIN);
+  const endIdx = existing.indexOf(PROMPT_END);
+  if (beginIdx !== -1 && endIdx !== -1 && endIdx > beginIdx) {
+    const before = existing.slice(0, beginIdx).trimEnd();
+    const after = existing.slice(endIdx + PROMPT_END.length).trimStart();
+    return [before, block, after].filter(Boolean).join("\n\n").trim() + "\n";
+  }
+  const base = existing.trimEnd();
+  return base ? `${base}\n\n${block}\n` : `${block}\n`;
+}
+
+function removePromptSection(existing: string): string {
+  const beginIdx = existing.indexOf(PROMPT_BEGIN);
+  const endIdx = existing.indexOf(PROMPT_END);
+  if (beginIdx === -1 || endIdx === -1 || endIdx <= beginIdx) return existing;
+  const before = existing.slice(0, beginIdx).trimEnd();
+  const after = existing.slice(endIdx + PROMPT_END.length).trimStart();
+  return [before, after].filter(Boolean).join("\n\n").trim() + "\n";
+}
+
+/**
+ * Writes (or removes) the custom system_prompt section in a specialist
+ * agent's workspace MEMORY.md. Called after POST/PUT to /api/agents when
+ * the system_prompt field changes. Idempotent — safe to call repeatedly.
+ */
+export async function injectAgentSystemPrompt(
+  agent: AgentLike,
+  systemPrompt: string | undefined,
+): Promise<OrchestratorInjectionResult> {
+  if (!agent.workspace) {
+    return { agent_id: agent.id, memory_file: "", bytes_written: 0, changed: false, skipped_reason: "missing workspace" };
+  }
+  const wsAbs = resolveWorkspaceAbsPath(agent.workspace);
+  if (!wsAbs) {
+    return { agent_id: agent.id, memory_file: "", bytes_written: 0, changed: false, skipped_reason: "workspace path unresolved" };
+  }
+  if (!fsSync.existsSync(wsAbs)) {
+    try { fsSync.mkdirSync(wsAbs, { recursive: true }); } catch (e) {
+      return { agent_id: agent.id, memory_file: "", bytes_written: 0, changed: false, skipped_reason: `mkdir failed: ${(e as Error).message}` };
+    }
+  }
+
+  const memoryFile = path.join(wsAbs, "MEMORY.md");
+  let existing = "";
+  try { existing = await fs.readFile(memoryFile, "utf-8"); } catch { existing = "# MEMORY\n"; }
+
+  const next = systemPrompt?.trim()
+    ? splicePrompt(existing, systemPrompt)
+    : removePromptSection(existing);
+
+  if (next === existing) {
+    return { agent_id: agent.id, memory_file: memoryFile, bytes_written: 0, changed: false };
+  }
+  await fs.writeFile(memoryFile, next, "utf-8");
+  return { agent_id: agent.id, memory_file: memoryFile, bytes_written: Buffer.byteLength(next, "utf-8"), changed: true };
+}
+
 /**
  * Refresh every orchestrator's MEMORY.md. `peers` is the full agent list
  * (the caller supplies it — usually from /api/agents response).
  */
 export async function refreshAllOrchestrators(
-  peers: Array<AgentLike & { role?: string; specialty?: string[] }>,
+  peers: Array<AgentLike & { role?: string; specialty?: string[]; briefing_checklist?: string[] }>,
 ): Promise<OrchestratorInjectionResult[]> {
   const meta = getAllAgentMeta();
   const orchestrators = peers.filter(
