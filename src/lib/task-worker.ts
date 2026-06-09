@@ -84,6 +84,11 @@ const STALE_ASSIGNED_MS = 24 * 60 * 60 * 1000;
 
 const inFlight = new Set<string>();
 let started = false;
+// Circuit breaker: when a sub-agent run hangs / returns no text, the gateway is
+// likely struggling (it also stops answering Telegram). Back off before trying
+// the next task so the worker doesn't keep hammering and jamming it.
+let cooldownUntil = 0;
+const COOLDOWN_MS = 60 * 1000;
 
 function workerEnabled(): boolean {
   return (process.env.ATLAS_SUBAGENT_WORKER || "on").toLowerCase() !== "off";
@@ -140,14 +145,16 @@ async function executeTask(task: Task): Promise<void> {
       `de envio (message, telegram_send, sessions_send, reply, notify) — apenas devolva o texto.`;
 
     // One streamed run of the sub-agent. Returns the accumulated text + usage.
+    // CRITICAL: a hung gateway (no final frame, abort ignored) must NOT pin the
+    // single worker slot forever — that blocks every other task and matches the
+    // "card travado em Atribuído + Telegram mudo" symptom. So we race the stream
+    // against a hard timeout: when it wins, we return what we have and let the
+    // (possibly still-hung) generator leak in the background — the slot frees.
     const streamOnce = async (): Promise<{ text: string; tin: number; tout: number; c: number }> => {
-      let text = "";
-      let tin = 0;
-      let tout = 0;
-      let c = 0;
+      const acc = { text: "", tin: 0, tout: 0, c: 0 };
       const ac = new AbortController();
-      const timeout = setTimeout(() => ac.abort(), TASK_TIMEOUT_MS);
-      try {
+
+      const drain = (async () => {
         for await (const evt of runOpenClawChat({
           agentId,
           prompt: workerPrompt,
@@ -157,11 +164,11 @@ async function executeTask(task: Task): Promise<void> {
           mode: "openclaw",
         })) {
           if (evt.type === "token") {
-            text += evt.delta;
+            acc.text += evt.delta;
           } else if (evt.type === "usage") {
-            tin = evt.tokensIn;
-            tout = evt.tokensOut;
-            c = evt.cost ?? c;
+            acc.tin = evt.tokensIn;
+            acc.tout = evt.tokensOut;
+            acc.c = evt.cost ?? acc.c;
           } else if (evt.type === "tool_use") {
             publishEvent({
               event_type: "task.checkpoint",
@@ -173,10 +180,17 @@ async function executeTask(task: Task): Promise<void> {
             break;
           }
         }
-      } finally {
-        clearTimeout(timeout);
-      }
-      return { text, tin, tout, c };
+      })();
+
+      const hardTimeout = new Promise<void>((resolve) => {
+        setTimeout(() => {
+          ac.abort(); // ask the runner to stop…
+          resolve(); // …but don't wait for it — free the slot regardless
+        }, TASK_TIMEOUT_MS);
+      });
+
+      await Promise.race([drain.catch(() => {}), hardTimeout]);
+      return { text: acc.text, tin: acc.tin, tout: acc.tout, c: acc.c };
     };
 
     // The gateway sometimes returns "final without text" (buffered / routed via
@@ -205,6 +219,8 @@ async function executeTask(task: Task): Promise<void> {
     }
 
     const usable = Boolean(output.trim()) && !NO_TEXT_RE.test(output);
+    // Gateway misbehaved (hung / no text) → cool down before the next run.
+    if (!usable) cooldownUntil = Date.now() + COOLDOWN_MS;
 
     appendMessage({
       thread_id: thread.id,
@@ -287,6 +303,8 @@ async function tick(): Promise<void> {
     runDispatcher();
 
     if (inFlight.size >= MAX_CONCURRENT) return;
+    // Honor the circuit-breaker cooldown after a gateway hang/empty reply.
+    if (Date.now() < cooldownUntil) return;
 
     // Which agents are already busy (so we serialize per agent).
     const busyAgents = new Set<string>();
