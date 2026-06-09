@@ -69,8 +69,13 @@ async function notifyOwnerForReview(
 // ~2s, which made the sub-agent return empty text. Serializing keeps each run
 // healthy; raise only if the gateway runs on dedicated capacity.
 const MAX_CONCURRENT = 1;
-// Hard ceiling per task so a stuck sub-agent can't pin a worker slot forever.
-const TASK_TIMEOUT_MS = 10 * 60 * 1000;
+// Hard ceiling per task so a stuck sub-agent can't pin the single worker slot
+// forever (with MAX_CONCURRENT=1 a hung run blocks everything). 6min is plenty
+// for a research turn and frees the slot fast when the gateway hangs.
+const TASK_TIMEOUT_MS = 6 * 60 * 1000;
+// Pattern for the WS client's "gateway returned no text" diagnostic — must be
+// treated as a failure, never stored as a real deliverable.
+const NO_TEXT_RE = /não entregou texto|Gateway respondeu, mas/i;
 // Don't auto-run tasks that have been sitting `assigned` for longer than this.
 // Protects against a first-boot stampede on stale/test tasks left in the DB —
 // a freshly delegated task gets picked up within one tick, so anything this
@@ -134,56 +139,84 @@ async function executeTask(task: Task): Promise<void> {
       `Responda com o RESULTADO completo em texto, diretamente nesta resposta. NÃO use tools ` +
       `de envio (message, telegram_send, sessions_send, reply, notify) — apenas devolva o texto.`;
 
+    // One streamed run of the sub-agent. Returns the accumulated text + usage.
+    const streamOnce = async (): Promise<{ text: string; tin: number; tout: number; c: number }> => {
+      let text = "";
+      let tin = 0;
+      let tout = 0;
+      let c = 0;
+      const ac = new AbortController();
+      const timeout = setTimeout(() => ac.abort(), TASK_TIMEOUT_MS);
+      try {
+        for await (const evt of runOpenClawChat({
+          agentId,
+          prompt: workerPrompt,
+          threadId: thread.id,
+          workspace: task.workspace_path ?? null,
+          signal: ac.signal,
+          mode: "openclaw",
+        })) {
+          if (evt.type === "token") {
+            text += evt.delta;
+          } else if (evt.type === "usage") {
+            tin = evt.tokensIn;
+            tout = evt.tokensOut;
+            c = evt.cost ?? c;
+          } else if (evt.type === "tool_use") {
+            publishEvent({
+              event_type: "task.checkpoint",
+              task_id: task.id,
+              agent_id: agentId,
+              payload: { tool: evt.name },
+            });
+          } else if (evt.type === "done" || evt.type === "error") {
+            break;
+          }
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
+      return { text, tin, tout, c };
+    };
+
+    // The gateway sometimes returns "final without text" (buffered / routed via
+    // a send tool). The WS client surfaces that as a diagnostic STRING in the
+    // token stream — which must NOT be stored as a real result. Detect it,
+    // retry once, and only then give up (→ failed). See openclaw-ws-client.ts.
     let output = "";
     let tokensIn = 0;
     let tokensOut = 0;
     let cost = 0;
-
-    const ac = new AbortController();
-    const timeout = setTimeout(() => ac.abort(), TASK_TIMEOUT_MS);
-    try {
-      for await (const evt of runOpenClawChat({
-        agentId,
-        prompt: workerPrompt,
-        threadId: thread.id,
-        workspace: task.workspace_path ?? null,
-        signal: ac.signal,
-        mode: "openclaw",
-      })) {
-        if (evt.type === "token") {
-          output += evt.delta;
-        } else if (evt.type === "usage") {
-          tokensIn = evt.tokensIn;
-          tokensOut = evt.tokensOut;
-          cost = evt.cost ?? cost;
-        } else if (evt.type === "tool_use") {
-          // Surface each tool the sub-agent uses as a checkpoint so the
-          // board shows live motion while the specialist works.
-          publishEvent({
-            event_type: "task.checkpoint",
-            task_id: task.id,
-            agent_id: agentId,
-            payload: { tool: evt.name },
-          });
-        } else if (evt.type === "done" || evt.type === "error") {
-          break;
-        }
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const r = await streamOnce();
+      output = r.text;
+      tokensIn = r.tin;
+      tokensOut = r.tout;
+      cost = r.c;
+      if (output.trim() && !NO_TEXT_RE.test(output)) break;
+      if (attempt === 1) {
+        publishEvent({
+          event_type: "task.checkpoint",
+          task_id: task.id,
+          agent_id: agentId,
+          payload: { note: "resposta vazia do gateway — tentando de novo" },
+        });
       }
-    } finally {
-      clearTimeout(timeout);
     }
+
+    const usable = Boolean(output.trim()) && !NO_TEXT_RE.test(output);
 
     appendMessage({
       thread_id: thread.id,
       role: "assistant",
-      content: output,
-      status: output.trim() ? "complete" : "error",
+      content: usable ? output : "",
+      status: usable ? "complete" : "error",
     });
 
     const settings = getOrchestrationSettings();
     const meta = getAgentMeta(agentId);
     const autonomous = isAutonomousFor(meta.override_autonomous);
-    const ok = Boolean(output.trim());
+    const ok = usable;
 
     // Autonomous + no mandatory approval → straight to done. Otherwise the
     // card lands in `review` for the user/orchestrator to sign off.
@@ -195,7 +228,11 @@ async function executeTask(task: Task): Promise<void> {
 
     updateTask(task.id, {
       status: nextStatus,
-      result: output.slice(0, 4000),
+      result: usable
+        ? output.slice(0, 4000)
+        : "⚠ O especialista não retornou texto (o gateway respondeu vazio / buffered, " +
+          "duas tentativas). Tente reenviar a tarefa, ou rode 'Corrigir automaticamente' " +
+          "no diagnóstico do gateway (blockStreamingDefault).",
       tokens_in: tokensIn,
       tokens_out: tokensOut,
       cost_cents: Math.round((cost ?? 0) * 100),
@@ -282,7 +319,7 @@ async function tick(): Promise<void> {
  * Boot the worker loop. Idempotent (guards against Next's dual-runtime
  * instrumentation double-call). Off entirely when ATLAS_SUBAGENT_WORKER=off.
  */
-export function startTaskWorker(intervalMs = 12_000): void {
+export function startTaskWorker(intervalMs = 6_000): void {
   if (started) return;
   started = true;
   if (!workerEnabled()) {

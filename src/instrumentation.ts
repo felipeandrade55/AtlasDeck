@@ -69,6 +69,20 @@ export async function register(): Promise<void> {
     console.warn("[instrumentation] orchestrator memory refresh bootstrap failed:", err);
   }
 
+  // Streaming config — force agents.defaults.blockStreamingDefault="on" so the
+  // gateway streams reply text instead of buffering it. When OFF, sub-agent
+  // runs (and chat) come back as "gateway respondeu sem texto". Idempotent,
+  // best-effort; takes effect on the next gateway restart.
+  try {
+    const { ensureStreamingConfig } = await import("@/lib/openclaw-auto-fix");
+    const r = ensureStreamingConfig();
+    if (r.changed.length) {
+      console.log("[instrumentation] streaming config corrigido:", r.changed.join(", "));
+    }
+  } catch (err) {
+    console.warn("[instrumentation] ensureStreamingConfig failed:", err);
+  }
+
   // Subagent execution worker — actually RUNS delegated tasks through their
   // specialist sub-agent (assigned → in_progress → review/done), so the
   // Live Mission board shows specialists working in real time instead of

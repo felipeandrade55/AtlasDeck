@@ -29,7 +29,7 @@ import {
 import { ensureTaskWorkspace } from "@/lib/task-workspace";
 import { sendMail, type MailMessageType } from "@/lib/mailbox-db";
 import { recordHeartbeat } from "@/lib/agent-health";
-import { snapshotAgent } from "@/lib/task-dispatcher";
+import { snapshotAgent, runDispatcher } from "@/lib/task-dispatcher";
 import { logActivity } from "@/lib/activities-db";
 import { publishEvent } from "@/lib/live-events";
 
@@ -405,6 +405,14 @@ export async function executeTool(
           agent: args.agent_id,
           metadata: { task_id: task.id, delegated_by: delegatedBy },
         });
+        // Dispatch right away so the card moves inbox → assigned immediately
+        // (the worker then executes it), instead of waiting for the next
+        // worker tick — keeps the board snappy after a delegation.
+        try {
+          runDispatcher();
+        } catch {
+          /* best-effort */
+        }
         return { ok: true, tool: name, result: { task: updated ?? task } };
       }
 
@@ -459,6 +467,11 @@ export async function executeTool(
         logActivity("task", `Tool decompose: ${args.subtasks.length} subtasks`, "success", {
           metadata: { parent_task_id: parent.id, delegated_by: decomposedBy },
         });
+        try {
+          runDispatcher();
+        } catch {
+          /* best-effort */
+        }
         return { ok: true, tool: name, result: { parent, subtasks: created } };
       }
 
