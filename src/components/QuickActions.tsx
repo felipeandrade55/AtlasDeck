@@ -39,28 +39,6 @@ export function QuickActions({ onActionComplete }: QuickActionsProps) {
     setTimeout(() => setNotification(null), 3000);
   };
 
-  const handleRestartGateway = async () => {
-    setLoadingAction("restart");
-    try {
-      const res = await fetch("/api/recovery/action", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "gateway-restart" }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        showNotification("success", "Gateway reiniciado com sucesso");
-        onActionComplete?.();
-      } else {
-        showNotification("error", `Falha ao reiniciar: ${data.error || "erro desconhecido"}`);
-      }
-    } catch (e) {
-      showNotification("error", `Erro: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setLoadingAction(null);
-    }
-  };
-
   const handleClearActivityLog = async () => {
     setLoadingAction("clear_log");
     try {
@@ -103,13 +81,8 @@ export function QuickActions({ onActionComplete }: QuickActionsProps) {
   };
 
   const actions: ActionButton[] = [
-    {
-      id: "restart",
-      label: "Reiniciar Gateway",
-      icon: RefreshCw,
-      color: "blue",
-      action: handleRestartGateway,
-    },
+    // Restart moved to the single canonical "Controle do Gateway" card at the
+    // top of /settings — keeping a duplicate here was confusing the user.
     {
       id: "clear_log",
       label: "Limpar Registro de Atividades",

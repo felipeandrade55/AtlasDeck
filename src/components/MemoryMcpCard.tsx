@@ -353,98 +353,9 @@ export function MemoryMcpCard() {
     }
   }, []);
 
-  const fullRestart = useCallback(async () => {
-    if (
-      !window.confirm(
-        "STOP + START completo do gateway OpenClaw. Isso DESTRÓI todas as " +
-          "threads Codex existentes — é o que precisa pra projeção nova de " +
-          "MCP chegar. Vai interromper conversas em andamento por ~5 segundos.\n\n" +
-          "Continuar?",
-      )
-    ) {
-      return;
-    }
-    setPhase("full-restarting");
-    setBanner({
-      kind: "info",
-      text: "Stop + start completo do gateway (recria threads Codex)…",
-    });
-    try {
-      const res = await fetch("/api/openclaw/memory-mcp/full-restart", {
-        method: "POST",
-      });
-      const json = (await res.json()) as {
-        ok: boolean;
-        strategy: string | null;
-        summary: string;
-        hint: string;
-      };
-      // Refresh diagnose to update process info / uptime.
-      const diagRes = await fetch(
-        "/api/openclaw/memory-mcp/diagnose?agentId=main",
-        { cache: "no-store" },
-      );
-      const diagJson = (await diagRes.json()) as DiagnoseReport;
-      setDiagnose(diagJson);
-      setPhase("idle");
-      setBanner({
-        kind: json.ok ? "success" : "warn",
-        text: json.ok
-          ? `Stop+start ok via ${json.strategy}. ${json.hint}`
-          : `Falhou: ${json.summary}`,
-        detail: json.summary,
-      });
-    } catch (err) {
-      setPhase("error");
-      setBanner({
-        kind: "error",
-        text: "Falha ao fazer full restart.",
-        detail: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }, []);
-
-  const restartGateway = useCallback(async () => {
-    setPhase("restarting");
-    setBanner({
-      kind: "info",
-      text: "Reiniciando o gateway do OpenClaw…",
-    });
-    try {
-      const res = await fetch("/api/openclaw/memory-mcp/restart-gateway", {
-        method: "POST",
-      });
-      const json = (await res.json()) as {
-        ok: boolean;
-        restart: { success: boolean; runtime: string; output: string };
-        wait: { skipped: true } | { ready: boolean; elapsedMs: number };
-        summary: string;
-      };
-      // Refresh diagnose to show updated session list once new
-      // sessions land.
-      const diagRes = await fetch(
-        "/api/openclaw/memory-mcp/diagnose?agentId=main",
-        { cache: "no-store" },
-      );
-      const diagJson = (await diagRes.json()) as DiagnoseReport;
-      setDiagnose(diagJson);
-      setPhase("idle");
-      setBanner({
-        kind: json.ok ? "success" : "warn",
-        text: json.ok
-          ? "Gateway reiniciado. Abra uma conversa NOVA no Telegram pra o LLM ler o system prompt com as tools."
-          : "Reinício teve problemas — veja detalhe.",
-        detail: json.summary,
-      });
-    } catch (err) {
-      setPhase("error");
-      setBanner({
-        kind: "error",
-        text: "Falha ao reiniciar gateway.",
-        detail: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }, []);
+  // Gateway restart (normal + full) moved to the single "Controle do Gateway"
+  // card at the top of /settings. This card keeps only MCP-specific actions
+  // (install, diagnose, probe, clean codex block).
 
   const cleanCodexBlock = useCallback(async () => {
     setPhase("cleaning-codex");
@@ -784,25 +695,9 @@ export function MemoryMcpCard() {
           Diagnosticar
         </button>
 
-        <button
-          onClick={restartGateway}
-          disabled={phase !== "idle" && phase !== "loading"}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg transition-colors disabled:opacity-50 text-sm"
-          style={{
-            backgroundColor: "rgba(56,189,248,0.12)",
-            color: "#7dd3fc",
-            border: "1px solid rgba(56,189,248,0.35)",
-          }}
-          title="Força reload do gateway sem tocar config — necessário após mexer no openclaw.json fora do Reverificar"
-        >
-          {phase === "restarting" ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : (
-            <RefreshCw className="w-4 h-4" />
-          )}
-          Reiniciar gateway
-        </button>
-
+        {/* Restart buttons moved to the single "Controle do Gateway" card at
+            the top of /settings — both the normal and the forced (full)
+            restart live there now, so the user has one obvious place. */}
         <button
           onClick={runServerProbe}
           disabled={phase !== "idle" && phase !== "loading"}
@@ -820,25 +715,6 @@ export function MemoryMcpCard() {
             <Stethoscope className="w-4 h-4" />
           )}
           Probe gateway
-        </button>
-
-        <button
-          onClick={fullRestart}
-          disabled={phase !== "idle" && phase !== "loading"}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg transition-colors disabled:opacity-50 text-sm"
-          style={{
-            backgroundColor: "rgba(251,146,60,0.12)",
-            color: "#fdba74",
-            border: "1px solid rgba(251,146,60,0.35)",
-          }}
-          title="STOP + START completo do gateway. Destroi threads Codex existentes — necessário pra projeção MCP nova chegar (hot reload não basta)"
-        >
-          {phase === "full-restarting" ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : (
-            <PowerOff className="w-4 h-4" />
-          )}
-          Full restart
         </button>
 
         {status?.installed && (

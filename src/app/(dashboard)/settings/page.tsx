@@ -11,6 +11,7 @@ import { UpdatePanel } from "@/components/UpdatePanel";
 import { RestorePanel } from "@/components/RestorePanel";
 import { ResetOpenClawPanel } from "@/components/setup/ResetOpenClawPanel";
 import { GatewayDiagnoseCard } from "@/components/GatewayDiagnoseCard";
+import { GatewayControlCard } from "@/components/GatewayControlCard";
 
 interface SystemData {
   agent: {
@@ -125,6 +126,11 @@ export default function SettingsPage() {
         {/* System Info - Full width on first row */}
         <div className="lg:col-span-2">
           <SystemInfo data={systemData} />
+        </div>
+
+        {/* Gateway Control — single canonical place to restart (normal + forced) */}
+        <div className="lg:col-span-2">
+          <GatewayControlCard />
         </div>
 
         {/* Recovery Panel - Full width, prominent */}

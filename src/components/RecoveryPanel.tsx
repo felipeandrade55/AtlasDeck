@@ -88,7 +88,7 @@ const QUICK_GROUPS: Array<{
     intro: "Use esta sequência se o gateway caiu ou os agentes pararam de responder.",
     actions: [
       { id: "gateway-start", label: "Iniciar Gateway", icon: Play, severity: "caution", hint: "Inicia o openclaw daemon quando está totalmente parado" },
-      { id: "gateway-restart", label: "Reiniciar Gateway", icon: RefreshCw, severity: "caution", hint: "Reinicia o serviço openclaw-gateway (use se está rodando mas travado)" },
+      // "Reiniciar Gateway" agora vive no card "Controle do Gateway" (topo de Configurações), com normal + forçado.
       { id: "gateway-diagnose", label: "Diagnosticar Tudo", icon: Stethoscope, severity: "safe", hint: "Lista processos + status + help + portas em uma chamada" },
       { id: "openclaw-validate", label: "Validar Config", icon: Stethoscope, severity: "safe", hint: "Roda 'openclaw config validate' — mostra erros exatos de schema" },
       { id: "openclaw-channels-list", label: "Listar Canais", icon: Eye, severity: "safe", hint: "Lista canais ativos (telegram, etc.) no daemon" },
