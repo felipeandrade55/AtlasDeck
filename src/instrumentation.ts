@@ -69,6 +69,17 @@ export async function register(): Promise<void> {
     console.warn("[instrumentation] orchestrator memory refresh bootstrap failed:", err);
   }
 
+  // Subagent execution worker — actually RUNS delegated tasks through their
+  // specialist sub-agent (assigned → in_progress → review/done), so the
+  // Live Mission board shows specialists working in real time instead of
+  // cards sitting idle. Off via ATLAS_SUBAGENT_WORKER=off.
+  try {
+    const { startTaskWorker } = await import("@/lib/task-worker");
+    startTaskWorker();
+  } catch (err) {
+    console.warn("[instrumentation] task worker bootstrap failed:", err);
+  }
+
   // Memory subsystem scheduler — extraction (every 15m, pulls new exchanges
   // from session JSONLs → structured memories), injection (regenerates the
   // AUTO_RECALL block in MEMORY.md), housekeeping (archives stale low-value

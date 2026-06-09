@@ -28,6 +28,25 @@ import {
 } from "@/lib/chat-db";
 import { readOpenClawConfig } from "@/lib/openclaw-config";
 import { logActivity } from "@/lib/activities-db";
+import { createTask, updateTask } from "@/lib/tasks-db";
+import { publishEvent } from "@/lib/live-events";
+
+// Only the orchestrator's own turns become Live Mission cards here. Specialist
+// sub-agent runs already get their own cards from the task-worker, so we don't
+// want the watcher to double-count them when it later imports their sessions.
+const ORCHESTRATOR_IDS = new Set(["main", "jarvis"]);
+
+// Heuristic: which Telegram/CLI turns are "real work" worth a kanban card.
+// Mirrors the chat-stream gate so "bom dia" / quick Q&A don't flood the board.
+const SUBSTANTIAL_TURN_RE =
+  /\b(crie|criar|cria|faça|faca|fazer|implemente|implementar|corrija|corrigir|ajuste|ajustar|altere|alterar|edite|editar|rode|rodar|execute|executar|pesquise|pesquisar|analise|analisar|planeje|planejar|resolva|resolver|investigue|investigar|diagnostique|diagnosticar|instale|instalar|configure|configurar|publique|publicar|deploy|teste|testar|debug|debugar|refatore|refatorar|gere|gerar|importe|importar|sincronize|sincronizar|adicione|adicionar|monte|montar|escreva|escrever|atualize|atualizar|leia|ler)\b/i;
+
+function isSubstantialTurn(prompt: string): boolean {
+  const normalized = prompt.replace(/\s+/g, " ").trim();
+  if (!normalized) return false;
+  if (normalized.length >= 120) return true;
+  return SUBSTANTIAL_TURN_RE.test(normalized);
+}
 
 export interface AvailableSession {
   agentId: string;
@@ -416,6 +435,47 @@ export function importOpenClawSessions(opts: ImportOptions = {}): ImportSummary 
           );
         } catch {
           // Best-effort — never break the import on activity-log failure.
+        }
+
+        // Live Mission card for the orchestrator's own work (Telegram / CLI /
+        // cron) so the board reflects what Jarvis does outside the web chat.
+        // The web chat already creates its own cards; specialist runs are
+        // covered by the task-worker — hence the orchestrator-only gate.
+        if (ORCHESTRATOR_IDS.has(session.agentId) && isSubstantialTurn(u.content)) {
+          try {
+            const card = createTask({
+              assigned_to: session.agentId,
+              status: nextAssistant ? "done" : "in_progress",
+              title: preview,
+              prompt: u.content,
+              metadata: {
+                origin: "openclaw-import",
+                source: session.sessionId.startsWith("telegram")
+                  ? "telegram"
+                  : "openclaw",
+                sessionId: session.sessionId,
+                threadId: thread.id,
+              },
+            });
+            publishEvent({
+              event_type: "task.created",
+              task_id: card.id,
+              agent_id: session.agentId,
+              payload: { title: preview, source: "openclaw-import" },
+            });
+            if (nextAssistant) {
+              const resultPreview = nextAssistant.content.slice(0, 2000);
+              updateTask(card.id, { status: "done", result: resultPreview });
+              publishEvent({
+                event_type: "task.completed",
+                task_id: card.id,
+                agent_id: session.agentId,
+                payload: { source: "openclaw-import" },
+              });
+            }
+          } catch {
+            // Best-effort — never break the import on card-creation failure.
+          }
         }
       }
 

@@ -16,7 +16,7 @@ import { randomUUID } from "crypto";
 
 const DB_PATH = path.join(process.cwd(), "data", "chats.db");
 
-export type ChatSource = "web" | "telegram" | "openclaw_import";
+export type ChatSource = "web" | "telegram" | "openclaw_import" | "worker";
 
 export type ChatRole =
   | "user"
