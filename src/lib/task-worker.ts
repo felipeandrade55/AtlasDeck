@@ -31,11 +31,44 @@ import { createThread, appendMessage } from "@/lib/chat-db";
 import { getOrchestrationSettings, isAutonomousFor } from "@/lib/orchestration-settings";
 import { getAgentMeta } from "@/lib/agents-meta";
 import { logActivity } from "@/lib/activities-db";
+import { sendTelegramAlert } from "@/lib/telegram";
 
-// How many sub-agent runs may execute at once across the whole swarm. Kept
-// low so the worker never floods the single OpenClaw gateway (the same one
-// that serves Telegram/web) — that's what caused the agent overflow.
-const MAX_CONCURRENT = 2;
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * Push a finished specialist deliverable to the owner's Telegram for approval,
+ * so they don't have to open the dashboard. The reply path is handled by the
+ * approve_task / reject_task MCP tools (the user tells Jarvis "aprovar <id>").
+ */
+async function notifyOwnerForReview(
+  task: Task,
+  agentId: string,
+  output: string,
+): Promise<void> {
+  const short = task.id.slice(0, 8);
+  const title = task.title || task.prompt.slice(0, 80);
+  const resultPreview = output.trim().length > 1200
+    ? `${output.trim().slice(0, 1200)}…`
+    : output.trim();
+  const text =
+    `<b>🔖 Entrega para revisão — ${escapeHtml(agentId)}</b>\n\n` +
+    `<b>${escapeHtml(title)}</b>\n` +
+    `<code>${short}</code>\n\n` +
+    `${escapeHtml(resultPreview)}\n\n` +
+    `Para aprovar, responda: <b>aprovar ${short}</b>\n` +
+    `Para pedir ajustes: <b>rejeitar ${short} &lt;o que mudar&gt;</b>\n` +
+    `(ou aprove pelo painel Live Mission)`;
+  await sendTelegramAlert("", "", text);
+}
+
+// How many sub-agent runs may execute at once across the whole swarm. ONE,
+// because the single OpenClaw gateway (shared with Telegram/web) saturates its
+// event loop under concurrent agent runs — observed CPU util 0.99 / delays of
+// ~2s, which made the sub-agent return empty text. Serializing keeps each run
+// healthy; raise only if the gateway runs on dedicated capacity.
+const MAX_CONCURRENT = 1;
 // Hard ceiling per task so a stuck sub-agent can't pin a worker slot forever.
 const TASK_TIMEOUT_MS = 10 * 60 * 1000;
 // Don't auto-run tasks that have been sitting `assigned` for longer than this.
@@ -94,7 +127,12 @@ async function executeTask(task: Task): Promise<void> {
       `${task.prompt}\n\n[atlas:worker] Você é um sub-agente especialista executando uma ` +
       `tarefa que JÁ foi delegada a você. FAÇA o trabalho você mesmo e entregue o resultado ` +
       `aqui. NÃO chame delegate_to, decompose nem nenhuma ferramenta de delegação — você é o ` +
-      `executor final, não o orquestrador.`;
+      `executor final, não o orquestrador. ` +
+      // Anti-empty-reply: return the result as text in THIS turn. Don't route
+      // it through a send/message tool (telegram_send, message, sessions_send)
+      // — that returns an empty ack and the card lands with no usable result.
+      `Responda com o RESULTADO completo em texto, diretamente nesta resposta. NÃO use tools ` +
+      `de envio (message, telegram_send, sessions_send, reply, notify) — apenas devolva o texto.`;
 
     let output = "";
     let tokensIn = 0;
@@ -169,6 +207,17 @@ async function executeTask(task: Task): Promise<void> {
       payload: { status: nextStatus, tokensIn, tokensOut },
     });
     recordHeartbeat({ agent_id: agentId, state: "idle", current_task_id: null });
+
+    // Telegram approval: when a specialist's work lands in `review`, push the
+    // result to the owner's Telegram so they can approve WITHOUT opening the
+    // dashboard — replying "aprovar <id>" / "rejeitar <id> <motivo>" lets
+    // Jarvis call approve_task / reject_task. (Also still approvable in the UI.)
+    if (nextStatus === "review") {
+      void notifyOwnerForReview(task, agentId, output).catch((e) =>
+        console.warn("[task-worker] telegram review notify failed:", e),
+      );
+    }
+
     logActivity(
       "task",
       `Subagente ${agentId} executou: ${task.title || task.id}`,

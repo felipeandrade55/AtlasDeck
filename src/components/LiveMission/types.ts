@@ -78,15 +78,15 @@ export const STATUS_COLUMNS: TaskStatus[] = [
 ];
 
 export const STATUS_LABELS: Record<TaskStatus, string> = {
-  planning: "Planning",
-  inbox: "Inbox",
-  assigned: "Assigned",
-  in_progress: "In Progress",
-  testing: "Testing",
-  review: "Review",
-  done: "Done",
-  failed: "Failed",
-  cancelled: "Cancelled",
+  planning: "Planejamento",
+  inbox: "Caixa de entrada",
+  assigned: "Atribuído",
+  in_progress: "Em andamento",
+  testing: "Testes",
+  review: "Revisão",
+  done: "Concluído",
+  failed: "Falhou",
+  cancelled: "Cancelado",
 };
 
 export const STATUS_COLORS: Record<TaskStatus, string> = {

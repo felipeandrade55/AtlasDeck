@@ -22,6 +22,7 @@ import {
   updateTask,
   getTaskById,
   listChildren,
+  listTasks,
   type Task,
   type ReviewVerdict,
 } from "@/lib/tasks-db";
@@ -38,7 +39,9 @@ export type OrchestratorToolName =
   | "check_progress"
   | "send_note"
   | "review"
-  | "notify_user";
+  | "notify_user"
+  | "approve_task"
+  | "reject_task";
 
 export interface ToolDefinition {
   name: OrchestratorToolName;
@@ -160,6 +163,33 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       },
     },
     example: `notify_user({ "message": "Task X concluída, aguardando 👍/👎.", "task_id": "abc-123" })`,
+  },
+  {
+    name: "approve_task",
+    description:
+      "Aprovar uma task que está em `review` — move para `done`. Use quando o usuário aprovar a entrega (ex: responde 'aprovar', 'pode publicar', 'tá bom' no Telegram/chat referindo-se a uma task em revisão).",
+    parameters_schema: {
+      type: "object",
+      required: ["task_id"],
+      properties: {
+        task_id: { type: "string", description: "Id (ou prefixo de 8 chars) da task em review." },
+      },
+    },
+    example: `approve_task({ "task_id": "ce6aa1c3" })`,
+  },
+  {
+    name: "reject_task",
+    description:
+      "Rejeitar uma task em `review` — volta para `assigned` e o especialista refaz com o feedback. Use quando o usuário pedir ajustes ('refaz', 'não gostei', 'muda X').",
+    parameters_schema: {
+      type: "object",
+      required: ["task_id"],
+      properties: {
+        task_id: { type: "string", description: "Id (ou prefixo de 8 chars) da task." },
+        reason: { type: "string", description: "O que o usuário quer ajustado (vai pro especialista)." },
+      },
+    },
+    example: `reject_task({ "task_id": "ce6aa1c3", "reason": "incluir fontes oficiais" })`,
   },
 ];
 
@@ -305,6 +335,22 @@ function parseNotifyUser(raw: unknown): NotifyUserArgs {
 }
 
 /* -------------------- Handlers -------------------- */
+
+/**
+ * Resolve a task reference that may be a full UUID or just the 8-char prefix
+ * the agent surfaces to the user ("Task ID: ce6aa1c3"). Prefers an exact id;
+ * falls back to a unique prefix match among recent tasks.
+ */
+function resolveTaskRef(ref: string): Task | null {
+  const exact = getTaskById(ref);
+  if (exact) return exact;
+  const needle = ref.trim().toLowerCase();
+  if (needle.length < 4) return null;
+  const matches = listTasks({ limit: 500, sort: "newest" }).filter((t) =>
+    t.id.toLowerCase().startsWith(needle),
+  );
+  return matches.length === 1 ? matches[0] : null;
+}
 
 export interface ToolResult<T = unknown> {
   ok: boolean;
@@ -502,6 +548,50 @@ export async function executeTool(
           message_type: "direct_message",
         });
         return { ok: true, tool: name, result: { delivered_to: channels } };
+      }
+
+      case "approve_task": {
+        const args = asObj(rawArgs);
+        const taskRef = requireString(args, "task_id");
+        const task = resolveTaskRef(taskRef);
+        if (!task) return { ok: false, tool: name, error: `Task não encontrada: ${taskRef}` };
+        const updated = updateTask(task.id, {
+          user_approved: true,
+          status: "done",
+        });
+        logActivity("task", `Usuário 👍 aprovou (via agente): ${task.title || task.id}`, "success", {
+          agent: task.assigned_to ?? undefined,
+          metadata: { task_id: task.id },
+        });
+        return { ok: true, tool: name, result: { task: updated ?? task } };
+      }
+
+      case "reject_task": {
+        const args = asObj(rawArgs);
+        const taskRef = requireString(args, "task_id");
+        const reason = optString(args, "reason");
+        const task = resolveTaskRef(taskRef);
+        if (!task) return { ok: false, tool: name, error: `Task não encontrada: ${taskRef}` };
+        const updated = updateTask(task.id, {
+          user_approved: false,
+          user_feedback: reason ?? null,
+          status: "assigned", // back to the worker, which re-runs the specialist
+        });
+        if (task.assigned_to) {
+          sendMail({
+            task_id: task.id,
+            from_agent_id: null,
+            to_agent_id: task.assigned_to,
+            subject: "Usuário pediu ajustes",
+            body: reason || "O usuário rejeitou esta entrega. Refaça levando em conta o histórico.",
+            message_type: "review_feedback",
+          });
+        }
+        logActivity("task", `Usuário 👎 rejeitou (via agente): ${task.title || task.id}`, "pending", {
+          agent: task.assigned_to ?? undefined,
+          metadata: { task_id: task.id, reason },
+        });
+        return { ok: true, tool: name, result: { task: updated ?? task } };
       }
     }
   } catch (err) {

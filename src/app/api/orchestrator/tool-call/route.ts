@@ -14,6 +14,8 @@ const VALID: OrchestratorToolName[] = [
   "send_note",
   "review",
   "notify_user",
+  "approve_task",
+  "reject_task",
 ];
 
 /**

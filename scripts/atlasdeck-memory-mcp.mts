@@ -1451,6 +1451,54 @@ server.registerTool(
   },
 );
 
+server.registerTool(
+  "approve_task",
+  {
+    title: "Aprovar uma task em revisão",
+    description:
+      "Aprove a entrega de uma task que está em `review` — move para `done`. Use quando o Felipe aprovar pelo Telegram/chat (ex: 'aprovar', 'pode publicar', 'ficou bom') referindo-se a uma task entregue pelo especialista. Aceita o id completo ou o prefixo de 8 chars.",
+    inputSchema: {
+      task_id: z.string().min(4).describe("Id (ou prefixo de 8 chars) da task em review."),
+    },
+  },
+  async (args) => {
+    try {
+      const json = (await orchestratorToolCall("approve_task", {
+        task_id: args.task_id,
+      })) as { ok?: boolean; error?: string };
+      if (json.error) return asError(json.error);
+      return asJson({ ok: true, hint: "Task aprovada e movida para Concluído." });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
+server.registerTool(
+  "reject_task",
+  {
+    title: "Rejeitar/pedir ajustes numa task em revisão",
+    description:
+      "Devolva uma task de `review` para o especialista refazer, com o feedback do Felipe. Use quando ele pedir ajustes ('refaz', 'não gostei', 'muda X'). Aceita id completo ou prefixo de 8 chars.",
+    inputSchema: {
+      task_id: z.string().min(4).describe("Id (ou prefixo de 8 chars) da task."),
+      reason: z.string().optional().describe("O que o Felipe quer ajustado (vai pro especialista)."),
+    },
+  },
+  async (args) => {
+    try {
+      const json = (await orchestratorToolCall("reject_task", {
+        task_id: args.task_id,
+        reason: args.reason,
+      })) as { ok?: boolean; error?: string };
+      if (json.error) return asError(json.error);
+      return asJson({ ok: true, hint: "Task devolvida ao especialista para refazer com o feedback." });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
 // ─── Transcription tools (knowledge base over recorded meetings) ────────
 // Let the agent search and read full transcriptions — e.g. Felipe asks on
 // Telegram "me fale sobre a reunião com X" and the agent finds the transcript
