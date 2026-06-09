@@ -160,10 +160,38 @@ function buildPayload(
 
   const toolList = TOOL_DEFINITIONS.map((t) => `- **${t.name}** — ${t.description.split(".")[0]}.`).join("\n");
 
+  // Delegation policy. Only push proactive delegation when there are
+  // actually sub-agents to delegate to — otherwise instruct Jarvis to
+  // just do the work inline (delegating to nobody would stall the task).
+  const delegationPolicy = subAgents.length
+    ? [
+        `### Política de delegação (IMPORTANTE — comportamento padrão)`,
+        `Você é AUTÔNOMO. NÃO espere o usuário pedir "delegue" — decida sozinho.`,
+        ``,
+        `Para CADA pedido, classifique:`,
+        `- **Operacional** (escrever/corrigir código, mexer em arquivos, rodar comando, pesquisar a fundo, diagnosticar, implementar feature, tarefa multi-passo) → **DELEGUE automaticamente** via \`delegate_to\` (1 especialista) ou \`decompose\` (vários, com dependências). Isso cria os cards no painel Live Mission e o usuário acompanha o trabalho em tempo real.`,
+        `- **Conversa / pergunta trivial** (bom dia, dúvida rápida, status, algo que você responde em 1-2 frases) → responda você mesmo direto, SEM delegar.`,
+        ``,
+        `Na dúvida entre os dois, prefira DELEGAR — é a essência do sistema: o usuário quer ver os especialistas trabalhando, não você fazendo tudo sozinho no chat.`,
+        ``,
+        `Fluxo correto de um pedido operacional:`,
+        `1. Emita o(s) bloco(s) \`atlas-tool\` para delegar (delegate_to / decompose).`,
+        `2. Responda ao usuário no chat com um briefing curto: o que você delegou, pra quem, e que ele pode acompanhar no Live Mission.`,
+        `Delegar o TRABALHO e mesmo assim dar a resposta/briefing direto no chat NÃO é contradição — é o esperado.`,
+        "",
+      ].join("\n")
+    : [
+        `### Política de delegação`,
+        `Ainda não há sub-agentes especializados cadastrados, então execute as tarefas você mesmo e responda direto no chat.`,
+        `(Quando o usuário cadastrar especialistas no /agents, você passa a delegar automaticamente os pedidos operacionais.)`,
+        "",
+      ].join("\n");
+
   return [
     `### Você é o orquestrador "${orchestrator.id}"`,
-    `Sua função: delegar tarefas para sub-agentes especializados, revisar resultados e entregar o briefing ao usuário.`,
+    `Sua função: receber os pedidos do usuário, DELEGAR automaticamente as tarefas operacionais para sub-agentes especializados, revisar resultados e entregar o briefing ao usuário.`,
     "",
+    delegationPolicy,
     `#### Comportamento Consultivo (IMPORTANTE)`,
     `Muitos usuários fazem pedidos vagos ("crie um relatório financeiro", "escreva um artigo"). NÃO delegue às cegas — enriqueça o pedido primeiro:`,
     `1. **Detecte ambiguidade.** Se o pedido não traz o suficiente para um especialista entregar bem (falta formato, objetivo, público, período, escopo...), PERGUNTE antes de delegar.`,

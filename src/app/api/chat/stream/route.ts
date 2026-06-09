@@ -32,6 +32,11 @@ import { logActivity, updateActivity } from "@/lib/activities-db";
 import { publishEvent } from "@/lib/live-events";
 import { createTask, updateTask } from "@/lib/tasks-db";
 import { getMemoryDailyStats, getSettings } from "@/lib/memory-db";
+import { executeTool, TOOL_DEFINITIONS, type OrchestratorToolName } from "@/lib/orchestrator-tools";
+import { refreshAllOrchestrators } from "@/lib/orchestrator-injector";
+import { readFileSync } from "fs";
+import { resolveOpenClawAgentsConfigPath } from "@/lib/openclaw-config";
+import { getAllAgentMeta } from "@/lib/agents-meta";
 import { cityFromAddress, shortCityName, type NominatimAddress } from "@/lib/location-display";
 
 export const runtime = "nodejs";
@@ -98,6 +103,70 @@ function formatDeliveryAddress(s: ReturnType<typeof getSettings>): string | null
   return segments.length ? segments.join(", ") : null;
 }
 
+// ---------------------------------------------------------------------------
+// Orchestrator tool-call support
+// ---------------------------------------------------------------------------
+
+const VALID_TOOL_NAMES = new Set<string>(TOOL_DEFINITIONS.map((t) => t.name));
+// Matches: ```atlas-tool <name>\n<json body>\n```
+const ATLAS_TOOL_BLOCK_RE = /```atlas-tool\s+([\w-]+)\s*\n([\s\S]*?)```/g;
+
+/**
+ * Scan the assembled LLM response for atlas-tool fenced blocks and execute
+ * each one. This is the text-protocol path documented in orchestrator-tools.ts
+ * — here it's finally wired up. Called after the turn completes so it doesn't
+ * block the SSE stream. Errors are swallowed so a bad JSON block doesn't
+ * surface to the user as an unhandled rejection.
+ */
+async function processAtlasToolBlocks(content: string, fromAgentId: string): Promise<void> {
+  const re = new RegExp(ATLAS_TOOL_BLOCK_RE.source, "g");
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(content)) !== null) {
+    const toolName = match[1];
+    if (!VALID_TOOL_NAMES.has(toolName)) continue;
+    let args: Record<string, unknown>;
+    try {
+      args = JSON.parse(match[2]) as Record<string, unknown>;
+    } catch {
+      console.warn(`[chat/stream] atlas-tool ${toolName}: JSON inválido — ignorado`);
+      continue;
+    }
+    if (!("parent_agent_id" in args)) args.parent_agent_id = fromAgentId;
+    try {
+      await executeTool(toolName as OrchestratorToolName, args);
+    } catch (e) {
+      console.warn(`[chat/stream] atlas-tool ${toolName} falhou:`, e);
+    }
+  }
+}
+
+/**
+ * Refresh the orchestrator's MEMORY.md before each chat turn so Jarvis always
+ * sees the current sub-agent roster, in-flight tasks, and tool definitions.
+ * Fire-and-forget — do not await in the hot path.
+ */
+async function refreshOrchestratorContext(): Promise<void> {
+  try {
+    const { path: configPath } = resolveOpenClawAgentsConfigPath();
+    const config = JSON.parse(readFileSync(configPath, "utf-8")) as {
+      agents?: { list?: Array<{ id: string; name?: string; workspace?: string }> };
+    };
+    const list = config.agents?.list ?? [];
+    const meta = getAllAgentMeta();
+    const peers = list.map((a) => ({
+      id: a.id,
+      name: a.name,
+      workspace: a.workspace,
+      role: meta[a.id]?.role ?? (a.id === "main" || a.id === "jarvis" ? "orchestrator" : "specialist"),
+      specialty: meta[a.id]?.specialty ?? [],
+    }));
+    await refreshAllOrchestrators(peers);
+  } catch (e) {
+    console.warn("[chat/stream] refreshOrchestratorContext falhou:", e);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // In-memory reverse-geocode cache. Nominatim rate-limits ~1 req/s/IP and
 // charging that per chat turn would also add 500ms+ of latency before
 // the first token. Key is lat/lon rounded to 3 decimals (~100m), which
@@ -274,6 +343,14 @@ const FORCE_INLINE_HINT =
   "`whatsapp_send`, `reply`, `send`, `notify` nem qualquer tool de roteamento. " +
   "Responda como ASSISTANT MESSAGE ITEM normal — texto direto, sem tool calls de envio. " +
   "Não trate este turno como notificação para outro canal (Telegram/WhatsApp/etc.). " +
+  // IMPORTANTE: isso NÃO proíbe a delegação. Delegar trabalho operacional
+  // para sub-agentes via blocos ```atlas-tool delegate_to / decompose``` é
+  // ESPERADO e automático — esses blocos criam os cards no Live Mission. O
+  // que é proibido é rotear a RESPOSTA FINAL para outro canal. Para pedidos
+  // operacionais: delegue via atlas-tool E responda aqui um briefing curto
+  // (o que delegou, pra quem). Veja a Política de delegação no MEMORY.md. " +
+  "Para tarefas operacionais (código, fix, pesquisa, multi-passo), DELEGUE " +
+  "automaticamente via blocos ```atlas-tool``` e responda aqui um briefing curto. " +
   // Anti-HEARTBEAT-leak: ignore qualquer pre-prompt que faria o agente
   // ecoar HEARTBEAT.md / responder HEARTBEAT_OK. Esta é pergunta direta.
   "Esta mensagem NÃO é um heartbeat, ping de cron, ou briefing matinal — " +
@@ -429,6 +506,11 @@ export async function POST(req: NextRequest) {
 
   const agentId = body.agentId?.trim() || "main";
   const chatMode = body.mode === "quick" ? "quick" : "openclaw";
+
+  // Keep the orchestrator's MEMORY.md fresh so Jarvis sees the current
+  // sub-agent roster, in-flight tasks, and atlas-tool definitions.
+  // Fire-and-forget — we don't block the stream on this.
+  if (chatMode === "openclaw") void refreshOrchestratorContext();
 
   let thread = body.threadId ? getThread(body.threadId) : null;
   if (!thread) {
@@ -683,6 +765,16 @@ export async function POST(req: NextRequest) {
               taskId: kanbanTaskId,
             },
           });
+        }
+
+        // Parse and execute any atlas-tool delegation blocks emitted by the
+        // orchestrator (Jarvis). This is the text-protocol path described in
+        // orchestrator-tools.ts — it creates kanban tasks, sends mailbox
+        // messages, and fires live events for each delegation. Runs before
+        // we close the main chat-auto task so the delegated sub-tasks appear
+        // on the board while the parent card is still visible.
+        if (assembled && chatMode === "openclaw") {
+          void processAtlasToolBlocks(assembled, agentId);
         }
 
         // Close out the kanban card. Success → "done" with a result
