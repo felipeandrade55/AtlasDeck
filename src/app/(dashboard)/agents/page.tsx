@@ -162,8 +162,13 @@ export default function AgentsPage() {
     setFormName("");
     setFormEmoji("🤖");
     setFormColor("#3b82f6");
-    setFormModel("openai/gpt-5.5-codex");
-    setFormFallback("");
+    // Novos agentes seguem o modelo do Jarvis (main) por padrão — é o modelo
+    // que a instalação já aceita. O usuário pode trocar manualmente depois.
+    {
+      const jarvis = agents.find((a) => a.id === "main" || a.id === "jarvis");
+      setFormModel(jarvis?.model || "openai/gpt-5.5-codex");
+      setFormFallback(jarvis?.fallback || "");
+    }
     setFormWorkspace("");
     setFormDmPolicy("pairing");
     setFormBotToken("");
@@ -191,8 +196,9 @@ export default function AgentsPage() {
     setFormName((cur) => cur || t.name);
     setFormEmoji(t.emoji);
     setFormColor(t.color);
-    setFormModel(t.suggested_model);
-    setFormFallback(t.suggested_fallback || "");
+    // NÃO impõe o modelo do template (ids hardcoded podem não existir nesta
+    // instalação e derrubar o gateway). O modelo já vem herdado do Jarvis em
+    // handleOpenCreate; o usuário troca via ModelPicker se quiser.
     setFormRole(t.role);
     setFormSpecialty(t.specialty);
     setFormInheritSkills(t.inherit_jarvis_skills);

@@ -81,6 +81,20 @@ export async function POST() {
       return NextResponse.json({ error: "Nenhum template encontrado." }, { status: 400 });
     }
 
+    // Known-good model for new agents: clone whatever the orchestrator (Jarvis)
+    // uses — it's already accepted by this OpenClaw install. NEVER trust the
+    // template-hardcoded model ids: they may name models this install hasn't
+    // authenticated (e.g. "openai/gpt-5.4" / uninstalled ollama fallbacks),
+    // which makes OpenClaw reject the WHOLE config and crash-loop the gateway.
+    // Fallback chain: orchestrator model → global defaults → template suggestion.
+    const orchestratorAgent = config.agents.list.find(
+      (a: any) => a.id === "main" || a.id === "jarvis",
+    );
+    const inheritedModel =
+      (orchestratorAgent && orchestratorAgent.model) ||
+      config.agents?.defaults?.model ||
+      null;
+
     const created: string[] = [];
     const updated: string[] = [];
     // Collect agents whose MEMORY.md we must (re)write with the prompt.
@@ -97,11 +111,17 @@ export async function POST() {
         updated.push(t.id);
         promptTargets.push({ id: t.id, workspace: existing.workspace, system_prompt: t.system_prompt });
       } else {
-        const model: { primary: string; fallback?: string } = {
-          primary: normalizeModelId(t.suggested_model) || "openai/gpt-5.4-codex",
-        };
-        const fb = normalizeModelId(t.suggested_fallback);
-        if (fb) model.fallback = fb;
+        // Inherit the orchestrator's model (see inheritedModel above). Only
+        // fall back to the template suggestion when there's no orchestrator/
+        // default model to copy (fresh install with no agents yet).
+        let model: any;
+        if (inheritedModel) {
+          model = JSON.parse(JSON.stringify(inheritedModel));
+        } else {
+          model = { primary: normalizeModelId(t.suggested_model) || "openai/gpt-5.5" };
+          const fb = normalizeModelId(t.suggested_fallback);
+          if (fb) model.fallback = fb;
+        }
         const workspace = normalizeWorkspacePath(`./workspace/${t.id}`);
         const newAgent = {
           id: t.id,
