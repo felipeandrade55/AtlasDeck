@@ -12,7 +12,7 @@ export type BookingStatus = "pending" | "approved" | "rejected" | "cancelled";
 export type RescheduleStatus = "pending" | "rescheduled" | "cancelled";
 export type BlockSource = "ui" | "openclaw";
 export type RecurrenceFreq = "daily" | "weekly" | "monthly" | "weekdays";
-export type ExceptionAction = "cancelled" | "moved";
+export type ExceptionAction = "cancelled" | "moved" | "completed";
 
 export interface Recurrence {
   freq: RecurrenceFreq;
@@ -33,6 +33,8 @@ export interface CalendarEvent {
   timezone: string;
   color: string | null;
   status: EventStatus;
+  /** When the event (or, for non-recurring events, this occurrence) was marked done. null = pendente. */
+  completed_at: string | null;
   recurrence_json: string | null;
   source: EventSource;
   parent_booking_id: string | null;
@@ -51,6 +53,8 @@ export interface CalendarEventInput {
   timezone?: string;
   color?: string | null;
   status?: EventStatus;
+  /** true = marcar como realizado (completed_at = agora); false = desmarcar (completed_at = null). */
+  completed?: boolean;
   recurrence?: Recurrence | null;
   source?: EventSource;
   parent_booking_id?: string | null;

@@ -35,6 +35,8 @@ function shiftEvent(event: CalendarEvent, newStart: Date): ExpandedEvent {
     ...event,
     start_at: newStart.toISOString(),
     end_at: newEnd.toISOString(),
+    // Conclusão é por ocorrência (via exceção), nunca herdada da série.
+    completed_at: null,
     is_recurring_instance: true,
     occurrence_date: dayKey(newStart),
   };
@@ -115,6 +117,13 @@ export function expandRecurrence(
 
       if (!exception) {
         occurrences.push(shiftEvent(event, cursor));
+        emitted++;
+      } else if (exception.action === "completed") {
+        // Ocorrência marcada como realizada: emitimos normalmente, porém com
+        // completed_at preenchido para a UI riscar/colorir só esta data.
+        const occ = shiftEvent(event, cursor);
+        occ.completed_at = exception.created_at;
+        occurrences.push(occ);
         emitted++;
       } else if (exception.action === "moved" && exception.new_event_id) {
         // Moved occurrence: caller is responsible for fetching the replacement event by id.

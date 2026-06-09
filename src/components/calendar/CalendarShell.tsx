@@ -17,6 +17,7 @@ import {
   fetchBlocks,
   fetchRescheduleQueue,
   fetchBookings,
+  setEventCompletedApi,
 } from "@/lib/calendar-client";
 import type { CalendarBlock, ExpandedEvent, RescheduleQueueItem, Booking } from "@/lib/calendar-types";
 import { useCalendarRange, navigateDate, type CalendarView } from "@/hooks/useCalendarRange";
@@ -54,7 +55,9 @@ export function CalendarShell() {
     eventId: string | null;
     initialStart: Date | null;
     initialEnd: Date | null;
-  }>({ type: null, eventId: null, initialStart: null, initialEnd: null });
+    occurrenceDate: string | null;
+    completed: boolean;
+  }>({ type: null, eventId: null, initialStart: null, initialEnd: null, occurrenceDate: null, completed: false });
 
   const [rescheduleOpen, setRescheduleOpen] = useState(false);
   const [bookingsOpen, setBookingsOpen] = useState(false);
@@ -84,26 +87,41 @@ export function CalendarShell() {
   }, [reload]);
 
   const handleCreateEvent = useCallback((start: Date, end: Date) => {
-    setModalState({ type: "event", eventId: null, initialStart: start, initialEnd: end });
+    setModalState({ type: "event", eventId: null, initialStart: start, initialEnd: end, occurrenceDate: null, completed: false });
   }, []);
 
-  const handleSelectEvent = useCallback((eventId: string) => {
-    setModalState({ type: "event", eventId, initialStart: null, initialEnd: null });
-  }, []);
+  const handleSelectEvent = useCallback(
+    (eventId: string, occurrenceDate: string | null = null, completed = false) => {
+      setModalState({ type: "event", eventId, initialStart: null, initialEnd: null, occurrenceDate, completed });
+    },
+    []
+  );
+
+  const handleToggleComplete = useCallback(
+    async (eventId: string, occurrenceDate: string | null, completed: boolean) => {
+      try {
+        await setEventCompletedApi(eventId, completed, occurrenceDate);
+        await reload();
+      } catch (err) {
+        console.error("Failed to toggle completion:", err);
+      }
+    },
+    [reload]
+  );
 
   const openNewEvent = () => {
     const now = new Date();
     now.setMinutes(0, 0, 0);
     const end = new Date(now.getTime() + 60 * 60 * 1000);
-    setModalState({ type: "event", eventId: null, initialStart: now, initialEnd: end });
+    setModalState({ type: "event", eventId: null, initialStart: now, initialEnd: end, occurrenceDate: null, completed: false });
   };
 
   const openNewBlock = () => {
-    setModalState({ type: "block", eventId: null, initialStart: null, initialEnd: null });
+    setModalState({ type: "block", eventId: null, initialStart: null, initialEnd: null, occurrenceDate: null, completed: false });
   };
 
   const closeModal = () => {
-    setModalState({ type: null, eventId: null, initialStart: null, initialEnd: null });
+    setModalState({ type: null, eventId: null, initialStart: null, initialEnd: null, occurrenceDate: null, completed: false });
   };
 
   const upcoming = useMemo(() => {
@@ -370,7 +388,12 @@ export function CalendarShell() {
             />
           )}
           {view === "agenda" && (
-            <AgendaView events={events} blocks={blocks} onSelectEvent={handleSelectEvent} />
+            <AgendaView
+              events={events}
+              blocks={blocks}
+              onSelectEvent={handleSelectEvent}
+              onToggleComplete={handleToggleComplete}
+            />
           )}
         </div>
 
@@ -399,6 +422,9 @@ export function CalendarShell() {
         editingId={modalState.eventId}
         initialStart={modalState.initialStart}
         initialEnd={modalState.initialEnd}
+        occurrenceDate={modalState.occurrenceDate}
+        initialCompleted={modalState.completed}
+        onToggleComplete={handleToggleComplete}
       />
 
       <BlockModal

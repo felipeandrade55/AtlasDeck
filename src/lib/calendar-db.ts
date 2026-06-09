@@ -209,6 +209,11 @@ function getDb(): Database.Database {
     db.exec(`ALTER TABLE availability_rules ADD COLUMN lunch_end TEXT`);
   }
 
+  const eventCols = db.prepare(`PRAGMA table_info(events)`).all() as Array<{ name: string }>;
+  if (!new Set(eventCols.map((c) => c.name)).has("completed_at")) {
+    db.exec(`ALTER TABLE events ADD COLUMN completed_at TEXT`);
+  }
+
   globalRef.__atlasdeckCalendarDb = db;
   return db;
 }
@@ -225,6 +230,7 @@ function rowToEvent(row: Record<string, unknown>): CalendarEvent {
     timezone: row.timezone as string,
     color: (row.color as string | null) ?? null,
     status: row.status as CalendarEvent["status"],
+    completed_at: (row.completed_at as string | null) ?? null,
     recurrence_json: (row.recurrence_json as string | null) ?? null,
     source: row.source as CalendarEvent["source"],
     parent_booking_id: (row.parent_booking_id as string | null) ?? null,
@@ -360,6 +366,48 @@ export function deleteEvent(id: string): boolean {
   return result.changes > 0;
 }
 
+/**
+ * Marca um evento NÃO recorrente como realizado (completed_at = agora) ou
+ * desfaz (completed_at = null). Para ocorrências de eventos recorrentes use
+ * `setOccurrenceCompleted`.
+ */
+export function setEventCompleted(id: string, completed: boolean): CalendarEvent | null {
+  const db = getDb();
+  const existing = getEventById(id);
+  if (!existing) return null;
+  const now = new Date().toISOString();
+  db.prepare(`UPDATE events SET completed_at = ?, updated_at = ? WHERE id = ?`).run(
+    completed ? now : null,
+    now,
+    id
+  );
+  return getEventById(id);
+}
+
+/**
+ * Marca UMA ocorrência de um evento recorrente como realizada — registra/remove
+ * uma exceção `completed` por data, sem afetar as demais ocorrências da série.
+ */
+export function setOccurrenceCompleted(
+  parentEventId: string,
+  occurrenceDate: string,
+  completed: boolean
+): void {
+  const db = getDb();
+  if (completed) {
+    db.prepare(
+      `INSERT INTO event_exceptions (id, parent_event_id, occurrence_date, action)
+       VALUES (?, ?, ?, 'completed')
+       ON CONFLICT(parent_event_id, occurrence_date)
+       DO UPDATE SET action = 'completed', new_event_id = NULL`
+    ).run(randomUUID(), parentEventId, occurrenceDate);
+  } else {
+    db.prepare(
+      `DELETE FROM event_exceptions WHERE parent_event_id = ? AND occurrence_date = ? AND action = 'completed'`
+    ).run(parentEventId, occurrenceDate);
+  }
+}
+
 export function listRemindersForEvent(eventId: string): EventReminder[] {
   const db = getDb();
   const rows = db
@@ -415,6 +463,7 @@ export function listDueReminders(now: Date = new Date()): DueReminder[] {
        JOIN events e ON e.id = r.event_id
        WHERE r.sent_at IS NULL
          AND e.status = 'confirmed'
+         AND e.completed_at IS NULL
          AND datetime(e.start_at, '-' || r.minutes_before || ' minutes') <= datetime(?)
          AND datetime(e.start_at) > datetime(?, '-1 minute')`
     )

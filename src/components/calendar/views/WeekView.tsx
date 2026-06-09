@@ -14,7 +14,7 @@ interface Props {
   events: ExpandedEvent[];
   blocks: CalendarBlock[];
   onCreateAt: (start: Date, end: Date) => void;
-  onSelectEvent: (eventId: string) => void;
+  onSelectEvent: (eventId: string, occurrenceDate?: string | null, completed?: boolean) => void;
   onSelectBlock?: (blockId: string) => void;
 }
 
@@ -124,7 +124,7 @@ function DayColumn({
   events: ExpandedEvent[];
   blocks: CalendarBlock[];
   onCreateAt: (s: Date, e: Date) => void;
-  onSelectEvent: (id: string) => void;
+  onSelectEvent: (id: string, occurrenceDate?: string | null, completed?: boolean) => void;
   onSelectBlock?: (id: string) => void;
 }) {
   const dayStart = useMemo(() => {
@@ -221,13 +221,14 @@ function DayColumn({
         const heightPx = Math.max(20, (item.heightPct / 100) * HOUR_HEIGHT_PX * 24);
         if (item.kind === "event") {
           const ev = item.raw as ExpandedEvent;
+          const completed = !!ev.completed_at;
           return (
             <div
               key={item.id}
               data-event
               onClick={(e) => {
                 e.stopPropagation();
-                onSelectEvent(ev.id);
+                onSelectEvent(ev.id, ev.occurrence_date, completed);
               }}
               style={{
                 position: "absolute",
@@ -235,8 +236,8 @@ function DayColumn({
                 right: 2,
                 top: topPx,
                 height: heightPx,
-                borderLeft: `3px solid ${item.color}`,
-                backgroundColor: `${item.color}22`,
+                borderLeft: `3px solid ${completed ? "var(--positive)" : item.color}`,
+                backgroundColor: completed ? "var(--positive-soft)" : `${item.color}22`,
                 borderRadius: "var(--radius-sm)",
                 padding: "2px 6px",
                 fontSize: "0.7rem",
@@ -245,7 +246,16 @@ function DayColumn({
                 overflow: "hidden",
               }}
             >
-              <div style={{ fontWeight: 600, lineHeight: 1.2 }}>{item.label}</div>
+              <div
+                style={{
+                  fontWeight: 600,
+                  lineHeight: 1.2,
+                  textDecoration: completed ? "line-through" : "none",
+                  color: completed ? "var(--positive)" : "var(--text-primary)",
+                }}
+              >
+                {item.label}
+              </div>
               {heightPx > 36 && item.sublabel && (
                 <div style={{ fontSize: "0.62rem", color: "var(--text-secondary)" }}>{item.sublabel}</div>
               )}

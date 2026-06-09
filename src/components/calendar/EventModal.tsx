@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { X, Trash2, Calendar, Clock, MapPin, Bell, Repeat, Palette } from "lucide-react";
+import { X, Trash2, Calendar, Clock, MapPin, Bell, Repeat, Palette, CheckCircle2, Circle } from "lucide-react";
 import { RecurrenceBuilder } from "./RecurrenceBuilder";
 import {
   createEventApi,
@@ -34,6 +34,11 @@ interface Props {
   editingId: string | null;
   initialStart?: Date | null;
   initialEnd?: Date | null;
+  /** Data da ocorrência (eventos recorrentes), para concluir só aquela data. */
+  occurrenceDate?: string | null;
+  /** Estado inicial de "realizado" deste compromisso/ocorrência. */
+  initialCompleted?: boolean;
+  onToggleComplete?: (eventId: string, occurrenceDate: string | null, completed: boolean) => void;
 }
 
 function toLocalInput(iso: string | null): string {
@@ -48,7 +53,17 @@ function fromLocalInput(local: string): string {
   return new Date(local).toISOString();
 }
 
-export function EventModal({ isOpen, onClose, onSaved, editingId, initialStart, initialEnd }: Props) {
+export function EventModal({
+  isOpen,
+  onClose,
+  onSaved,
+  editingId,
+  initialStart,
+  initialEnd,
+  occurrenceDate = null,
+  initialCompleted = false,
+  onToggleComplete,
+}: Props) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [location, setLocation] = useState("");
@@ -65,6 +80,7 @@ export function EventModal({ isOpen, onClose, onSaved, editingId, initialStart, 
   const [isDeleting, setIsDeleting] = useState(false);
   const [loading, setLoading] = useState(false);
   const [existingSource, setExistingSource] = useState<CalendarEvent["source"] | null>(null);
+  const [isCompleted, setIsCompleted] = useState(false);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -72,6 +88,7 @@ export function EventModal({ isOpen, onClose, onSaved, editingId, initialStart, 
 
     if (editingId) {
       setLoading(true);
+      setIsCompleted(initialCompleted);
       fetchEventById(editingId)
         .then(({ event, reminders }) => {
           setTitle(event.title);
@@ -110,9 +127,17 @@ export function EventModal({ isOpen, onClose, onSaved, editingId, initialStart, 
       setRecurrence(null);
       setReminders([{ minutes_before: 15, channel: "notification" }]);
       setExistingSource(null);
+      setIsCompleted(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, editingId]);
+
+  const handleToggleCompleted = () => {
+    if (!editingId) return;
+    const next = !isCompleted;
+    setIsCompleted(next);
+    onToggleComplete?.(editingId, occurrenceDate, next);
+  };
 
   const validate = () => {
     const next: Record<string, string> = {};
@@ -207,6 +232,26 @@ export function EventModal({ isOpen, onClose, onSaved, editingId, initialStart, 
                 }}
               >
                 {existingSource === "openclaw" ? "OPENCLAW" : "BOOKING"}
+              </span>
+            )}
+            {editingId && isCompleted && (
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  fontSize: "0.7rem",
+                  fontWeight: 700,
+                  letterSpacing: "0.05em",
+                  textTransform: "uppercase",
+                  padding: "2px 8px",
+                  borderRadius: 6,
+                  backgroundColor: "var(--positive-soft)",
+                  color: "var(--positive)",
+                }}
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                Realizado
               </span>
             )}
           </div>
@@ -466,7 +511,23 @@ export function EventModal({ isOpen, onClose, onSaved, editingId, initialStart, 
               className="flex items-center justify-between gap-3 pt-4"
               style={{ borderTop: "1px solid var(--border)" }}
             >
-              <div>
+              <div style={{ display: "flex", gap: "0.5rem" }}>
+                {editingId && (
+                  <button
+                    type="button"
+                    onClick={handleToggleCompleted}
+                    className="btn-outline"
+                    style={{
+                      fontSize: "0.85rem",
+                      padding: "0.5rem 0.85rem",
+                      color: isCompleted ? "var(--positive)" : "var(--text-secondary)",
+                      borderColor: isCompleted ? "var(--positive)" : "var(--border)",
+                    }}
+                  >
+                    {isCompleted ? <CheckCircle2 className="w-4 h-4" /> : <Circle className="w-4 h-4" />}
+                    {isCompleted ? "Realizado" : "Marcar como realizado"}
+                  </button>
+                )}
                 {editingId && (
                   <button
                     type="button"

@@ -1,13 +1,14 @@
 "use client";
 
 import { useMemo } from "react";
-import { MapPin, Repeat } from "lucide-react";
+import { MapPin, Repeat, CheckCircle2, Circle } from "lucide-react";
 import type { ExpandedEvent, CalendarBlock } from "@/lib/calendar-types";
 
 interface Props {
   events: ExpandedEvent[];
   blocks: CalendarBlock[];
-  onSelectEvent: (eventId: string) => void;
+  onSelectEvent: (eventId: string, occurrenceDate?: string | null, completed?: boolean) => void;
+  onToggleComplete: (eventId: string, occurrenceDate: string | null, completed: boolean) => void;
 }
 
 function fmtDay(d: Date): string {
@@ -35,7 +36,7 @@ interface AgendaItem {
   data: ExpandedEvent | CalendarBlock;
 }
 
-export function AgendaView({ events, blocks, onSelectEvent }: Props) {
+export function AgendaView({ events, blocks, onSelectEvent, onToggleComplete }: Props) {
   const groups = useMemo(() => {
     const items: AgendaItem[] = [];
     for (const ev of events) {
@@ -101,23 +102,17 @@ export function AgendaView({ events, blocks, onSelectEvent }: Props) {
           {group.items.map((it, idx) => {
             if (it.kind === "event") {
               const ev = it.data as ExpandedEvent;
-              const color = ev.color || "#FF3B30";
+              const completed = !!ev.completed_at;
+              const color = completed ? "var(--positive)" : ev.color || "#FF3B30";
               return (
-                <button
+                <div
                   key={`${ev.id}-${idx}`}
-                  type="button"
-                  onClick={() => onSelectEvent(ev.id)}
                   style={{
-                    width: "100%",
                     display: "flex",
+                    alignItems: "stretch",
                     gap: "0.75rem",
                     padding: "0.75rem 1rem",
-                    backgroundColor: "transparent",
-                    border: "none",
                     borderBottom: "1px solid var(--border)",
-                    cursor: "pointer",
-                    textAlign: "left",
-                    color: "var(--text-primary)",
                   }}
                 >
                   <div
@@ -128,9 +123,50 @@ export function AgendaView({ events, blocks, onSelectEvent }: Props) {
                       flexShrink: 0,
                     }}
                   />
-                  <div style={{ flex: 1, minWidth: 0 }}>
+                  <button
+                    type="button"
+                    title={completed ? "Marcar como não realizado" : "Marcar como realizado"}
+                    aria-label={completed ? "Marcar como não realizado" : "Marcar como realizado"}
+                    onClick={() => onToggleComplete(ev.id, ev.occurrence_date, !completed)}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      padding: 0,
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      color: completed ? "var(--positive)" : "var(--text-muted)",
+                      flexShrink: 0,
+                    }}
+                  >
+                    {completed ? <CheckCircle2 className="w-5 h-5" /> : <Circle className="w-5 h-5" />}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onSelectEvent(ev.id, ev.occurrence_date, completed)}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      display: "block",
+                      backgroundColor: "transparent",
+                      border: "none",
+                      cursor: "pointer",
+                      textAlign: "left",
+                      color: "var(--text-primary)",
+                      padding: 0,
+                    }}
+                  >
                     <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                      <div style={{ fontWeight: 600, fontSize: "0.9rem" }}>{ev.title}</div>
+                      <div
+                        style={{
+                          fontWeight: 600,
+                          fontSize: "0.9rem",
+                          textDecoration: completed ? "line-through" : "none",
+                          color: completed ? "var(--positive)" : "var(--text-primary)",
+                        }}
+                      >
+                        {ev.title}
+                      </div>
                       <div style={{ fontSize: "0.78rem", color: "var(--text-secondary)" }}>
                         {ev.all_day
                           ? "Dia inteiro"
@@ -146,6 +182,12 @@ export function AgendaView({ events, blocks, onSelectEvent }: Props) {
                         marginTop: 2,
                       }}
                     >
+                      {completed && (
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: "var(--positive)", fontWeight: 600 }}>
+                          <CheckCircle2 className="w-3 h-3" />
+                          Realizado
+                        </span>
+                      )}
                       {ev.location && (
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
                           <MapPin className="w-3 h-3" />
@@ -164,8 +206,8 @@ export function AgendaView({ events, blocks, onSelectEvent }: Props) {
                         </span>
                       )}
                     </div>
-                  </div>
-                </button>
+                  </button>
+                </div>
               );
             }
             const block = it.data as CalendarBlock;

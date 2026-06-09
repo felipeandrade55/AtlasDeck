@@ -11,7 +11,7 @@ interface Props {
   events: ExpandedEvent[];
   blocks: CalendarBlock[];
   onCreateAt: (start: Date, end: Date) => void;
-  onSelectEvent: (eventId: string) => void;
+  onSelectEvent: (eventId: string, occurrenceDate?: string | null, completed?: boolean) => void;
   onDayClick?: (date: Date) => void;
 }
 
@@ -141,33 +141,37 @@ export function MonthView({ focusDate, events, blocks, onCreateAt, onSelectEvent
                 </div>
               )}
               <div style={{ display: "flex", flexDirection: "column", gap: 2, overflow: "hidden" }}>
-                {dayEvents.slice(0, 3).map((ev) => (
-                  <button
-                    key={`${ev.id}-${ev.occurrence_date ?? ev.start_at}`}
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onSelectEvent(ev.id);
-                    }}
-                    style={{
-                      textAlign: "left",
-                      fontSize: "0.65rem",
-                      padding: "2px 6px",
-                      borderRadius: 4,
-                      borderLeft: `3px solid ${ev.color || "#FF3B30"}`,
-                      backgroundColor: `${ev.color || "#FF3B30"}22`,
-                      color: "var(--text-primary)",
-                      border: "none",
-                      cursor: "pointer",
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                    }}
-                  >
-                    {ev.all_day ? "" : new Date(ev.start_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}{" "}
-                    {ev.title}
-                  </button>
-                ))}
+                {dayEvents.slice(0, 3).map((ev) => {
+                  const completed = !!ev.completed_at;
+                  return (
+                    <button
+                      key={`${ev.id}-${ev.occurrence_date ?? ev.start_at}`}
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSelectEvent(ev.id, ev.occurrence_date, completed);
+                      }}
+                      style={{
+                        textAlign: "left",
+                        fontSize: "0.65rem",
+                        padding: "2px 6px",
+                        borderRadius: 4,
+                        borderLeft: `3px solid ${completed ? "var(--positive)" : ev.color || "#FF3B30"}`,
+                        backgroundColor: completed ? "var(--positive-soft)" : `${ev.color || "#FF3B30"}22`,
+                        color: completed ? "var(--positive)" : "var(--text-primary)",
+                        border: "none",
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        textDecoration: completed ? "line-through" : "none",
+                      }}
+                    >
+                      {ev.all_day ? "" : new Date(ev.start_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}{" "}
+                      {ev.title}
+                    </button>
+                  );
+                })}
                 {dayEvents.length > 3 && (
                   <div style={{ fontSize: "0.6rem", color: "var(--text-muted)" }}>+{dayEvents.length - 3} mais</div>
                 )}

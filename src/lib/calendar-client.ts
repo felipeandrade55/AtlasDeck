@@ -64,6 +64,23 @@ export async function deleteEventApi(id: string): Promise<void> {
   await jsonOrThrow(res);
 }
 
+/**
+ * Marca um compromisso como realizado (ou desfaz). Para ocorrências de eventos
+ * recorrentes, passe `occurrenceDate` (ex.: "2026-06-09") para afetar só aquela data.
+ */
+export async function setEventCompletedApi(
+  id: string,
+  completed: boolean,
+  occurrenceDate?: string | null
+): Promise<void> {
+  const res = await fetch(`/api/calendar/events/${id}/complete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ completed, occurrence_date: occurrenceDate ?? null }),
+  });
+  await jsonOrThrow(res);
+}
+
 export async function fetchBlocks(from: Date, to: Date): Promise<CalendarBlock[]> {
   const res = await fetch(
     `/api/calendar/blocks?from=${encodeURIComponent(from.toISOString())}&to=${encodeURIComponent(to.toISOString())}`,

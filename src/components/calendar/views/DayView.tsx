@@ -11,7 +11,7 @@ interface Props {
   events: ExpandedEvent[];
   blocks: CalendarBlock[];
   onCreateAt: (start: Date, end: Date) => void;
-  onSelectEvent: (eventId: string) => void;
+  onSelectEvent: (eventId: string, occurrenceDate?: string | null, completed?: boolean) => void;
   onSelectBlock?: (blockId: string) => void;
 }
 
@@ -146,13 +146,16 @@ export function DayView({ focusDate, events, blocks, onCreateAt, onSelectEvent, 
           const topPx = (item.topPct / 100) * HOUR_HEIGHT_PX * 24;
           const heightPx = Math.max(20, (item.heightPct / 100) * HOUR_HEIGHT_PX * 24);
           if (item.kind === "event") {
+            const raw = item.raw as ExpandedEvent;
+            const completed = !!raw.completed_at;
+            const barColor = completed ? "var(--positive)" : item.color;
             return (
               <div
                 key={item.id}
                 data-event
                 onClick={(e) => {
                   e.stopPropagation();
-                  onSelectEvent((item.raw as ExpandedEvent).id);
+                  onSelectEvent(raw.id, raw.occurrence_date, completed);
                 }}
                 style={{
                   position: "absolute",
@@ -160,8 +163,8 @@ export function DayView({ focusDate, events, blocks, onCreateAt, onSelectEvent, 
                   right: 6,
                   top: topPx,
                   height: heightPx,
-                  borderLeft: `3px solid ${item.color}`,
-                  backgroundColor: `${item.color}22`,
+                  borderLeft: `3px solid ${barColor}`,
+                  backgroundColor: completed ? "var(--positive-soft)" : `${item.color}22`,
                   borderRadius: "var(--radius-sm)",
                   padding: "4px 8px",
                   fontSize: "0.75rem",
@@ -170,7 +173,15 @@ export function DayView({ focusDate, events, blocks, onCreateAt, onSelectEvent, 
                   overflow: "hidden",
                 }}
               >
-                <div style={{ fontWeight: 600 }}>{item.label}</div>
+                <div
+                  style={{
+                    fontWeight: 600,
+                    textDecoration: completed ? "line-through" : "none",
+                    color: completed ? "var(--positive)" : "var(--text-primary)",
+                  }}
+                >
+                  {item.label}
+                </div>
                 {item.sublabel && (
                   <div style={{ fontSize: "0.68rem", color: "var(--text-secondary)" }}>{item.sublabel}</div>
                 )}
