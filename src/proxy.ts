@@ -24,6 +24,11 @@ const PUBLIC_API_PREFIXES = [
   "/api/calendar/public/",
   "/api/vps/ingest",
   "/api/vps/install",
+  // Orchestrator tool-call (delegate_to / decompose / list_squad …) is hit by
+  // the atlasdeck-memory MCP server (OpenClaw → AtlasDeck) which has no admin
+  // cookie. The route self-protects: it requires a valid service token
+  // (gateway.auth.token) OR the admin cookie, validated in the Node handler.
+  "/api/orchestrator/tool-call",
 ];
 
 // API prefixes that may also be authenticated via service token (OpenClaw → AtlasDeck)

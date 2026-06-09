@@ -792,11 +792,44 @@ server.registerTool(
 const ATLASDECK_BASE_URL =
   process.env.ATLASDECK_BASE_URL || "http://127.0.0.1:3000";
 
+// Service-to-service auth. AtlasDeck protects its /api routes behind the admin
+// cookie, which the MCP server (a gateway child) doesn't have. The shared
+// secret is `gateway.auth.token` in openclaw.json — the same token AtlasDeck's
+// Node validator (openclaw-auth.ts) checks. Without sending it, delegate_to et
+// al. get 401. Read once at boot: env override, else openclaw.json.
+function readServiceToken(): string | null {
+  const fromEnv = process.env.OPENCLAW_SERVICE_TOKEN;
+  if (fromEnv && fromEnv.trim()) return fromEnv.trim();
+  try {
+    const dir = process.env.OPENCLAW_DIR || "/root/.openclaw";
+    const cfgPath = path.join(dir, "openclaw.json");
+    if (!fs.existsSync(cfgPath)) return null;
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8")) as {
+      gateway?: { auth?: { token?: string } };
+    };
+    return cfg.gateway?.auth?.token?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+const SERVICE_TOKEN = readServiceToken();
+if (!SERVICE_TOKEN) {
+  log(
+    "WARNING: no service token (gateway.auth.token / OPENCLAW_SERVICE_TOKEN) — " +
+      "AtlasDeck API calls that require auth (delegate_to, calendar, …) will 401.",
+  );
+}
+
 async function atlasdeckFetch(pathAndQuery: string, init?: RequestInit): Promise<unknown> {
   const url = `${ATLASDECK_BASE_URL.replace(/\/$/, "")}${pathAndQuery}`;
   const res = await fetch(url, {
     ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+    headers: {
+      "Content-Type": "application/json",
+      ...(SERVICE_TOKEN ? { "x-openclaw-token": SERVICE_TOKEN } : {}),
+      ...(init?.headers || {}),
+    },
   });
   const text = await res.text();
   if (!res.ok) {
@@ -1282,22 +1315,18 @@ server.registerTool(
   },
   async () => {
     try {
-      const json = (await atlasdeckFetch(`/api/agents`)) as {
-        agents?: Array<{
-          id: string;
-          name?: string;
-          role?: string;
-          specialty?: string[];
-        }>;
+      // GET on the orchestrator tool-call route — shares the service-token
+      // auth path with delegate_to (the bare /api/agents route stays behind
+      // the admin cookie).
+      const json = (await atlasdeckFetch(`/api/orchestrator/tool-call`)) as {
+        squad?: Array<{ id: string; name?: string; role?: string; specialty?: string[] }>;
       };
-      const squad = (json.agents ?? [])
-        .filter((a) => a.id !== "main" && a.id !== "jarvis")
-        .map((a) => ({
-          id: a.id,
-          name: a.name ?? a.id,
-          role: a.role ?? "specialist",
-          specialty: a.specialty ?? [],
-        }));
+      const squad = (json.squad ?? []).map((a) => ({
+        id: a.id,
+        name: a.name ?? a.id,
+        role: a.role ?? "specialist",
+        specialty: a.specialty ?? [],
+      }));
       return asJson({ ok: true, count: squad.length, squad });
     } catch (err) {
       return asError(err instanceof Error ? err.message : String(err));
