@@ -57,6 +57,18 @@ export async function register(): Promise<void> {
     console.warn("[instrumentation] OpenClaw watcher bootstrap failed:", err);
   }
 
+  // Orchestrator MEMORY.md refresh — regenerates Jarvis's delegation policy,
+  // sub-agent roster and tool docs at boot + every 10m. Without this, a
+  // Telegram-only flow (no web chat turns) would never refresh MEMORY.md, so
+  // the delegation policy could be stale or missing. Native MCP delegation
+  // tools work regardless, but this keeps the policy/roster current.
+  try {
+    const { startOrchestratorMemoryRefresh } = await import("@/lib/orchestrator-refresh");
+    startOrchestratorMemoryRefresh();
+  } catch (err) {
+    console.warn("[instrumentation] orchestrator memory refresh bootstrap failed:", err);
+  }
+
   // Memory subsystem scheduler — extraction (every 15m, pulls new exchanges
   // from session JSONLs → structured memories), injection (regenerates the
   // AUTO_RECALL block in MEMORY.md), housekeeping (archives stale low-value

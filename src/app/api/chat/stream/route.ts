@@ -33,10 +33,7 @@ import { publishEvent } from "@/lib/live-events";
 import { createTask, updateTask } from "@/lib/tasks-db";
 import { getMemoryDailyStats, getSettings } from "@/lib/memory-db";
 import { executeTool, TOOL_DEFINITIONS, type OrchestratorToolName } from "@/lib/orchestrator-tools";
-import { refreshAllOrchestrators } from "@/lib/orchestrator-injector";
-import { readFileSync } from "fs";
-import { resolveOpenClawAgentsConfigPath } from "@/lib/openclaw-config";
-import { getAllAgentMeta } from "@/lib/agents-meta";
+import { refreshOrchestratorMemory } from "@/lib/orchestrator-refresh";
 import { cityFromAddress, shortCityName, type NominatimAddress } from "@/lib/location-display";
 
 export const runtime = "nodejs";
@@ -143,24 +140,12 @@ async function processAtlasToolBlocks(content: string, fromAgentId: string): Pro
 /**
  * Refresh the orchestrator's MEMORY.md before each chat turn so Jarvis always
  * sees the current sub-agent roster, in-flight tasks, and tool definitions.
- * Fire-and-forget — do not await in the hot path.
+ * Fire-and-forget — do not await in the hot path. Delegates to the shared
+ * helper (also used by the boot-time + periodic refresh in instrumentation).
  */
 async function refreshOrchestratorContext(): Promise<void> {
   try {
-    const { path: configPath } = resolveOpenClawAgentsConfigPath();
-    const config = JSON.parse(readFileSync(configPath, "utf-8")) as {
-      agents?: { list?: Array<{ id: string; name?: string; workspace?: string }> };
-    };
-    const list = config.agents?.list ?? [];
-    const meta = getAllAgentMeta();
-    const peers = list.map((a) => ({
-      id: a.id,
-      name: a.name,
-      workspace: a.workspace,
-      role: meta[a.id]?.role ?? (a.id === "main" || a.id === "jarvis" ? "orchestrator" : "specialist"),
-      specialty: meta[a.id]?.specialty ?? [],
-    }));
-    await refreshAllOrchestrators(peers);
+    await refreshOrchestratorMemory();
   } catch (e) {
     console.warn("[chat/stream] refreshOrchestratorContext falhou:", e);
   }

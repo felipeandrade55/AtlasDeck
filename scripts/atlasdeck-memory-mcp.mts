@@ -1250,6 +1250,178 @@ server.registerTool(
   },
 );
 
+// ─── Orchestration / delegation tools ──────────────────────────────────
+// These are the heart of the multi-agent system: they let Jarvis delegate
+// real work to specialist sub-agents from ANY channel (Telegram, WhatsApp,
+// web, CLI). Each delegation creates a card on the Live Mission kanban and
+// fires live events the dashboard renders in real time.
+//
+// They proxy to /api/orchestrator/tool-call (which runs executeTool against
+// the SQLite task DB) so the API stays the single source of truth. Without
+// these as native MCP tools, delegation only worked in the web chat (where
+// a regex parsed ```atlas-tool``` text blocks) — Telegram/WhatsApp turns
+// never created cards, which is exactly the bug this fixes.
+
+async function orchestratorToolCall(
+  tool: string,
+  args: Record<string, unknown>,
+): Promise<unknown> {
+  return atlasdeckFetch(`/api/orchestrator/tool-call`, {
+    method: "POST",
+    body: JSON.stringify({ tool, args }),
+  });
+}
+
+server.registerTool(
+  "list_squad",
+  {
+    title: "Lista os sub-agentes especialistas disponíveis",
+    description:
+      "Retorna os especialistas do squad do Jarvis (id, nome, papel, especialidades) que você pode acionar com delegate_to/decompose. Chame ANTES de delegar quando não tiver certeza de qual `agent_id` usar. Use o campo `id` (não o nome) ao delegar.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      const json = (await atlasdeckFetch(`/api/agents`)) as {
+        agents?: Array<{
+          id: string;
+          name?: string;
+          role?: string;
+          specialty?: string[];
+        }>;
+      };
+      const squad = (json.agents ?? [])
+        .filter((a) => a.id !== "main" && a.id !== "jarvis")
+        .map((a) => ({
+          id: a.id,
+          name: a.name ?? a.id,
+          role: a.role ?? "specialist",
+          specialty: a.specialty ?? [],
+        }));
+      return asJson({ ok: true, count: squad.length, squad });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
+server.registerTool(
+  "delegate_to",
+  {
+    title: "Delega uma tarefa a um sub-agente especialista",
+    description:
+      "Delegue UMA tarefa operacional (escrever/corrigir código, mexer em arquivos, rodar comando, pesquisar a fundo, diagnosticar, implementar feature) a um especialista. Cria um card no painel Live Mission que o Felipe acompanha em tempo real. Use quando o pedido mapeia limpo para 1 especialista. Para `agent_id` use o `id` da tool list_squad (ex: 'pesquisador', 'dev'). Passe contexto rico no campo `context` — o especialista não vê a conversa, só o que você mandar.",
+    inputSchema: {
+      agent_id: z
+        .string()
+        .min(1)
+        .describe("Id do sub-agente alvo (use o `id` de list_squad, ex: 'pesquisador')."),
+      task: z
+        .string()
+        .min(1)
+        .describe("Descrição em linguagem natural do que fazer."),
+      title: z.string().optional().describe("Rótulo curto para o card do kanban."),
+      context: z
+        .string()
+        .optional()
+        .describe("Contexto/briefing completo que o especialista precisa (ele não vê a conversa)."),
+    },
+  },
+  async (args) => {
+    try {
+      const json = (await orchestratorToolCall("delegate_to", {
+        agent_id: args.agent_id,
+        task: args.task,
+        title: args.title,
+        context: args.context,
+      })) as { ok?: boolean; result?: { task?: { id?: string } }; error?: string };
+      if (json.error) return asError(json.error);
+      const taskId = json.result?.task?.id ?? null;
+      return asJson({
+        ok: true,
+        task_id: taskId,
+        agent_id: args.agent_id,
+        hint: `Tarefa delegada para '${args.agent_id}' e card criado no Live Mission. Avise o Felipe que ele pode acompanhar no painel.`,
+      });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
+server.registerTool(
+  "decompose",
+  {
+    title: "Quebra um pedido complexo em subtarefas (DAG)",
+    description:
+      "Quando 1 especialista não basta, quebre o pedido em várias subtarefas com dependências entre elas — ex: 'implementa feature X' → [pesquisa, design, backend, frontend, testes]. Cada subtarefa vira um card no Live Mission. Em `depends_on` use os índices ('0','1',…) das subtarefas anteriores DESTA mesma chamada.",
+    inputSchema: {
+      parent_prompt: z.string().min(1).describe("O pedido original do usuário."),
+      subtasks: z
+        .array(
+          z.object({
+            agent_id: z.string().min(1).describe("Id do especialista (de list_squad)."),
+            task: z.string().min(1).describe("O que essa subtarefa faz."),
+            title: z.string().optional().describe("Rótulo curto pro card."),
+            depends_on: z
+              .array(z.string())
+              .optional()
+              .describe("Índices das subtarefas anteriores das quais esta depende (ex: ['0','1'])."),
+          }),
+        )
+        .min(1)
+        .describe("Lista ordenada de subtarefas."),
+    },
+  },
+  async (args) => {
+    try {
+      const json = (await orchestratorToolCall("decompose", {
+        parent_prompt: args.parent_prompt,
+        subtasks: args.subtasks,
+      })) as {
+        ok?: boolean;
+        result?: { parent?: { id?: string }; subtasks?: Array<{ id?: string }> };
+        error?: string;
+      };
+      if (json.error) return asError(json.error);
+      return asJson({
+        ok: true,
+        parent_id: json.result?.parent?.id ?? null,
+        subtask_ids: (json.result?.subtasks ?? []).map((s) => s.id).filter(Boolean),
+        count: json.result?.subtasks?.length ?? 0,
+        hint: "Subtarefas criadas no Live Mission com suas dependências. Avise o Felipe que pode acompanhar o progresso no painel.",
+      });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
+server.registerTool(
+  "check_progress",
+  {
+    title: "Consulta o progresso de uma tarefa ou de um agente",
+    description:
+      "Veja o estado atual de uma task (por task_id) ou um snapshot do que um agente está fazendo (por agent_id). Use pra responder ao Felipe 'como tá indo X' ou pra decidir se já pode entregar o resultado.",
+    inputSchema: {
+      task_id: z.string().optional().describe("Id da task a consultar."),
+      agent_id: z.string().optional().describe("Id do agente a consultar (alternativa a task_id)."),
+    },
+  },
+  async (args) => {
+    try {
+      const json = (await orchestratorToolCall("check_progress", {
+        task_id: args.task_id,
+        agent_id: args.agent_id,
+      })) as { ok?: boolean; result?: unknown; error?: string };
+      if (json.error) return asError(json.error);
+      return asJson({ ok: true, ...((json.result as Record<string, unknown>) ?? {}) });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
 // ─── Transcription tools (knowledge base over recorded meetings) ────────
 // Let the agent search and read full transcriptions — e.g. Felipe asks on
 // Telegram "me fale sobre a reunião com X" and the agent finds the transcript
