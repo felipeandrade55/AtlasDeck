@@ -10,6 +10,12 @@ export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
+
+  if (searchParams.get("count_only") === "1") {
+    const all = listLearnings({ include_refuted: false });
+    return NextResponse.json({ total_active: all.length });
+  }
+
   const agentParam = searchParams.get("agent_id");
   const agent_id = agentParam === "null" ? null : agentParam ?? undefined;
   const learnings = listLearnings({

@@ -38,6 +38,15 @@ export function LearningsTimeline() {
   const [state, setState] = useState<LearnerState | null>(null);
   const [busy, setBusy] = useState(false);
   const [showRefuted, setShowRefuted] = useState(false);
+  const [badgeCount, setBadgeCount] = useState<number | null>(null);
+
+  // Load just the count on mount so the badge is accurate even when collapsed.
+  useEffect(() => {
+    fetch("/api/learnings?limit=1&count_only=1", { cache: "no-store" })
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => { if (d?.total_active != null) setBadgeCount(d.total_active); })
+      .catch(() => {});
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -49,7 +58,9 @@ export function LearningsTimeline() {
       ]);
       if (lRes.ok) {
         const data = await lRes.json();
-        setLearnings(Array.isArray(data.learnings) ? data.learnings : []);
+        const list = Array.isArray(data.learnings) ? data.learnings : [];
+        setLearnings(list);
+        setBadgeCount(list.filter((l: Learning) => !l.refuted).length);
       }
       if (sRes.ok) {
         const data = await sRes.json();
@@ -92,7 +103,7 @@ export function LearningsTimeline() {
   );
 
   const byAgent = groupByAgent(learnings);
-  const totalActive = learnings.filter((l) => !l.refuted).length;
+  const displayCount = badgeCount ?? learnings.filter((l) => !l.refuted).length;
 
   return (
     <div
@@ -109,7 +120,7 @@ export function LearningsTimeline() {
           <Brain className="w-4 h-4 text-purple-400" />
           <span className="text-sm font-bold text-white">O que Jarvis aprendeu</span>
           <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300">
-            {totalActive}
+            {displayCount}
           </span>
           {state && (
             <span className="text-[10px] text-zinc-500">
@@ -122,7 +133,16 @@ export function LearningsTimeline() {
 
       {open && (
         <div className="p-3 pt-0 space-y-3 border-t" style={{ borderColor: "var(--border)" }}>
-          <div className="flex flex-wrap gap-2 items-center pt-3">
+          <div className="mt-3 px-2.5 py-2 rounded-lg text-[10px] text-zinc-400 leading-relaxed"
+            style={{ backgroundColor: "rgba(139,92,246,0.07)", border: "1px solid rgba(139,92,246,0.15)" }}>
+            <span className="font-semibold text-purple-300">Como funciona:</span>{" "}
+            Jarvis observa suas aprovações e rejeições de tasks e extrai padrões de preferência automaticamente (a cada hora).
+            Quanto maior a barra colorida, maior a confiança no padrão — verde é alta, amarelo é média, cinza é baixa.
+            Se um padrão estiver errado, clique em{" "}
+            <span className="text-zinc-300">✕</span> para refutá-lo e ele deixa de influenciar os agentes.
+            Use <span className="text-zinc-300">"Atualizar agora"</span> após aprovar/rejeitar várias tasks de uma vez.
+          </div>
+          <div className="flex flex-wrap gap-2 items-center pt-1">
             <button
               type="button"
               onClick={runNow}
