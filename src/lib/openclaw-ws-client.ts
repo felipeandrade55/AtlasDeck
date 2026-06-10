@@ -211,6 +211,14 @@ const TEXT_SKIP_KEYS = new Set([
   "version",
   "platform",
   "userAgent",
+  "itemId",
+  "threadId",
+  "turnId",
+  "status",
+  "stream",
+  "title",
+  "nonce",
+  "digest",
 ]);
 
 function findLongestStringDeep(
@@ -276,10 +284,19 @@ const META_AGENT_STREAMS = new Set([
 function isMetaAgentStream(stream: string): boolean {
   if (!stream) return false;
   if (META_AGENT_STREAMS.has(stream)) return true;
-  // Codex-app-server internal streams are all bookkeeping (lifecycle,
-  // exec, etc.). The assistant's actual reply lands on streams without
-  // this prefix (typically `item`, `message`, `output`, …).
-  if (stream.startsWith("codex_app_server")) return true;
+  // Codex-app-server sub-streams: lifecycle/exec/telemetry are pure
+  // bookkeeping, BUT `codex_app_server.item` (and delta/message/output
+  // variants) is where the OpenClaw 2026.5.x gateway delivers the
+  // thread items — including the `agentMessage` item that carries the
+  // assistant's actual reply text. A blanket prefix-skip here made the
+  // chat render "Gateway respondeu, mas não entregou texto" even though
+  // the reply was right there in the frames. Filtering by item TYPE
+  // (userMessage/reasoning/etc.) happens later in extractAgentEventText.
+  if (stream.startsWith("codex_app_server")) {
+    const sub = stream.slice("codex_app_server".length).replace(/^\./, "");
+    if (/item|message|output|delta|text|response/i.test(sub)) return false;
+    return true;
+  }
   if (stream.startsWith("lifecycle")) return true;
   if (stream.startsWith("health")) return true;
   return false;
@@ -298,13 +315,26 @@ const NON_REPLY_ITEM_KINDS = new Set([
   "reasoning",
   "analysis",
   "thinking",
+  "agentReasoning",
+  "agent_reasoning",
   "tool_call",
   "tool_result",
   "function_call",
   "function_response",
   "web_search",
+  "webSearch",
   "file_search",
+  "fileSearch",
   "code_interpreter",
+  "commandExecution",
+  "command_execution",
+  "mcpToolCall",
+  "mcp_tool_call",
+  "collabAgentToolCall",
+  "todoList",
+  "todo_list",
+  "contextCompaction",
+  "context_compaction",
   "userMessage",
   "user_message",
   "system_message",
@@ -315,6 +345,20 @@ function isNonReplyItemKind(kind: string): boolean {
   if (!kind) return false;
   return NON_REPLY_ITEM_KINDS.has(kind);
 }
+
+// Item kinds that ARE the assistant's visible reply. For these we dig
+// hard (deep string scan) before giving up — losing the reply is the
+// worst outcome the chat UI can produce.
+const REPLY_ITEM_KINDS = new Set([
+  "agentMessage",
+  "agent_message",
+  "assistantMessage",
+  "assistant_message",
+  "message",
+  "output_text",
+  "outputText",
+  "response",
+]);
 
 // Names of tools whose invocation we recognise as "the agent is routing
 // the reply somewhere else instead of returning it as a message item".
@@ -472,6 +516,10 @@ function scrapeRoutingItemText(
  * skip non-reply kinds — otherwise the bubble would fill up with the
  * model's chain-of-thought, which is meant to stay internal.
  */
+function isItemStreamName(stream: string): boolean {
+  return stream === "item" || /(^|\.)items?($|\.)/.test(stream);
+}
+
 function extractAgentEventText(
   payload: Record<string, unknown>,
   stream: string,
@@ -483,10 +531,13 @@ function extractAgentEventText(
   // `data` sub-object — the gateway nests the model frame in here.
   const data = isRecord(payload.data) ? (payload.data as Record<string, unknown>) : null;
   if (data) {
-    // Filter by item kind/type when this is a stream:"item" frame —
-    // reasoning / tool / userMessage items don't carry visible reply.
-    if (stream === "item") {
-      const kind =
+    // Filter by item kind/type on item-shaped streams (`item`,
+    // `codex_app_server.item`, …) — reasoning / tool / userMessage
+    // items don't carry visible reply.
+    const itemStream = isItemStreamName(stream);
+    let kind = "";
+    if (itemStream) {
+      kind =
         typeof data.kind === "string"
           ? data.kind
           : typeof data.type === "string"
@@ -516,6 +567,17 @@ function extractAgentEventText(
     if (delta) {
       const dt = extractDeltaText(delta);
       if (dt) return dt;
+    }
+
+    // This item IS the assistant's reply (agentMessage & friends) but
+    // none of the known fields matched — dig with the deep scan before
+    // giving up. Losing the reply is the worst-case outcome; the skip
+    // keys keep ids/phases/timestamps out.
+    if (itemStream && REPLY_ITEM_KINDS.has(kind)) {
+      const deep = findLongestStringDeep(data, 4, 6);
+      if (deep && !/^(?:exec-|item_|msg_|rs_)?[0-9a-f_-]{12,}$/i.test(deep.trim())) {
+        return deep;
+      }
     }
   }
 
@@ -630,7 +692,8 @@ function extractPayloadText(payload: Record<string, unknown>): string {
   return findLongestStringDeep(payload, 8, 6);
 }
 
-function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
+// Exported for parser smoke-tests (scripts/) — not part of the public API.
+export function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[] {
   const events = translateMessageRaw(raw, state);
   const filteredEvents: WsChatEvent[] = [];
   for (const evt of events) {
@@ -779,11 +842,12 @@ function translateMessageRaw(raw: unknown, state: RunnerState): WsChatEvent[] {
         // Routing-tool registration: first time we see a tool-call start
         // for a routing tool, remember its itemId so subsequent frames
         // (Codex `arguments_delta` style) can be scraped for the actual
-        // reply text the agent is trying to send via the tool.
-        if (stream === "item" && data) {
+        // reply text the agent is trying to send via the tool. Applies
+        // to any item-shaped stream (item, codex_app_server.item, …).
+        if (isItemStreamName(stream) && data) {
           const kind = typeof data.kind === "string" ? (data.kind as string) : "";
           const toolName = typeof data.name === "string" ? (data.name as string) : "";
-          if (kind === "tool" && isRoutingToolName(toolName)) {
+          if ((kind === "tool" || kind === "mcpToolCall" || kind === "mcp_tool_call") && isRoutingToolName(toolName)) {
             if (itemId) state.routingItemIds.add(itemId);
             events.push({
               type: "tool_use",

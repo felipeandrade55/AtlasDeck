@@ -1,0 +1,115 @@
+import { translateMessage } from "@/lib/openclaw-ws-client";
+
+function freshState() {
+  return {
+    runId: null,
+    helloOk: false,
+    tokensEmitted: false,
+    frameLog: [],
+    routingItemIds: new Set<string>(),
+    routingItemText: new Map<string, string>(),
+    emittedText: "",
+  } as Parameters<typeof translateMessage>[1];
+}
+
+const RUN = "c5b8dc2d-c63b-4578-acfc-25d26a394eb7";
+const SK = "agent:main:web:atlasdeck";
+
+// Frames copied from the user's real session trace (1-13), then the
+// plausible continuation shapes the codex app-server emits for the reply.
+const realFrames: unknown[] = [
+  { type: "event", event: "connect.challenge", payload: { nonce: "b80c8f75", ts: 1 } },
+  { type: "res", id: "x", ok: true, payload: { type: "hello-ok", protocol: 4, server: { version: "2026.5.12", connId: "conn-1" } } },
+  { type: "res", id: "y", ok: true, payload: { runId: RUN, status: "started" } },
+  { type: "event", event: "health", payload: { ok: true, ts: 2, durationMs: 123 } },
+  { type: "event", event: "agent", payload: { runId: RUN, stream: "codex_app_server.lifecycle", data: { phase: "startup" }, sessionKey: SK, seq: 1 }, seq: 2 },
+  { type: "event", event: "agent", payload: { runId: RUN, stream: "codex_app_server.lifecycle", data: { phase: "thread_ready", threadId: "t1" }, sessionKey: SK, seq: 2 }, seq: 3 },
+  { type: "event", event: "agent", payload: { runId: RUN, stream: "codex_app_server.lifecycle", data: { phase: "turn_starting", threadId: "t1" }, sessionKey: SK, seq: 3 }, seq: 4 },
+  { type: "event", event: "agent", payload: { runId: RUN, stream: "lifecycle", data: { phase: "start", startedAt: 3 }, sessionKey: SK, seq: 4 }, seq: 5 },
+  { type: "event", event: "agent", payload: { runId: RUN, stream: "codex_app_server.item", data: { phase: "started", itemId: "559a", type: "userMessage" }, sessionKey: SK, seq: 5 }, seq: 6 },
+  { type: "event", event: "agent", payload: { runId: RUN, stream: "codex_app_server.item", data: { phase: "completed", itemId: "559a", type: "userMessage" }, sessionKey: SK, seq: 6 }, seq: 7 },
+  { type: "event", event: "tick", payload: { ts: 4 }, seq: 8 },
+  { type: "event", event: "agent", payload: { runId: RUN, stream: "item", data: { itemId: "rs_0ba8", phase: "start", kind: "analysis", title: "Reasoning", status: "running" }, sessionKey: SK, seq: 7 }, seq: 9 },
+];
+
+// Candidate continuation shapes for the assistant reply (any ONE of these
+// arriving must produce the text):
+const replyVariants: Array<{ label: string; frame: unknown }> = [
+  {
+    label: "codex_app_server.item completed agentMessage with text",
+    frame: { type: "event", event: "agent", payload: { runId: RUN, stream: "codex_app_server.item", data: { phase: "completed", itemId: "msg_1", type: "agentMessage", text: "Boa tarde, Felipe! Como posso ajudar?" }, sessionKey: SK } },
+  },
+  {
+    label: "codex_app_server.item completed agentMessage nested item.content",
+    frame: { type: "event", event: "agent", payload: { runId: RUN, stream: "codex_app_server.item", data: { phase: "completed", itemId: "msg_2", type: "agentMessage", item: { content: [{ type: "output_text", text: "Boa tarde! Tudo certo por aqui." }] } }, sessionKey: SK } },
+  },
+  {
+    label: "stream item kind message with data.text",
+    frame: { type: "event", event: "agent", payload: { runId: RUN, stream: "item", data: { itemId: "msg_3", phase: "finish", kind: "message", text: "Boa tarde! Em que posso ajudar hoje?" }, sessionKey: SK } },
+  },
+  {
+    label: "codex_app_server.item.delta agentMessageDelta",
+    frame: { type: "event", event: "agent", payload: { runId: RUN, stream: "codex_app_server.item.delta", data: { itemId: "msg_4", type: "agentMessageDelta", delta: "Boa " }, sessionKey: SK } },
+  },
+  {
+    label: "agentMessage deep-scan fallback (unknown text field)",
+    frame: { type: "event", event: "agent", payload: { runId: RUN, stream: "codex_app_server.item", data: { phase: "completed", itemId: "msg_5", type: "agentMessage", visibleText: "Boa tarde! Estou online e operante." }, sessionKey: SK } },
+  },
+];
+
+let failures = 0;
+
+// 1) The real frames 1-13 must emit ZERO tokens (no reasoning/lifecycle junk).
+{
+  const state = freshState();
+  const tokens: string[] = [];
+  for (const f of realFrames) {
+    for (const e of translateMessage(f, state)) {
+      if (e.type === "token") tokens.push(e.delta);
+    }
+  }
+  if (tokens.length === 0) {
+    console.log("PASS  frames 1-13 emit no junk tokens");
+  } else {
+    failures++;
+    console.log("FAIL  frames 1-13 emitted junk:", JSON.stringify(tokens));
+  }
+}
+
+// 2) Each reply variant must yield its text.
+for (const v of replyVariants) {
+  const state = freshState();
+  for (const f of realFrames) translateMessage(f, state);
+  const tokens: string[] = [];
+  for (const e of translateMessage(v.frame, state)) {
+    if (e.type === "token") tokens.push(e.delta);
+  }
+  const joined = tokens.join("");
+  if (joined.includes("Boa")) {
+    console.log(`PASS  ${v.label} -> "${joined.slice(0, 60)}"`);
+  } else {
+    failures++;
+    console.log(`FAIL  ${v.label} -> got "${joined}"`);
+  }
+}
+
+// 3) Routing tool via codex_app_server.item must register + salvage text.
+{
+  const state = freshState();
+  for (const f of realFrames) translateMessage(f, state);
+  const toolStart = { type: "event", event: "agent", payload: { runId: RUN, stream: "codex_app_server.item", data: { phase: "started", itemId: "tool_1", kind: "tool", name: "message", input: {} }, sessionKey: SK } };
+  const toolDelta = { type: "event", event: "agent", payload: { runId: RUN, stream: "codex_app_server.item", data: { phase: "delta", itemId: "tool_1", arguments: JSON.stringify({ text: "Boa tarde via tool!" }) }, sessionKey: SK } };
+  const evts1 = translateMessage(toolStart, state);
+  const evts2 = translateMessage(toolDelta, state);
+  const sawToolUse = evts1.some((e) => e.type === "tool_use");
+  const salvage = [...evts1, ...evts2].filter((e) => e.type === "token").map((e) => (e as { delta: string }).delta).join("");
+  if (sawToolUse && salvage.includes("Boa tarde via tool")) {
+    console.log(`PASS  routing tool on codex_app_server.item registered + salvaged "${salvage.slice(0, 40)}"`);
+  } else {
+    failures++;
+    console.log(`FAIL  routing tool: tool_use=${sawToolUse} salvage="${salvage}"`);
+  }
+}
+
+console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
+process.exit(failures === 0 ? 0 : 1);
