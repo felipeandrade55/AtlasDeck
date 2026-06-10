@@ -551,10 +551,11 @@ export async function POST(req: NextRequest) {
       ? { lat: body.liveLat, lon: body.liveLon }
       : null;
   const userContext = await buildUserContextPreamble(prompt, live);
+  const openclawPrompt = `${userContext}${prompt}${FORCE_INLINE_HINT}`;
   const effectivePrompt =
     chatMode === "quick"
       ? `${userContext}${prompt}${QUICK_MODE_HINT}`
-      : `${userContext}${prompt}${FORCE_INLINE_HINT}`;
+      : openclawPrompt;
 
   // Pre-create assistant message in streaming state so the UI gets an ID up front.
   const assistantMsg = appendMessage({
@@ -694,6 +695,9 @@ export async function POST(req: NextRequest) {
         for await (const evt of runOpenClawChat({
           agentId,
           prompt: effectivePrompt,
+          // Used only when Jarvis rápido (Ollama) fails and the runner
+          // falls back to the gateway — keeps the full-agent hint.
+          openclawPrompt: chatMode === "quick" ? openclawPrompt : undefined,
           threadId: thread!.id,
           sessionId: thread!.source_session_id,
           workspace: thread!.workspace,

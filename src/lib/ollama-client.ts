@@ -214,20 +214,62 @@ export interface ChatStreamEvent {
   model?: string;
 }
 
+// Ollama accepts the TCP connection immediately even when the model is
+// still cold-loading from disk (or the daemon is wedged in swap on a
+// small VPS). Without a watchdog the chat stream hangs FOREVER and the
+// user sees an infinite "PROCESSANDO" with no error. First-token covers
+// the cold-load window; idle covers a stream that dies mid-flight.
+const OLLAMA_CHAT_FIRST_TOKEN_TIMEOUT_MS = Number(
+  process.env.OLLAMA_CHAT_FIRST_TOKEN_TIMEOUT_MS || 30_000,
+);
+const OLLAMA_CHAT_IDLE_TIMEOUT_MS = Number(
+  process.env.OLLAMA_CHAT_IDLE_TIMEOUT_MS || 60_000,
+);
+
 /**
  * Stream a conversational completion via Ollama's `/api/chat`. Yields
  * one event per chunk so the caller can forward tokens to the browser
  * in real time. The final event carries usage counts derived from
  * Ollama's `prompt_eval_count` / `eval_count`.
+ *
+ * Throws a descriptive Error when the first token doesn't arrive within
+ * `firstTokenTimeoutMs` or the stream stalls for `idleTimeoutMs` — the
+ * caller (openclaw-runner) uses that to fall back to the gateway.
  */
 export async function* streamChat(
   model: string,
   messages: ChatStreamMessage[],
-  opts: { temperature?: number; signal?: AbortSignal } = {},
+  opts: {
+    temperature?: number;
+    signal?: AbortSignal;
+    firstTokenTimeoutMs?: number;
+    idleTimeoutMs?: number;
+  } = {},
 ): AsyncGenerator<ChatStreamEvent> {
   const controller = new AbortController();
   const onAbort = () => controller.abort();
   opts.signal?.addEventListener("abort", onAbort, { once: true });
+
+  const firstTokenMs = opts.firstTokenTimeoutMs ?? OLLAMA_CHAT_FIRST_TOKEN_TIMEOUT_MS;
+  const idleMs = opts.idleTimeoutMs ?? OLLAMA_CHAT_IDLE_TIMEOUT_MS;
+  let timedOutReason: string | null = null;
+  let watchdog: NodeJS.Timeout = setTimeout(() => {
+    timedOutReason =
+      `Ollama não respondeu em ${Math.round(firstTokenMs / 1000)}s ` +
+      `(modelo "${model}" pode estar carregando a frio ou o daemon travado)`;
+    controller.abort();
+  }, firstTokenMs);
+  const armIdleWatchdog = () => {
+    clearTimeout(watchdog);
+    watchdog = setTimeout(() => {
+      timedOutReason = `stream do Ollama parou por ${Math.round(idleMs / 1000)}s sem novos tokens`;
+      controller.abort();
+    }, idleMs);
+  };
+  const cleanup = () => {
+    clearTimeout(watchdog);
+    opts.signal?.removeEventListener("abort", onAbort);
+  };
 
   let res: Response;
   try {
@@ -245,12 +287,13 @@ export async function* streamChat(
       signal: controller.signal,
     });
   } catch (err) {
-    opts.signal?.removeEventListener("abort", onAbort);
+    cleanup();
+    if (timedOutReason) throw new Error(timedOutReason);
     throw err;
   }
 
   if (!res.ok || !res.body) {
-    opts.signal?.removeEventListener("abort", onAbort);
+    cleanup();
     const txt = await res.text().catch(() => "");
     throw new Error(`Ollama chat failed (HTTP ${res.status}): ${txt.slice(0, 240)}`);
   }
@@ -263,6 +306,7 @@ export async function* streamChat(
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
+      armIdleWatchdog();
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
@@ -288,8 +332,11 @@ export async function* streamChat(
         }
       }
     }
+  } catch (err) {
+    if (timedOutReason) throw new Error(timedOutReason);
+    throw err;
   } finally {
-    opts.signal?.removeEventListener("abort", onAbort);
+    cleanup();
   }
 }
 

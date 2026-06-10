@@ -31,6 +31,13 @@ export interface RunnerInput {
   thinking?: string;
   fastMode?: boolean;
   mode?: "openclaw" | "quick";
+  /**
+   * Prompt to use when the quick (Ollama) path fails and the runner
+   * auto-falls back to the OpenClaw gateway. The quick prompt carries
+   * QUICK_MODE_HINT ("você não tem tools"), which would cripple the
+   * full agent — the route passes the openclaw-flavored prompt here.
+   */
+  openclawPrompt?: string;
 }
 
 export type RunnerProvider = "ws" | "cli" | "ollama";
@@ -465,11 +472,48 @@ function fallbackMode(): "off" | "cli" | "ollama" | "any" {
   return "off";
 }
 
-export async function* runOpenClawChat(input: RunnerInput): AsyncGenerator<RunnerEvent> {
-  const fb = fallbackMode();
+// After a quick-mode (Ollama) failure, skip straight to the gateway for a
+// while instead of making EVERY following message pay the first-token
+// timeout again. Reset on the next successful Ollama turn.
+let ollamaQuickFailedAt = 0;
+const OLLAMA_QUICK_COOLDOWN_MS = 10 * 60_000;
 
+export async function* runOpenClawChat(input: RunnerInput): AsyncGenerator<RunnerEvent> {
   if (input.mode === "quick") {
-    yield* runOllamaFallback(input, "Jarvis rapido selecionado no /chat");
+    // Jarvis rápido: try Ollama, but NEVER leave the user hanging. If
+    // Ollama errors before producing a single token (not installed, no
+    // model, daemon wedged, first-token timeout), fall back transparently
+    // to the OpenClaw gateway — the same engine that answers on Telegram —
+    // using the openclaw-flavored prompt.
+    const inCooldown =
+      ollamaQuickFailedAt > 0 &&
+      Date.now() - ollamaQuickFailedAt < OLLAMA_QUICK_COOLDOWN_MS;
+    if (!inCooldown) {
+      let producedToken = false;
+      let quickFailure: string | null = null;
+      for await (const evt of runOllamaFallback(input, "Jarvis rapido selecionado no /chat")) {
+        if (evt.type === "error" && !producedToken) {
+          quickFailure = evt.message;
+          break;
+        }
+        if (evt.type === "token") producedToken = true;
+        yield evt;
+        if (evt.type === "done") {
+          ollamaQuickFailedAt = 0;
+          return;
+        }
+      }
+      if (!quickFailure) return;
+      ollamaQuickFailedAt = Date.now();
+      console.warn(
+        `[openclaw-runner] Jarvis rápido falhou (${quickFailure.slice(0, 160)}); ` +
+          `caindo para o gateway OpenClaw`,
+      );
+    }
+    yield* runGatewayChat({
+      ...input,
+      prompt: input.openclawPrompt ?? input.prompt,
+    });
     return;
   }
 
@@ -479,6 +523,16 @@ export async function* runOpenClawChat(input: RunnerInput): AsyncGenerator<Runne
     yield* runOllamaFallback(input, "ATLAS_CHAT_PROVIDER=ollama");
     return;
   }
+
+  yield* runGatewayChat(input);
+}
+
+/**
+ * Gateway-first chat path: WebSocket streaming, with the legacy CLI /
+ * Ollama chain available only behind ATLAS_CHAT_ALLOW_FALLBACK.
+ */
+async function* runGatewayChat(input: RunnerInput): AsyncGenerator<RunnerEvent> {
+  const fb = fallbackMode();
 
   // Strategy 0: Gateway WebSocket — real-time tokens with abort support.
   // When ATLAS_CHAT_ALLOW_FALLBACK is unset we run STRICT: any WS
