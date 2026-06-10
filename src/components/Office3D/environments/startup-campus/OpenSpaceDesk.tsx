@@ -6,7 +6,11 @@
  * by the agent's live status.
  */
 import { useState } from 'react';
-import { Box, Text } from '@react-three/drei';
+import { Billboard, Box, Text } from '@react-three/drei';
+
+function shortName(name: string, max = 18): string {
+  return name.length > max ? name.slice(0, max - 1) + '…' : name;
+}
 import type { AgentState } from '../../agentsConfig';
 import type { OfficeAgent } from '../../shared/data/useOfficeData';
 import { STATUS_COLOR } from '../../shared/statusColors';
@@ -90,21 +94,23 @@ export default function OpenSpaceDesk({ agent, state, position, onClick, isSelec
         <VoxelChair position={[0, 0, 0.55]} rotation={[0, Math.PI, 0]} color="#374151" />
       </group>
 
-      {/* Nameplate + status */}
-      <Text
-        position={[0, 2.0, 0]}
-        fontSize={0.15}
-        color="white"
-        anchorX="center"
-        anchorY="middle"
-        outlineWidth={0.01}
-        outlineColor="#000000"
-      >
-        {agent.emoji} {agent.name}
-      </Text>
-      <Text position={[0, 1.79, 0]} fontSize={0.09} color={statusColor} anchorX="center" anchorY="middle">
-        {s.status.toUpperCase()}
-      </Text>
+      {/* Nameplate + status — billboarded so it always faces the camera */}
+      <Billboard position={[0, 2.05, 0]}>
+        <Text
+          fontSize={0.15}
+          color="white"
+          anchorX="center"
+          anchorY="middle"
+          maxWidth={2.4}
+          outlineWidth={0.01}
+          outlineColor="#000000"
+        >
+          {agent.emoji} {shortName(agent.name)}
+        </Text>
+        <Text position={[0, -0.22, 0]} fontSize={0.09} color={statusColor} anchorX="center" anchorY="middle">
+          {s.status.toUpperCase()}
+        </Text>
+      </Billboard>
 
       {isSelected && (
         <mesh position={[0, 0.01, 0.4]} rotation={[-Math.PI / 2, 0, 0]}>

@@ -6,7 +6,11 @@
  * status display, and a chair facing the videowall.
  */
 import { useState } from 'react';
-import { Box, Text } from '@react-three/drei';
+import { Billboard, Box, Text } from '@react-three/drei';
+
+function shortName(name: string, max = 20): string {
+  return name.length > max ? name.slice(0, max - 1) + '…' : name;
+}
 import type { AgentState } from '../../agentsConfig';
 import type { OfficeAgent } from '../../shared/data/useOfficeData';
 import { STATUS_COLOR } from '../../shared/statusColors';
@@ -97,21 +101,23 @@ export default function JarvisPodium({ agent, state, onClick, isSelected }: Jarv
         </group>
       </group>
 
-      {/* Nameplate */}
-      <Text
-        position={[0, ph + 2.4, -0.4]}
-        fontSize={0.2}
-        color="#facc15"
-        anchorX="center"
-        anchorY="middle"
-        outlineWidth={0.012}
-        outlineColor="#000000"
-      >
-        {agent ? `${agent.emoji} ${agent.name}` : '🤖 Orquestrador'}
-      </Text>
-      <Text position={[0, ph + 2.12, -0.4]} fontSize={0.11} color={statusColor} anchorX="center" anchorY="middle">
-        {s.status.toUpperCase()}
-      </Text>
+      {/* Nameplate — billboarded so it always faces the camera */}
+      <Billboard position={[0, ph + 2.4, -0.4]}>
+        <Text
+          fontSize={0.2}
+          color="#facc15"
+          anchorX="center"
+          anchorY="middle"
+          maxWidth={3.2}
+          outlineWidth={0.012}
+          outlineColor="#000000"
+        >
+          {agent ? `${agent.emoji} ${shortName(agent.name)}` : '🤖 Orquestrador'}
+        </Text>
+        <Text position={[0, -0.3, 0]} fontSize={0.11} color={statusColor} anchorX="center" anchorY="middle">
+          {s.status.toUpperCase()}
+        </Text>
+      </Billboard>
 
       {isSelected && (
         <mesh position={[0, ph + 0.04, 0]} rotation={[-Math.PI / 2, 0, 0]}>

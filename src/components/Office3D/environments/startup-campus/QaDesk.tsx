@@ -6,7 +6,11 @@
  * component provides the furniture + the queue counter).
  */
 import { useState } from 'react';
-import { Box, Text } from '@react-three/drei';
+import { Billboard, Box, Text } from '@react-three/drei';
+
+function shortName(name: string, max = 20): string {
+  return name.length > max ? name.slice(0, max - 1) + '…' : name;
+}
 import type { AgentState } from '../../agentsConfig';
 import type { OfficeAgent } from '../../shared/data/useOfficeData';
 import { STATUS_COLOR } from '../../shared/statusColors';
@@ -88,20 +92,22 @@ export default function QaDesk({ agent, state, reviewCount, onClick, isSelected 
         <VoxelChair position={[0, 0, -0.55]} rotation={[0, 0, 0]} color="#18181b" />
       </group>
 
-      <Text
-        position={[0, 2.3, 0]}
-        fontSize={0.18}
-        color="#facc15"
-        anchorX="center"
-        anchorY="middle"
-        outlineWidth={0.012}
-        outlineColor="#000000"
-      >
-        🛡️ QA — {agent ? agent.name : 'Orquestrador'}
-      </Text>
-      <Text position={[0, 2.06, 0]} fontSize={0.11} color={reviewCount > 0 ? '#f97316' : '#64748b'} anchorX="center" anchorY="middle">
-        {reviewCount > 0 ? `${reviewCount} na fila de revisão` : 'fila de revisão vazia'}
-      </Text>
+      <Billboard position={[0, 2.3, 0]}>
+        <Text
+          fontSize={0.18}
+          color="#facc15"
+          anchorX="center"
+          anchorY="middle"
+          maxWidth={3.2}
+          outlineWidth={0.012}
+          outlineColor="#000000"
+        >
+          🛡️ QA — {agent ? shortName(agent.name) : 'Orquestrador'}
+        </Text>
+        <Text position={[0, -0.28, 0]} fontSize={0.11} color={reviewCount > 0 ? '#f97316' : '#64748b'} anchorX="center" anchorY="middle">
+          {reviewCount > 0 ? `${reviewCount} na fila de revisão` : 'fila de revisão vazia'}
+        </Text>
+      </Billboard>
 
       {isSelected && (
         <mesh position={[0, 0.01, -0.6]} rotation={[-Math.PI / 2, 0, 0]}>

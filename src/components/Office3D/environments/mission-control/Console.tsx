@@ -5,7 +5,11 @@
  * stylized code-scroll screen tinted by agent status, chair and nameplate.
  */
 import { useState } from 'react';
-import { Box, Text } from '@react-three/drei';
+import { Billboard, Box, Text } from '@react-three/drei';
+
+function shortName(name: string, max = 18): string {
+  return name.length > max ? name.slice(0, max - 1) + '…' : name;
+}
 import type { AgentState } from '../../agentsConfig';
 import type { OfficeAgent } from '../../shared/data/useOfficeData';
 import { STATUS_COLOR } from '../../shared/statusColors';
@@ -92,21 +96,23 @@ export default function Console({ agent, state, position, onClick, isSelected }:
         <VoxelChair position={[0, 0, 0.55]} rotation={[0, Math.PI, 0]} color="#1f2937" />
       </group>
 
-      {/* Nameplate + status */}
-      <Text
-        position={[0, 2.25, -0.2]}
-        fontSize={0.16}
-        color="white"
-        anchorX="center"
-        anchorY="middle"
-        outlineWidth={0.01}
-        outlineColor="#000000"
-      >
-        {agent.emoji} {agent.name}
-      </Text>
-      <Text position={[0, 2.02, -0.2]} fontSize={0.1} color={statusColor} anchorX="center" anchorY="middle">
-        {s.status.toUpperCase()}
-      </Text>
+      {/* Nameplate + status — billboarded so it always faces the camera */}
+      <Billboard position={[0, 2.28, -0.2]}>
+        <Text
+          fontSize={0.16}
+          color="white"
+          anchorX="center"
+          anchorY="middle"
+          maxWidth={2.4}
+          outlineWidth={0.01}
+          outlineColor="#000000"
+        >
+          {agent.emoji} {shortName(agent.name)}
+        </Text>
+        <Text position={[0, -0.24, 0]} fontSize={0.1} color={statusColor} anchorX="center" anchorY="middle">
+          {s.status.toUpperCase()}
+        </Text>
+      </Billboard>
 
       {/* Emergency beacon when stuck */}
       {s.status === 'stuck' && <AlarmBeacon position={[0.85, 0.82, -0.25]} />}
