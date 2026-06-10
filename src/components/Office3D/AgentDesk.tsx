@@ -5,31 +5,12 @@ import { useFrame } from '@react-three/fiber';
 import { Text, Box } from '@react-three/drei';
 import type { Mesh } from 'three';
 import type { AgentConfig, AgentState } from './agentsConfig';
+import { STATUS_COLOR, STATUS_EMISSIVE } from './shared/statusColors';
 import VoxelChair from './VoxelChair';
 import VoxelKeyboard from './VoxelKeyboard';
 import VoxelMacMini from './VoxelMacMini';
 
 const IDLE_STATE: AgentState = { id: '', status: 'idle' };
-
-const STATUS_COLOR: Record<string, string> = {
-  idle:        '#6b7280',
-  thinking:    '#3b82f6',
-  working:     '#22c55e',
-  delegating:  '#a855f7',
-  reviewing:   '#f97316',
-  stuck:       '#ef4444',
-  offline:     '#3f3f46',
-};
-
-const STATUS_EMISSIVE: Record<string, string> = {
-  idle:        '#374151',
-  thinking:    '#1e40af',
-  working:     '#15803d',
-  delegating:  '#6b21a8',
-  reviewing:   '#9a3412',
-  stuck:       '#991b1b',
-  offline:     '#18181b',
-};
 
 interface AgentDeskProps {
   agent: AgentConfig;

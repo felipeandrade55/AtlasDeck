@@ -1,10 +1,10 @@
-import Office3D from '@/components/Office3D/Office3D';
+import OfficeShell from '@/components/Office3D/OfficeShell';
 
 export const metadata = {
   title: 'The Office 3D | Mission Control',
-  description: 'Visualiza tus agentes trabajando en tiempo real en un entorno 3D',
+  description: 'Visualize seus agentes trabalhando em tempo real em um ambiente 3D',
 };
 
 export default function OfficePage() {
-  return <Office3D />;
+  return <OfficeShell />;
 }

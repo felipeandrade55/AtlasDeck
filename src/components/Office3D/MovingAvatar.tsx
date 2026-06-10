@@ -6,6 +6,7 @@ import { Group, Vector3 } from 'three';
 import VoxelAvatar from './VoxelAvatar';
 import type { AgentConfig, AgentState } from './agentsConfig';
 import { MEETING_TABLE_CENTER } from './meetingConfig';
+import { useOfficeStore } from './shared/data/officeStore';
 
 interface Obstacle {
   position: Vector3;
@@ -36,7 +37,6 @@ interface MovingAvatarProps {
     maxZ: number;
   };
   obstacles: Obstacle[];
-  otherAvatarPositions: Map<string, Vector3>;
   /**
    * Static desk positions, keyed by agent id. Used to lock a busy agent to
    * their own desk and to route the orchestrator toward whoever they're
@@ -50,7 +50,6 @@ interface MovingAvatarProps {
    * renders for the effect dependency.
    */
   meetingSeat?: [number, number, number] | null;
-  onPositionUpdate: (id: string, pos: Vector3) => void;
 }
 
 const IDLE_STATE: AgentState = { id: '', status: 'idle' };
@@ -60,10 +59,8 @@ export default function MovingAvatar({
   state: stateProp,
   officeBounds,
   obstacles,
-  otherAvatarPositions,
   deskPositions,
   meetingSeat,
-  onPositionUpdate
 }: MovingAvatarProps) {
   const state = stateProp ?? IDLE_STATE;
   const groupRef = useRef<Group>(null);
@@ -130,11 +127,15 @@ export default function MovingAvatar({
 
   const [targetPos, setTargetPos] = useState(initialPos);
   const currentPos = useRef(initialPos.clone());
-  
-  // Notificar posición inicial
+
+  // Publicar posição no store transiente (lido por outros avatares via
+  // getState() — nunca dispara render React). Limpa no unmount.
   useEffect(() => {
-    onPositionUpdate(agent.id, initialPos.clone());
-  }, []);
+    const store = useOfficeStore.getState();
+    store.writePosition(agent.id, initialPos);
+    return () => store.removePosition(agent.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent.id]);
 
   // Verificar si una posición está libre (sin colisiones)
   const isPositionFree = (pos: Vector3): boolean => {
@@ -149,8 +150,8 @@ export default function MovingAvatar({
       }
     }
 
-    // Verificar colisión con otros avatares
-    for (const [otherId, otherPos] of otherAvatarPositions.entries()) {
+    // Verificar colisión con otros avatares (posições vivas no store)
+    for (const [otherId, otherPos] of useOfficeStore.getState().positions.entries()) {
       if (otherId === agent.id) continue;
       const distance = pos.distanceTo(otherPos);
       if (distance < minDistanceToAvatar) {
@@ -261,7 +262,7 @@ export default function MovingAvatar({
       const newPos = currentPos.current.clone().lerp(seatV, delta * 1.6);
       currentPos.current.copy(newPos);
       groupRef.current.position.copy(currentPos.current);
-      onPositionUpdate(agent.id, currentPos.current.clone());
+      useOfficeStore.getState().writePosition(agent.id, currentPos.current);
       const toCenter = new Vector3(
         MEETING_TABLE_CENTER[0] - currentPos.current.x,
         0,
@@ -296,8 +297,8 @@ export default function MovingAvatar({
       currentPos.current.copy(newPos);
       groupRef.current.position.copy(currentPos.current);
 
-      // Notificar la nueva posición
-      onPositionUpdate(agent.id, currentPos.current.clone());
+      // Publicar la nueva posición (store transiente, sin render)
+      useOfficeStore.getState().writePosition(agent.id, currentPos.current);
 
       // Rotar hacia la dirección del movimiento
       const direction = new Vector3().subVectors(targetPos, currentPos.current);
