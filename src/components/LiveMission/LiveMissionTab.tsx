@@ -1,52 +1,48 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { RefreshCw, LayoutGrid, Layers } from "lucide-react";
-import { KanbanBoard } from "./KanbanBoard";
-import { MissionGroups } from "./MissionGroups";
-import { MissionTree } from "./MissionTree";
-import { TaskDetailPanel } from "./TaskDetailPanel";
+import { RefreshCw, Crosshair } from "lucide-react";
+import { AgentRadar, type AgentLiveState } from "./AgentRadar";
+import { MissionList } from "./MissionList";
+import { MissionDetail } from "./MissionDetail";
 import { LiveActivityFeed } from "./LiveActivityFeed";
-import { type LiveEvent, type Task, type TaskStatus } from "./types";
+import { ACTIVE_STATUSES, type AgentInfo, type LiveEvent, type Task } from "./types";
 
 interface Props {
-  agents: Array<{ id: string; name: string; emoji?: string; color?: string }>;
+  agents: AgentInfo[];
 }
 
 /**
- * Container for the Live Mission tab. Owns three pieces of state:
+ * "Cockpit" container for the Live Mission tab. Three fixed zones built for
+ * situational awareness:
  *
- *   1. tasks[]    — the full task universe (kanban + dependency graph use this)
- *   2. events[]   — recent SSE events (activity feed + cache-busting cues)
- *   3. selectedId — currently-focused task id
+ *   ┌─ AgentRadar ──────────────────────────────────────────────┐
+ *   │ who is doing what right now + what needs MY decision       │
+ *   ├─ MissionList ─┬─ MissionDetail ────────┬─ ActivityFeed ───┤
+ *   │ every mission │ timeline + deliverable │ humanized live   │
+ *   │ w/ pipeline   │ + approval + chat      │ event stream     │
+ *   └───────────────┴────────────────────────┴──────────────────┘
  *
- * Refresh strategy:
+ * Refresh strategy (unchanged from the previous design):
  *   - On mount: GET /api/tasks (full bootstrap) + open SSE /api/agents/live
- *   - On every SSE event that touches tasks: targeted refetch of /api/tasks
- *     (cheap + keeps the kanban canonical) — the alternative of patching
- *     in-place from the event payload duplicates server-side state machine
- *     logic in the client, which is exactly the bug we want to avoid.
- *   - SSE drops are handled by EventSource's native auto-reconnect; the
- *     replay window on /api/agents/live makes sure we don't miss anything.
+ *   - On every task.* SSE event: debounced refetch of /api/tasks — patching
+ *     client-side from payloads would duplicate the server state machine.
+ *   - SSE drops are handled by EventSource auto-reconnect + replay window.
  */
 export function LiveMissionTab({ agents }: Props) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [events, setEvents] = useState<LiveEvent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [filterAgent, setFilterAgent] = useState<string>("");
-  const [viewMode, setViewMode] = useState<"status" | "mission">("status");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const refreshTaskTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
+  const autoSelected = useRef(false);
 
   const fetchTasks = useCallback(async () => {
     setRefreshing(true);
     try {
-      const params = new URLSearchParams();
-      params.set("limit", "200");
-      if (filterAgent) params.set("assigned_to", filterAgent);
-      const res = await fetch(`/api/tasks?${params.toString()}`, { cache: "no-store" });
+      const res = await fetch(`/api/tasks?limit=200`, { cache: "no-store" });
       if (!res.ok) return;
       const data = await res.json();
       setTasks(Array.isArray(data.tasks) ? data.tasks : []);
@@ -54,7 +50,7 @@ export function LiveMissionTab({ agents }: Props) {
       setRefreshing(false);
       setLoading(false);
     }
-  }, [filterAgent]);
+  }, []);
 
   // Debounce refetches: when several events fire in quick succession (e.g.
   // a decompose that creates 4 tasks), we only want one GET to land.
@@ -75,8 +71,9 @@ export function LiveMissionTab({ agents }: Props) {
       sourceRef.current = null;
     }
     // EventSource doesn't accept custom headers — auth cookie travels
-    // automatically with the request because /api/agents/live is same-origin.
-    const es = new EventSource(`/api/agents/live?replay=80`);
+    // automatically because /api/agents/live is same-origin. Replay window
+    // is generous so the radar can reconstruct agent states after a reload.
+    const es = new EventSource(`/api/agents/live?replay=200`);
     sourceRef.current = es;
 
     es.addEventListener("event", (msg) => {
@@ -84,10 +81,8 @@ export function LiveMissionTab({ agents }: Props) {
         const parsed = JSON.parse(msg.data) as LiveEvent;
         setEvents((prev) => {
           // De-dupe: events with the same id can show up twice (replay +
-          // live fire-through) when the server publishes between SQLite
-          // insert and the SSE emit attaching.
+          // live fire-through).
           if (prev.some((e) => e.id === parsed.id)) return prev;
-          // Keep last 500 in memory; the SQLite log is the long-tail source.
           const next = [...prev, parsed];
           return next.length > 500 ? next.slice(next.length - 500) : next;
         });
@@ -99,12 +94,7 @@ export function LiveMissionTab({ agents }: Props) {
       }
     });
 
-    es.addEventListener("connected", () => {
-      // optional: surface "connected" badge somewhere later
-    });
-
     es.onerror = () => {
-      // Native auto-reconnect will retry — log only in dev.
       if (process.env.NODE_ENV === "development") {
         console.warn("[live-mission] SSE error, EventSource will reconnect");
       }
@@ -116,27 +106,46 @@ export function LiveMissionTab({ agents }: Props) {
     };
   }, [scheduleRefresh]);
 
+  // Auto-focus on first load: what needs the user beats what's merely recent.
+  useEffect(() => {
+    if (autoSelected.current || loading || tasks.length === 0) return;
+    autoSelected.current = true;
+    const awaiting = tasks.find((t) => t.status === "review");
+    const active = tasks
+      .filter((t) => ACTIVE_STATUSES.includes(t.status))
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
+    const recent = [...tasks].sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
+    setSelectedId((awaiting ?? active ?? recent)?.id ?? null);
+  }, [loading, tasks]);
+
+  // Live agent states for the radar, reconstructed from the event stream.
+  const agentStates = useMemo(() => {
+    const map = new Map<string, AgentLiveState>();
+    for (const e of events) {
+      if (!e.agent_id) continue;
+      if (e.event_type === "agent.state_changed") {
+        map.set(e.agent_id, { state: String(e.payload.to ?? "idle"), at: e.created_at });
+      } else if (e.event_type === "agent.heartbeat") {
+        map.set(e.agent_id, { state: String(e.payload.state ?? "idle"), at: e.created_at });
+      }
+    }
+    // A state older than 10 minutes is stale — treat the agent as offline
+    // rather than showing a frozen "working" forever.
+    const cutoff = Date.now() - 10 * 60 * 1000;
+    for (const [id, s] of map) {
+      if (new Date(s.at).getTime() < cutoff && s.state !== "offline") {
+        map.set(id, { ...s, state: "offline" });
+      }
+    }
+    return map;
+  }, [events]);
+
   const selectedTask = useMemo(
     () => (selectedId ? tasks.find((t) => t.id === selectedId) ?? null : null),
     [tasks, selectedId],
   );
 
-  const handleStatusChange = useCallback(
-    async (taskId: string, nextStatus: TaskStatus) => {
-      const res = await fetch(`/api/tasks/${taskId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: nextStatus }),
-      });
-      if (!res.ok) {
-        console.error("[live-mission] status change failed:", await res.text());
-      }
-      // SSE will surface the change; still kick a quick refetch in case
-      // the user pulled this PATCH manually rather than via a tool.
-      scheduleRefresh();
-    },
-    [scheduleRefresh],
-  );
+  const awaitingTasks = useMemo(() => tasks.filter((t) => t.status === "review"), [tasks]);
 
   if (loading) {
     return (
@@ -151,105 +160,68 @@ export function LiveMissionTab({ agents }: Props) {
 
   return (
     <div className="space-y-3">
-      {/* Header: filters + refresh */}
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Filtrar por agente:</span>
-        <select
-          value={filterAgent}
-          onChange={(e) => setFilterAgent(e.target.value)}
-          className="text-[11px] bg-zinc-900 border rounded px-2 py-1 text-zinc-300 outline-none"
-          style={{ borderColor: "var(--border)" }}
-        >
-          <option value="">todos</option>
-          {agents.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.emoji ?? "🤖"} {a.name}
-            </option>
-          ))}
-        </select>
+      {/* Situational awareness strip */}
+      <div className="flex items-start gap-2">
+        <div className="flex-1 min-w-0">
+          <AgentRadar agents={agents} tasks={tasks} agentStates={agentStates} onSelectTask={setSelectedId} />
+        </div>
         <button
           type="button"
           onClick={() => void fetchTasks()}
-          className="flex items-center gap-1 text-[11px] px-2 py-1 rounded text-zinc-300 hover:bg-zinc-800"
-          style={{ background: "none", border: "1px solid var(--border)", cursor: "pointer" }}
+          className="flex items-center gap-1 text-[11px] px-2 py-2 rounded-xl text-zinc-300 hover:bg-zinc-800 flex-shrink-0"
+          style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)", cursor: "pointer" }}
+          title="Forçar atualização (o painel já atualiza sozinho via SSE)"
         >
-          <RefreshCw className={`w-3 h-3 ${refreshing ? "animate-spin" : ""}`} />
-          Refresh
+          <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? "animate-spin" : ""}`} />
         </button>
-
-        {/* View toggle: por status (kanban) vs por missão (agrupado) */}
-        <div className="flex items-center rounded border overflow-hidden" style={{ borderColor: "var(--border)" }}>
-          <button
-            type="button"
-            onClick={() => setViewMode("status")}
-            className="flex items-center gap-1 text-[11px] px-2 py-1 transition-colors"
-            style={{
-              background: viewMode === "status" ? "var(--accent)" : "transparent",
-              color: viewMode === "status" ? "white" : "var(--text-muted)",
-              border: "none",
-              cursor: "pointer",
-            }}
-          >
-            <LayoutGrid className="w-3 h-3" />
-            Status
-          </button>
-          <button
-            type="button"
-            onClick={() => setViewMode("mission")}
-            className="flex items-center gap-1 text-[11px] px-2 py-1 transition-colors"
-            style={{
-              background: viewMode === "mission" ? "var(--accent)" : "transparent",
-              color: viewMode === "mission" ? "white" : "var(--text-muted)",
-              border: "none",
-              cursor: "pointer",
-            }}
-          >
-            <Layers className="w-3 h-3" />
-            Missão
-          </button>
-        </div>
-
-        <span className="text-[10px] text-zinc-500 ml-auto">
-          {tasks.length} task{tasks.length !== 1 ? "s" : ""} · {events.length} eventos
-        </span>
       </div>
 
-      {/* Árvore da missão (orquestração ao vivo) */}
-      <MissionTree tasks={tasks} agents={agents} onSelectTask={setSelectedId} />
+      {/* Cockpit: missions | detail | live feed */}
+      <div className="grid grid-cols-1 xl:grid-cols-[300px_minmax(0,1fr)_320px] gap-3 xl:h-[calc(100vh-330px)] xl:min-h-[560px]">
+        <div className="min-h-[300px] max-h-[420px] xl:max-h-none xl:h-full">
+          <MissionList tasks={tasks} agents={agents} selectedTaskId={selectedId} onSelectTask={setSelectedId} />
+        </div>
 
-      {/* Board: por status (kanban) ou por missão (agrupado) */}
-      {viewMode === "status" ? (
-        <KanbanBoard
-          tasks={tasks}
-          selectedTaskId={selectedId}
-          onSelectTask={setSelectedId}
-          onStatusChange={handleStatusChange}
-        />
-      ) : (
-        <MissionGroups tasks={tasks} selectedTaskId={selectedId} onSelectTask={setSelectedId} />
-      )}
-
-      {/* Detail + Activity Feed below */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-        <div className="lg:col-span-2">
+        <div className="min-h-[400px] xl:h-full">
           {selectedTask ? (
-            <TaskDetailPanel
+            <MissionDetail
               task={selectedTask}
               allTasks={tasks}
+              agents={agents}
               onMutated={scheduleRefresh}
               onSelectTask={setSelectedId}
             />
           ) : (
             <div
-              className="rounded-xl p-6 text-center text-xs text-zinc-500"
+              className="rounded-xl h-full flex flex-col items-center justify-center gap-3 p-8 text-center"
               style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
             >
-              Selecione uma task no kanban acima pra ver detalhes + dependency graph + ações inline.
+              <Crosshair className="w-8 h-8 text-zinc-700" />
+              <div className="text-sm text-zinc-400 font-semibold">Nenhuma missão em foco</div>
+              <div className="text-[11px] text-zinc-500 max-w-xs">
+                Escolha uma missão na lista ao lado pra ver a linha do tempo completa — quem fez o quê, quando e por quê.
+              </div>
+              {awaitingTasks.length > 0 && (
+                <div className="space-y-1 w-full max-w-sm">
+                  {awaitingTasks.slice(0, 3).map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => setSelectedId(t.id)}
+                      className="w-full px-3 py-2 rounded-lg text-[11px] font-semibold text-amber-300 text-left hover:scale-[1.01] transition-transform"
+                      style={{ backgroundColor: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.4)", cursor: "pointer" }}
+                    >
+                      🔔 Aguardando você: {t.title || t.prompt.slice(0, 50)}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
-        <div className="lg:col-span-1 min-h-[400px]">
-          <LiveActivityFeed events={events} onSelectTask={setSelectedId} />
+
+        <div className="min-h-[300px] max-h-[420px] xl:max-h-none xl:h-full">
+          <LiveActivityFeed events={events} agents={agents} onSelectTask={setSelectedId} />
         </div>
       </div>
     </div>

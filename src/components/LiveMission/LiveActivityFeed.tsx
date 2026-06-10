@@ -1,145 +1,136 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ChevronRight, Filter } from "lucide-react";
-import { type LiveEvent } from "./types";
+import { Activity, ChevronRight } from "lucide-react";
+import {
+  categorizeEvent,
+  describeEvent,
+  eventColor,
+  formatClock,
+  type AgentInfo,
+  type EventCategory,
+  type LiveEvent,
+} from "./types";
 
 interface Props {
   events: LiveEvent[];
+  agents: AgentInfo[];
   onSelectTask: (taskId: string) => void;
 }
 
+const CATEGORY_CHIPS: Array<{ key: EventCategory | "all"; label: string }> = [
+  { key: "all", label: "Tudo" },
+  { key: "missao", label: "Missões" },
+  { key: "agente", label: "Agentes" },
+  { key: "chat", label: "Chat" },
+  { key: "sistema", label: "Sistema" },
+];
+
 /**
- * Sliding right-side feed of SSE events. Filterable by type; each entry
- * shows a colored dot + agent + task + short payload preview. Clicking an
- * event that carries a task_id selects that task in the kanban above.
- *
- * We intentionally render at most ~80 most recent events so the feed stays
- * snappy — anything older is in the SQLite log if the user wants to dig.
+ * Right-rail live feed. Every SSE event becomes a human-readable PT-BR
+ * sentence (shared with the timeline via describeEvent) instead of raw
+ * event-type codes. Filter chips group by what the user thinks in
+ * (missões / agentes / chat / sistema), not by internal event names.
  */
-export function LiveActivityFeed({ events, onSelectTask }: Props) {
-  const [filter, setFilter] = useState<string | null>(null);
+export function LiveActivityFeed({ events, agents, onSelectTask }: Props) {
+  const [category, setCategory] = useState<EventCategory | "all">("all");
+
+  const agentName = useMemo(() => {
+    const m = new Map(agents.map((a) => [a.id, a]));
+    return (id: string | null | undefined) => {
+      if (!id) return "";
+      const a = m.get(id);
+      return a ? `${a.emoji ?? "🤖"} ${a.name}` : id;
+    };
+  }, [agents]);
 
   const filtered = useMemo(() => {
-    const visible = filter ? events.filter((e) => e.event_type === filter) : events;
-    // Newest first for visual scan, capped at 80
-    return [...visible].reverse().slice(0, 80);
-  }, [events, filter]);
+    const visible =
+      category === "all" ? events : events.filter((e) => categorizeEvent(e.event_type) === category);
+    // Newest first, capped so the DOM stays light.
+    return [...visible].reverse().slice(0, 120);
+  }, [events, category]);
 
-  const typeOptions = useMemo(() => {
-    const set = new Set<string>();
-    for (const e of events) set.add(e.event_type);
-    return Array.from(set).sort();
-  }, [events]);
+  // Day separators: show the date when consecutive events cross midnight.
+  const dayOf = (iso: string) => new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" });
 
   return (
-    <div className="rounded-xl p-3 h-full flex flex-col" style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}>
-      <div className="flex items-center justify-between mb-2">
-        <h4 className="text-xs font-bold uppercase tracking-wider text-zinc-400">
-          Live Activity ({events.length})
-        </h4>
-        <div className="flex items-center gap-1">
-          <Filter className="w-3 h-3 text-zinc-500" />
-          <select
-            value={filter ?? ""}
-            onChange={(e) => setFilter(e.target.value || null)}
-            className="text-[10px] bg-zinc-900 border rounded px-1.5 py-0.5 text-zinc-300 outline-none"
-            style={{ borderColor: "var(--border)" }}
-          >
-            <option value="">all</option>
-            {typeOptions.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </select>
+    <div
+      className="rounded-xl flex flex-col min-h-0 h-full"
+      style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
+    >
+      <div className="p-2.5 border-b space-y-2" style={{ borderColor: "var(--border)" }}>
+        <div className="flex items-center gap-1.5">
+          <Activity className="w-3.5 h-3.5 text-green-400" />
+          <h4 className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">
+            Atividade ao vivo
+          </h4>
+          <span className="text-[10px] text-zinc-600 ml-auto">{events.length} eventos</span>
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {CATEGORY_CHIPS.map((c) => (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => setCategory(c.key)}
+              className="px-2 py-0.5 rounded-full text-[10px] font-semibold transition-colors"
+              style={{
+                backgroundColor: category === c.key ? "var(--accent)" : "rgba(255,255,255,0.04)",
+                color: category === c.key ? "white" : "var(--text-muted)",
+                border: `1px solid ${category === c.key ? "var(--accent)" : "var(--border)"}`,
+                cursor: "pointer",
+              }}
+            >
+              {c.label}
+            </button>
+          ))}
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto space-y-1 pr-1">
+      <div className="flex-1 overflow-y-auto p-1.5 space-y-px min-h-0">
         {filtered.length === 0 && (
           <div className="text-center py-8 text-[10px] text-zinc-500">
-            Sem eventos ainda. Delegue uma task pra começar.
+            Sem eventos nessa categoria ainda.
           </div>
         )}
-        {filtered.map((e) => {
-          const color = colorFor(e.event_type);
-          const summary = describe(e);
+        {filtered.map((e, i) => {
+          const { icon, text } = describeEvent(e, agentName);
+          const color = eventColor(e.event_type);
+          const prev = filtered[i - 1];
+          const showDay = !prev || dayOf(prev.created_at) !== dayOf(e.created_at);
           return (
-            <button
-              key={e.id}
-              type="button"
-              onClick={() => e.task_id && onSelectTask(e.task_id)}
-              disabled={!e.task_id}
-              className="w-full text-left px-2 py-1 rounded flex items-center gap-1.5 transition-colors hover:bg-zinc-800 disabled:cursor-default disabled:hover:bg-transparent"
-              style={{ background: "none", border: "none" }}
-            >
-              <span
-                className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                style={{ backgroundColor: color }}
-              />
-              <span className="text-[9px] text-zinc-500 font-mono w-12 flex-shrink-0">
-                {new Date(e.created_at).toLocaleTimeString().slice(0, 8)}
-              </span>
-              <span className="text-[10px] text-zinc-300 truncate min-w-0 flex-1">{summary}</span>
-              {e.task_id && <ChevronRight className="w-3 h-3 text-zinc-600 flex-shrink-0" />}
-            </button>
+            <div key={e.id}>
+              {showDay && (
+                <div className="flex items-center gap-2 px-1 py-1">
+                  <span className="flex-1 h-px" style={{ backgroundColor: "var(--border)" }} />
+                  <span className="text-[9px] font-bold uppercase text-zinc-600">{dayOf(e.created_at)}</span>
+                  <span className="flex-1 h-px" style={{ backgroundColor: "var(--border)" }} />
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => e.task_id && onSelectTask(e.task_id)}
+                disabled={!e.task_id}
+                className="w-full text-left px-1.5 py-1 rounded flex items-start gap-1.5 transition-colors hover:bg-zinc-800/70 disabled:cursor-default disabled:hover:bg-transparent group"
+                style={{ background: "none", border: "none" }}
+                title={e.task_id ? "Clique para focar essa missão" : undefined}
+              >
+                <span className="w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5" style={{ backgroundColor: color }} />
+                <span className="min-w-0 flex-1">
+                  <span className="text-[11px] text-zinc-300 leading-snug block">
+                    <span className="mr-1">{icon}</span>
+                    {text}
+                  </span>
+                  <span className="text-[9px] text-zinc-600 font-mono">{formatClock(e.created_at)}</span>
+                </span>
+                {e.task_id && (
+                  <ChevronRight className="w-3 h-3 text-zinc-600 flex-shrink-0 mt-1 opacity-0 group-hover:opacity-100 transition-opacity" />
+                )}
+              </button>
+            </div>
           );
         })}
       </div>
     </div>
   );
-}
-
-function colorFor(type: string): string {
-  if (type === "task.delegated") return "#a855f7";
-  if (type.startsWith("task.")) return "#3b82f6";
-  if (type.startsWith("mailbox.")) return "#a855f7";
-  if (type.startsWith("agent.")) return "#10b981";
-  if (type.startsWith("dispatcher.")) return "#f59e0b";
-  if (type.startsWith("chat.")) return "#ec4899";
-  return "#71717a";
-}
-
-function describe(e: LiveEvent): string {
-  const tail = e.task_id ? `· ${e.task_id.slice(0, 8)}` : "";
-  switch (e.event_type) {
-    case "task.created":
-      return `📥 nova task → ${e.payload.title ?? ""} ${tail}`.trim();
-    case "task.delegated":
-      return `🔀 ${e.payload.delegated_by ?? "main"} → ${e.payload.assigned_to ?? "?"}: ${String(e.payload.title ?? "").slice(0, 50)}`.trim();
-    case "task.status_changed":
-      return `🔄 ${e.payload.from} → ${e.payload.to} · ${e.payload.title ?? ""}`.trim();
-    case "task.checkpoint":
-      return `📍 ${e.agent_id ?? "?"} checkpoint ${tail}`;
-    case "task.completed":
-      return `✅ completou ${tail}`;
-    case "task.reviewed":
-      return `🛡️ review: ${e.payload.verdict} ${tail}`;
-    case "task.approved":
-      return `${e.payload.approved ? "👍 aprovou" : "👎 rejeitou"} ${tail}`;
-    case "mailbox.message": {
-      const t = e.payload.message_type;
-      const icon = t === "direct_message" ? "🔴" : t === "queued_note" ? "🟡" : t === "review_feedback" ? "🛡️" : "↔️";
-      return `${icon} ${e.payload.from ?? "user"} → ${e.payload.to}: ${String(e.payload.preview ?? "").slice(0, 60)}`;
-    }
-    case "agent.heartbeat":
-      return `💓 ${e.agent_id} ${e.payload.state}`;
-    case "agent.state_changed":
-      return `🎭 ${e.agent_id}: ${e.payload.from ?? "—"} → ${e.payload.to}`;
-    case "dispatcher.run":
-      return `⚙️ dispatcher: ${e.payload.dispatched} disp, ${e.payload.paused} paused`;
-    case "chat.turn_started":
-      return `💬 ${e.agent_id ?? "?"} começou: ${String(e.payload.preview ?? "").slice(0, 60)}`;
-    case "chat.tool_use":
-      return `🔧 ${e.agent_id ?? "?"} → ${e.payload.tool}${e.payload.input_preview ? ` (${String(e.payload.input_preview).slice(0, 40)})` : ""}`;
-    case "chat.turn_completed": {
-      const ok = e.payload.ok;
-      const dur = typeof e.payload.duration_ms === "number" ? `${(e.payload.duration_ms / 1000).toFixed(1)}s` : "";
-      const tokens = (e.payload.tokensIn as number ?? 0) + (e.payload.tokensOut as number ?? 0);
-      return `${ok ? "✅" : "⚠️"} turno ${ok ? "ok" : "vazio"} · ${dur}${tokens ? ` · ${tokens} tok` : ""}`;
-    }
-    default:
-      return `${e.event_type} ${tail}`;
-  }
 }

@@ -7,6 +7,7 @@ import {
   listCheckpoints,
 } from "@/lib/tasks-db";
 import { listMail } from "@/lib/mailbox-db";
+import { listEvents } from "@/lib/live-events";
 import { discardTaskWorkspace } from "@/lib/task-workspace";
 
 export const dynamic = "force-dynamic";
@@ -24,8 +25,12 @@ export async function GET(_request: NextRequest, context: RouteContext) {
     return NextResponse.json({
       task,
       children: listChildren(id),
-      checkpoints: listCheckpoints(id, 20),
+      checkpoints: listCheckpoints(id, 50),
       messages: listMail({ task_id: id, sort: "oldest", limit: 200 }),
+      // Event history powers the per-task timeline in the UI. Events are
+      // pruned after 24h, so the client falls back to task fields +
+      // checkpoints + messages for older missions.
+      events: listEvents({ task_id: id, limit: 300 }),
     });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error";
