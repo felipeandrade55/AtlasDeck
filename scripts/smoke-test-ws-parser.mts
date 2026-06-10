@@ -1,4 +1,4 @@
-import { translateMessage } from "@/lib/openclaw-ws-client";
+import { translateMessage, extractHistoryReplyText } from "@/lib/openclaw-ws-client";
 
 function freshState() {
   return {
@@ -9,6 +9,11 @@ function freshState() {
     routingItemIds: new Set<string>(),
     routingItemText: new Map<string, string>(),
     emittedText: "",
+    sawRoutingTool: false,
+    pendingEmptyFinalAt: 0,
+    pendingUsage: null,
+    historyReqId: null,
+    historyRetried: false,
   } as Parameters<typeof translateMessage>[1];
 }
 
@@ -108,6 +113,77 @@ for (const v of replyVariants) {
   } else {
     failures++;
     console.log(`FAIL  routing tool: tool_use=${sawToolUse} salvage="${salvage}"`);
+  }
+}
+
+// 4) REAL tail from the 2026-06-10 session: tool `message` → agentMessage
+//    lifecycle WITHOUT text → chat final without text. The empty final
+//    must be PARKED (no done event) so the runner can attempt the
+//    chat.history recovery, and the routing tool must be flagged.
+{
+  const state = freshState();
+  for (const f of realFrames) translateMessage(f, state);
+  const tail: unknown[] = [
+    { type: "event", event: "agent", payload: { runId: RUN, stream: "item", data: { itemId: "exec-9832", phase: "start", kind: "tool", title: "Tool", status: "running", name: "message", suppressChannelProgress: true }, sessionKey: SK } },
+    { type: "event", event: "agent", payload: { runId: RUN, stream: "codex_app_server.item", data: { phase: "started", itemId: "exec-9832", type: "dynamicToolCall" }, sessionKey: SK } },
+    { type: "event", event: "agent", payload: { runId: RUN, stream: "item", data: { itemId: "exec-9832", phase: "end", kind: "tool", title: "Tool", status: "completed", name: "message", suppressChannelProgress: true }, sessionKey: SK } },
+    { type: "event", event: "agent", payload: { runId: RUN, stream: "codex_app_server.item", data: { phase: "completed", itemId: "exec-9832", type: "dynamicToolCall" }, sessionKey: SK } },
+    { type: "event", event: "agent", payload: { runId: RUN, stream: "codex_app_server.item", data: { phase: "started", itemId: "msg_0ba8", type: "agentMessage" }, sessionKey: SK } },
+    { type: "event", event: "agent", payload: { runId: RUN, stream: "codex_app_server.item", data: { phase: "completed", itemId: "msg_0ba8", type: "agentMessage" }, sessionKey: SK } },
+    { type: "event", event: "agent", payload: { runId: RUN, stream: "lifecycle", data: { startedAt: 1, endedAt: 2, phase: "end" }, sessionKey: SK } },
+  ];
+  const finalFrame = { type: "event", event: "chat", payload: { runId: RUN, sessionKey: SK, seq: 19, state: "final" }, seq: 19 };
+
+  const tailEvents = tail.flatMap((f) => translateMessage(f, state));
+  const junk = tailEvents.filter((e) => e.type === "token").map((e) => (e as { delta: string }).delta);
+  const sawToolUse = tailEvents.some((e) => e.type === "tool_use");
+  const finalEvents = translateMessage(finalFrame, state);
+  const doneEmitted = finalEvents.some((e) => e.type === "done");
+  const st = state as unknown as { pendingEmptyFinalAt: number; sawRoutingTool: boolean };
+
+  if (junk.length === 0 && sawToolUse && !doneEmitted && st.pendingEmptyFinalAt > 0 && st.sawRoutingTool) {
+    console.log("PASS  real tail: tool flagged, no junk, empty final parked for chat.history recovery");
+  } else {
+    failures++;
+    console.log(
+      `FAIL  real tail: junk=${JSON.stringify(junk)} toolUse=${sawToolUse} done=${doneEmitted} ` +
+        `pending=${st.pendingEmptyFinalAt} sawRoutingTool=${st.sawRoutingTool}`,
+    );
+  }
+}
+
+// 5) chat.history reply extraction across plausible response shapes.
+{
+  const shapes: Array<{ label: string; payload: Record<string, unknown>; expect: string }> = [
+    {
+      label: "messages[] role assistant content string",
+      payload: { messages: [{ role: "user", content: "boa tarde" }, { role: "assistant", content: "Boa tarde! Como posso ajudar?" }] },
+      expect: "Boa tarde! Como posso ajudar?",
+    },
+    {
+      label: "messages[] content parts array",
+      payload: { messages: [{ role: "assistant", content: [{ type: "text", text: "Olá! Tudo bem?" }] }] },
+      expect: "Olá! Tudo bem?",
+    },
+    {
+      label: "history[] role agent text field",
+      payload: { history: [{ role: "agent", text: "Resposta recuperada." }] },
+      expect: "Resposta recuperada.",
+    },
+    {
+      label: "last assistant EMPTY must NOT resurface older reply",
+      payload: { messages: [{ role: "assistant", content: "resposta antiga" }, { role: "user", content: "oi" }, { role: "assistant", content: "" }] },
+      expect: "",
+    },
+  ];
+  for (const s of shapes) {
+    const got = extractHistoryReplyText(s.payload);
+    if (got === s.expect) {
+      console.log(`PASS  history: ${s.label}`);
+    } else {
+      failures++;
+      console.log(`FAIL  history: ${s.label} -> "${got}" (esperado "${s.expect}")`);
+    }
   }
 }
 

@@ -43,7 +43,7 @@ export type WsChatEvent =
   | { type: "session"; sessionId: string }
   | { type: "usage"; tokensIn: number; tokensOut: number; cost?: number; model?: string }
   | { type: "timing"; phase: "handshake" | "hello-ok" | "chat-send" | "first-delta" | "final"; ms: number }
-  | { type: "done"; buffered?: boolean }
+  | { type: "done"; buffered?: boolean; routedViaTool?: boolean }
   | { type: "error"; message: string; code?: string };
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 8_000;
@@ -149,6 +149,29 @@ interface RunnerState {
    */
   routingItemText: Map<string, string>;
   emittedText?: string;
+  /**
+   * True once the agent invoked a routing tool (`message`,
+   * `telegram_send`, …) this turn. Drives the targeted diagnostic and
+   * the `routedViaTool` flag on the done event so the UI can show the
+   * AGENTS.md fix-it banner.
+   */
+  sawRoutingTool: boolean;
+  /**
+   * chat.history recovery for gateways (2026.5.x + Codex app-server)
+   * that emit only item LIFECYCLE events over WS — started/completed
+   * with no text field at all. When `final` arrives with zero tokens,
+   * instead of giving up we ask the gateway for the session history and
+   * pull the assistant's last message from there. These fields drive
+   * that little state machine:
+   *  - pendingEmptyFinalAt: timestamp of the empty final (0 = none)
+   *  - pendingUsage: usage event parked until recovery resolves
+   *  - historyReqId: id of the in-flight chat.history request
+   *  - historyRetried: whether we already retried without `limit`
+   */
+  pendingEmptyFinalAt: number;
+  pendingUsage: WsChatEvent | null;
+  historyReqId: string | null;
+  historyRetried: boolean;
 }
 
 const FRAME_LOG_MAX = 80;
@@ -617,7 +640,8 @@ function extractItemText(item: Record<string, unknown>): string {
     }
     if (parts.length > 0) return parts.join("");
   }
-  // Flat: item.text / item.delta / item.message
+  // Flat: item.content (string) / item.text / item.delta / item.message
+  if (typeof item.content === "string" && item.content) return item.content;
   if (typeof item.text === "string" && item.text) return item.text;
   if (typeof item.delta === "string" && item.delta) return item.delta;
   if (typeof item.message === "string" && item.message) return item.message;
@@ -694,6 +718,88 @@ function extractPayloadText(payload: Record<string, unknown>): string {
   // empty bubble; the operator can paste the diagnostic log and we'll
   // learn the new field name from it.
   return findLongestStringDeep(payload, 8, 6);
+}
+
+/**
+ * Pulls the assistant's last reply out of a `chat.history` response.
+ * Walks the message list from the END and takes the FIRST assistant
+ * entry found — deliberately does NOT keep walking past it, otherwise
+ * an empty current-turn reply would silently resurface a STALE reply
+ * from an earlier turn as if it were new.
+ *
+ * Exported for parser smoke-tests (scripts/) — not part of the public API.
+ */
+export function extractHistoryReplyText(payload: Record<string, unknown>): string {
+  const candidates = [payload.messages, payload.history, payload.items, payload.entries];
+  for (const candidate of candidates) {
+    if (!Array.isArray(candidate)) continue;
+    for (let i = candidate.length - 1; i >= 0; i--) {
+      const entry = candidate[i];
+      if (!isRecord(entry)) continue;
+      const role = String(entry.role ?? entry.author ?? entry.type ?? "").toLowerCase();
+      if (/user|human|system|developer|tool/.test(role)) continue;
+      if (!/assistant|agent|bot|model/.test(role)) continue;
+      const text = extractItemText(entry as Record<string, unknown>).trim();
+      return text; // first assistant entry from the end — empty means FAIL, not "walk back"
+    }
+  }
+  return "";
+}
+
+/**
+ * The give-up path when `final` arrived without text AND chat.history
+ * recovery also failed. Tailored when we saw the agent invoke a routing
+ * tool (the by-far most common cause for this user's setup).
+ */
+function buildEmptyReplyDiagnostic(state: RunnerState): WsChatEvent[] {
+  const trace = state.frameLog.map((line, idx) => `[${idx + 1}] ${line}`).join("\n");
+  console.warn(
+    `[ws] state=final without any text — gateway swallowed the reply.\n` +
+      `Full session trace:\n${trace}`,
+  );
+  // Show the END of the session — the reply-bearing frames (agentMessage
+  // / tool call / final) arrive last; the first 4KB is always the same
+  // handshake+lifecycle boilerplate.
+  const inlineTrace =
+    trace.length > 4000
+      ? `… (início omitido — handshake/lifecycle)\n${trace.slice(-4000)}`
+      : trace;
+  const body = state.sawRoutingTool
+    ? `⚠ **O agente roteou a resposta pela tool \`message\` em vez de responder aqui.**\n\n` +
+      `A resposta provavelmente chegou em outro canal (ex.: Telegram). Tentei recuperar ` +
+      `o texto via \`chat.history\` e não consegui.\n\n` +
+      `**Conserto definitivo:** clique em **Corrigir automaticamente** no banner amarelo — ` +
+      `o AtlasDeck instala um guard no \`AGENTS.md\` proibindo as tools de envio ` +
+      `(\`message\`, \`telegram_send\`, …) para a sessão \`web:atlasdeck\`. Depois do guard, ` +
+      `reinicie o gateway e abra uma conversa nova.\n\n`
+    : `⚠ **Gateway respondeu, mas não entregou texto.**\n\n` +
+      `Isso normalmente indica um dos seguintes:\n\n` +
+      `1. **Agente está chamando uma tool de envio** (\`message\`, \`telegram_send\`, etc.) ` +
+      `em vez de retornar texto direto. Clique em **Corrigir automaticamente** ` +
+      `no banner amarelo — o AtlasDeck adiciona um guard no \`AGENTS.md\` proibindo ` +
+      `essas tools para a sessão \`web:atlasdeck\`.\n\n` +
+      `2. \`blockStreamingDefault\` está OFF — o mesmo botão **Corrigir automaticamente** ` +
+      `aplica isso. Se já clicou e o badge ainda mostra \`buffered\`, o gateway pode ` +
+      `não ter reiniciado — confira \`systemctl --user status openclaw-gateway\`.\n\n` +
+      `3. **Bug do gateway** — o trace completo dos frames recebidos está salvo no ` +
+      `log do servidor. Rode \`pm2 logs mission-control --lines 200\` (ou o equivalente ` +
+      `pro seu setup) e procure por \`[ws] routing-tool follow-up\` e ` +
+      `\`[ws] state=final without any text\`. Cole esse output e eu adiciono o campo certo.\n\n`;
+  const events: WsChatEvent[] = [
+    {
+      type: "token",
+      delta:
+        body +
+        `**Trace truncado dos frames desta sessão (final da sessão):**\n` +
+        "```json\n" +
+        inlineTrace +
+        "\n```",
+    },
+  ];
+  if (state.pendingUsage) events.push(state.pendingUsage);
+  events.push({ type: "done", buffered: false, routedViaTool: state.sawRoutingTool || undefined });
+  state.tokensEmitted = true;
+  return events;
 }
 
 // Exported for parser smoke-tests (scripts/) — not part of the public API.
@@ -852,6 +958,7 @@ function translateMessageRaw(raw: unknown, state: RunnerState): WsChatEvent[] {
           const kind = typeof data.kind === "string" ? (data.kind as string) : "";
           const toolName = typeof data.name === "string" ? (data.name as string) : "";
           if ((kind === "tool" || kind === "mcpToolCall" || kind === "mcp_tool_call") && isRoutingToolName(toolName)) {
+            state.sawRoutingTool = true;
             if (itemId) state.routingItemIds.add(itemId);
             events.push({
               type: "tool_use",
@@ -971,69 +1078,50 @@ function translateMessageRaw(raw: unknown, state: RunnerState): WsChatEvent[] {
             : null;
           const isBuffered =
             !state.tokensEmitted && (finalTextForBuffered?.length ?? 0) > 240;
+          const usageEvent: WsChatEvent | null = isRecord(payload.usage)
+            ? {
+                type: "usage",
+                tokensIn: Number(
+                  (payload.usage as Record<string, unknown>).input ??
+                    (payload.usage as Record<string, unknown>).tokensIn ??
+                    0,
+                ),
+                tokensOut: Number(
+                  (payload.usage as Record<string, unknown>).output ??
+                    (payload.usage as Record<string, unknown>).tokensOut ??
+                    0,
+                ),
+                model:
+                  typeof (payload.usage as Record<string, unknown>).model === "string"
+                    ? ((payload.usage as Record<string, unknown>).model as string)
+                    : undefined,
+              }
+            : null;
           if (!state.tokensEmitted) {
             const finalText = finalTextForBuffered;
             if (finalText) {
               events.push({ type: "token", delta: finalText });
               state.tokensEmitted = true;
             } else {
-              // Gateway closed the stream without ever sending the
-              // reply text. We surface the full frame trace inside the
-              // chat bubble itself — the user can copy/paste it back
-              // and we patch the operator if a new event shape appeared.
-              // Also written to the server log so `pm2 logs` shows it
-              // without `MEMORY_DEBUG=1`. We do NOT fall back to CLI
-              // here because CLI defeats the real-time UX; the user
-              // would rather see a diagnostic than wait 30s for a
-              // CLI round-trip.
-              const trace = state.frameLog
-                .map((line, idx) => `[${idx + 1}] ${line}`)
-                .join("\n");
-              console.warn(
-                `[ws] state=final without any text — gateway swallowed the reply.\n` +
-                  `Full session trace:\n${trace}`,
-              );
-              // Show the END of the session — the reply-bearing frames
-              // (agentMessage / tool call / final) arrive last; the first
-              // 4KB is always the same handshake+lifecycle boilerplate.
-              const inlineTrace =
-                trace.length > 4000
-                  ? `… (início omitido — handshake/lifecycle)\n${trace.slice(-4000)}`
-                  : trace;
-              events.push({
-                type: "token",
-                delta:
-                  `⚠ **Gateway respondeu, mas não entregou texto.**\n\n` +
-                  `Isso normalmente indica um dos seguintes:\n\n` +
-                  `1. **Agente está chamando uma tool de envio** (\`message\`, \`telegram_send\`, etc.) ` +
-                  `em vez de retornar texto direto. Clique em **Corrigir automaticamente** ` +
-                  `no banner amarelo — o AtlasDeck adiciona um guard no \`AGENTS.md\` proibindo ` +
-                  `essas tools para a sessão \`web:atlasdeck\`.\n\n` +
-                  `2. \`blockStreamingDefault\` está OFF — o mesmo botão **Corrigir automaticamente** ` +
-                  `aplica isso. Se já clicou e o badge ainda mostra \`buffered\`, o gateway pode ` +
-                  `não ter reiniciado — confira \`systemctl --user status openclaw-gateway\`.\n\n` +
-                  `3. **Bug do gateway** — o trace completo dos frames recebidos está salvo no ` +
-                  `log do servidor. Rode \`pm2 logs mission-control --lines 200\` (ou o equivalente ` +
-                  `pro seu setup) e procure por \`[ws] routing-tool follow-up\` and ` +
-                  `\`[ws] state=final without any text\`. Cole esse output e eu adiciono o campo certo.\n\n` +
-                  `**Trace truncado dos frames desta sessão (primeiros 4KB):**\n` +
-                  "```json\n" +
-                  inlineTrace +
-                  "\n```",
-              });
-              state.tokensEmitted = true;
+              // Gateway closed the turn without ever sending reply text.
+              // OpenClaw 2026.5.x + Codex app-server emits item events as
+              // pure LIFECYCLE (agentMessage started/completed, no text
+              // field) — the reply text simply never crosses the WS. Do
+              // NOT give up yet: park the final and ask the gateway for
+              // the session history; the runner loop sends chat.history
+              // and either emits the recovered reply or the diagnostic
+              // (see resolveEmptyFinal / buildEmptyReplyDiagnostic).
+              state.pendingEmptyFinalAt = Date.now();
+              state.pendingUsage = usageEvent;
+              return events;
             }
           }
-          const usage = isRecord(payload.usage) ? (payload.usage as Record<string, unknown>) : null;
-          if (usage) {
-            events.push({
-              type: "usage",
-              tokensIn: Number(usage.input ?? usage.tokensIn ?? 0),
-              tokensOut: Number(usage.output ?? usage.tokensOut ?? 0),
-              model: typeof usage.model === "string" ? usage.model : undefined,
-            });
-          }
-          events.push({ type: "done", buffered: isBuffered });
+          if (usageEvent) events.push(usageEvent);
+          events.push({
+            type: "done",
+            buffered: isBuffered,
+            routedViaTool: state.sawRoutingTool || undefined,
+          });
           break;
         }
         case "aborted":
@@ -1247,6 +1335,11 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
     routingItemIds: new Set<string>(),
     routingItemText: new Map<string, string>(),
     emittedText: "",
+    sawRoutingTool: false,
+    pendingEmptyFinalAt: 0,
+    pendingUsage: null,
+    historyReqId: null,
+    historyRetried: false,
   };
 
   // Timing instrumentation — each phase records its delta from t0.
@@ -1333,7 +1426,77 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
       return;
     }
 
+    // chat.history recovery response — intercepted BEFORE translateMessage
+    // so the generic `res` handling doesn't swallow it. Success → emit the
+    // recovered reply; schema rejection of `limit` → retry once without
+    // it; anything else → give up with the diagnostic.
+    if (
+      isRecord(parsed) &&
+      parsed.type === "res" &&
+      state.historyReqId &&
+      parsed.id === state.historyReqId
+    ) {
+      state.historyReqId = null;
+      const payload = isRecord(parsed.payload)
+        ? (parsed.payload as Record<string, unknown>)
+        : {};
+      if (parsed.ok !== false) {
+        const recovered = extractHistoryReplyText(payload);
+        if (recovered) {
+          if (debug) console.log("[ws] chat.history recovery OK:", recovered.slice(0, 80));
+          state.pendingEmptyFinalAt = 0;
+          state.tokensEmitted = true;
+          queue.push({ type: "token", delta: recovered });
+          if (state.pendingUsage) queue.push(state.pendingUsage);
+          queue.push({
+            type: "done",
+            buffered: false,
+            routedViaTool: state.sawRoutingTool || undefined,
+          });
+          wake();
+          return;
+        }
+        queue.push(...buildEmptyReplyDiagnostic(state));
+        state.pendingEmptyFinalAt = 0;
+        wake();
+        return;
+      }
+      const err = isRecord(parsed.error) ? (parsed.error as Record<string, unknown>) : {};
+      const errMsg = typeof err.message === "string" ? err.message : "";
+      if (!state.historyRetried && /unexpected\s+property/i.test(errMsg)) {
+        state.historyRetried = true;
+        const retryId = randomUUID();
+        state.historyReqId = retryId;
+        send({
+          type: "req",
+          id: retryId,
+          method: "chat.history",
+          params: { sessionKey: input.sessionKey },
+        });
+        return;
+      }
+      if (debug) console.log("[ws] chat.history recovery failed:", errMsg);
+      queue.push(...buildEmptyReplyDiagnostic(state));
+      state.pendingEmptyFinalAt = 0;
+      wake();
+      return;
+    }
+
     const events = translateMessage(parsed, state);
+
+    // Empty final just parked by the translate step → kick off the
+    // chat.history recovery request (one in flight at a time).
+    if (state.pendingEmptyFinalAt && !state.historyReqId && !closed) {
+      const reqId = randomUUID();
+      state.historyReqId = reqId;
+      if (debug) console.log("[ws] final without text — requesting chat.history");
+      send({
+        type: "req",
+        id: reqId,
+        method: "chat.history",
+        params: { sessionKey: input.sessionKey, limit: 30 },
+      });
+    }
     if (events.length > 0) {
       const sawHelloOk = events.some((e) => e.type === "session");
       if (sawHelloOk && helloOkAt === 0) {
@@ -1412,7 +1575,16 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
           return;
         }
       }
-      if (closed) return;
+      if (closed) {
+        // Socket dropped while the chat.history recovery was pending —
+        // flush the diagnostic so the turn doesn't end as a silent
+        // "Resposta vazia".
+        if (state.pendingEmptyFinalAt) {
+          state.pendingEmptyFinalAt = 0;
+          for (const evt of buildEmptyReplyDiagnostic(state)) yield evt;
+        }
+        return;
+      }
       if (!state.helloOk && Date.now() > helloDeadline) {
         yield {
           type: "error",
@@ -1434,6 +1606,18 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
           ws.close();
         } catch {}
         return;
+      }
+      // chat.history recovery watchdog: the gateway never answered (or
+      // the socket dropped mid-recovery) — emit the diagnostic instead
+      // of hanging until the overall deadline.
+      if (
+        state.pendingEmptyFinalAt &&
+        Date.now() - state.pendingEmptyFinalAt > 6_000
+      ) {
+        state.pendingEmptyFinalAt = 0;
+        state.historyReqId = null;
+        for (const evt of buildEmptyReplyDiagnostic(state)) queue.push(evt);
+        continue;
       }
       await new Promise<void>((resolve) => {
         resolveNext = resolve;

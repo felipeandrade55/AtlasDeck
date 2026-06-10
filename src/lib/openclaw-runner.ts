@@ -50,7 +50,7 @@ export type RunnerEvent =
   | { type: "session"; sessionId: string }
   | { type: "usage"; tokensIn: number; tokensOut: number; cost?: number; model?: string }
   | { type: "timing"; phase: "handshake" | "hello-ok" | "chat-send" | "first-delta" | "final"; ms: number }
-  | { type: "done"; buffered?: boolean }
+  | { type: "done"; buffered?: boolean; routedViaTool?: boolean }
   | { type: "error"; message: string; code?: string };
 
 interface ArgStrategy {

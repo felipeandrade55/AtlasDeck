@@ -952,6 +952,13 @@ export async function POST(req: NextRequest) {
              if (evt.buffered !== undefined) {
                bufferedDetected = evt.buffered;
              }
+             // WS client saw the agent invoke a routing tool (message /
+             // telegram_send). Surface the stub-reply banner so the user
+             // gets the AGENTS.md fix-it path even when the recovered
+             // text looks normal.
+             if (evt.routedViaTool) {
+               stubReplyDetected = true;
+             }
              break;
           case "error":
             send("error", { message: evt.message, code: evt.code });
