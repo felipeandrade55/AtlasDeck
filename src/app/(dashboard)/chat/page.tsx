@@ -10,7 +10,19 @@ import {
 } from "react";
 // handleSend ref forwarded to the wake word hook so the callback can call
 // the latest version without forcing it to be declared before the hook.
-import { Bot, Download, Radio, Settings as SettingsIcon, Volume2, VolumeX, PanelLeftOpen, AudioLines, Captions } from "lucide-react";
+import {
+  Bot,
+  Download,
+  Radio,
+  Settings as SettingsIcon,
+  Volume2,
+  VolumeX,
+  PanelLeftOpen,
+  AudioLines,
+  Captions,
+  Ear,
+  EarOff,
+} from "lucide-react";
 import Link from "next/link";
 import { ThreadList } from "@/components/chat/ThreadList";
 import { TranscriptionLivePanel } from "@/components/chat/TranscriptionLivePanel";
@@ -19,7 +31,7 @@ import { Composer } from "@/components/chat/Composer";
 import { ImportOpenClawModal } from "@/components/chat/ImportOpenClawModal";
 import { VoiceSettingsModal } from "@/components/chat/VoiceSettingsModal";
 import { WakeWordSettingsModal } from "@/components/chat/WakeWordSettingsModal";
-import { WakeIndicator } from "@/components/chat/WakeIndicator";
+import { JarvisCore, type JarvisMode } from "@/components/chat/JarvisCore";
 import { HeardPanel } from "@/components/chat/HeardPanel";
 import { PushToTalkOverlay } from "@/components/chat/PushToTalkOverlay";
 import { useChatStream } from "@/components/chat/useChatStream";
@@ -40,6 +52,8 @@ import { useIsMobile } from "@/hooks/useMediaQuery";
 // boundary, so the prefix is handled automatically.
 const WAKE_PHRASES = ["Atlas", "Jarvis"];
 const WAKE_PHRASE_LABELS = ["ei Jarvis", "Atlas"];
+// localStorage key for the "Escuta automática" switch (default OFF).
+const AUTO_LISTEN_KEY = "atlas_auto_listen";
 import type {
   AgentSummary,
   ChatMessage,
@@ -80,7 +94,20 @@ export default function ChatPage() {
   const [showVoiceModal, setShowVoiceModal] = useState(false);
   const [showWakeModal, setShowWakeModal] = useState(false);
   const [showTranscribe, setShowTranscribe] = useState(false);
-  const [wakeEnabled, setWakeEnabled] = useState(true);
+  // "Escuta automática" — when ON, Jarvis listens from the moment the
+  // page opens, no clicks needed. OFF by default per user request, and
+  // the choice persists across visits via localStorage.
+  const [wakeEnabled, setWakeEnabled] = useState(false);
+  useEffect(() => {
+    if (localStorage.getItem(AUTO_LISTEN_KEY) === "1") setWakeEnabled(true);
+  }, []);
+  const toggleAutoListen = useCallback(() => {
+    setWakeEnabled((v) => {
+      const next = !v;
+      localStorage.setItem(AUTO_LISTEN_KEY, next ? "1" : "0");
+      return next;
+    });
+  }, []);
   const [wakeTeaser, setWakeTeaser] = useState<string | null>(null);
   // "Modo Conversa" — hands-free voice loop without wake-word. When ON,
   // every utterance the user speaks is auto-sent to the chat; the wake
@@ -896,6 +923,56 @@ export default function ChatPage() {
       ? porcupine.errorMessage || "Porcupine ativo"
       : wake.lastHeard;
 
+  // ---------------------------------------------------------------------
+  // Animated core state — derived from the REAL pipeline so the central
+  // animation always mirrors what Jarvis is doing right now.
+  // ---------------------------------------------------------------------
+  const lastAssistantHasContent = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === "assistant") return !!m.content?.trim();
+    }
+    return false;
+  }, [messages]);
+
+  const interimText =
+    conversation.interim || pushToTalk.interim || null;
+
+  const userSpeaking =
+    pushToTalk.holding ||
+    followUp.active ||
+    !!interimText ||
+    effectiveWakeState === "activated";
+
+  const coreMode: JarvisMode =
+    speakingId !== null
+      ? "speaking"
+      : stream.isStreaming
+      ? lastAssistantHasContent
+        ? "responding"
+        : "thinking"
+      : userSpeaking
+      ? "hearing"
+      : conversationActive
+      ? "listening"
+      : wakeEnabled
+      ? effectiveWakeState === "error"
+        ? "error"
+        : "listening"
+      : "off";
+
+  const coreStatus = CORE_STATUS[coreMode];
+  const coreHint =
+    coreMode === "hearing" && interimText
+      ? `“${interimText}”`
+      : coreMode === "listening" && conversationActive
+      ? "Modo Conversa — fale à vontade, envio automático ao pausar"
+      : coreMode === "listening"
+      ? `diga “${WAKE_PHRASE_LABELS[0]}” ou “${WAKE_PHRASE_LABELS[1]}” e fale o comando`
+      : coreMode === "error"
+      ? conversation.errorMessage || effectiveWakeLastHeard || "verifique a permissão do microfone"
+      : CORE_HINTS[coreMode];
+
   return (
     <div
       style={
@@ -918,6 +995,7 @@ export default function ChatPage() {
       />
 
       <section style={mainStyle}>
+        <style>{HUD_KEYFRAMES}</style>
         <header style={topBarStyle}>
           <div style={titleAreaStyle}>
             <h1 style={pageTitleStyle}>
@@ -941,41 +1019,35 @@ export default function ChatPage() {
                   <PanelLeftOpen size={20} />
                 </button>
               )}
-              <Bot size={20} style={{ color: "var(--accent)" }} />
-              {activeThread?.title ?? "Nova conversa"}
+              <Bot size={18} style={{ color: JARVIS_CYAN }} />
+              <span style={jarvisWordmarkStyle}>J.A.R.V.I.S</span>
+              <span style={threadTitleStyle}>
+                {activeThread?.title ?? "Nova conversa"}
+              </span>
             </h1>
             <span style={pageSubStyle}>
-              Powered by OpenClaw · {messages.length} mensagens
+              Centro de Operações · OpenClaw · {messages.length} mensagens
               <TransportBadge transport={lastTransport} streaming={stream.isStreaming} />
             </span>
           </div>
           <div style={controlsStyle}>
-            <select
-              value={selectedAgent}
-              onChange={(e) => setSelectedAgent(e.target.value)}
-              style={selectStyle}
-              title="Agente ativo"
-              disabled={stream.isStreaming}
-            >
-              {agents.length === 0 && <option value="main">main</option>}
-              {agents.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.emoji} {a.name}
-                </option>
-              ))}
-            </select>
             <button
               type="button"
-              onClick={toggleChatMode}
-              style={toggleButtonStyle(chatMode === "quick")}
+              onClick={toggleAutoListen}
+              style={autoListenStyle(wakeEnabled, effectiveWakeState)}
               title={
-                chatMode === "quick"
-                  ? "Jarvis rápido: conversa por Ollama local, sem skills do OpenClaw. Clique para voltar ao OpenClaw."
-                  : "OpenClaw Skills: usa o agente completo com skills e memória do OpenClaw. Clique para testar Jarvis rápido."
+                wakeEnabled
+                  ? `Escuta automática LIGADA — Jarvis ouve assim que a página abre (${effectiveWakePhrases.join(
+                      ", ",
+                    )})${effectiveWakeLastHeard ? `\núltimo ouvido: "${effectiveWakeLastHeard}"` : ""}`
+                  : "Escuta automática DESLIGADA — ative para o Jarvis ouvir você assim que a página abrir (a escolha fica salva)"
               }
-              disabled={stream.isStreaming}
             >
-              {chatMode === "quick" ? "Jarvis rápido" : "OpenClaw Skills"}
+              {wakeEnabled ? <Ear size={14} /> : <EarOff size={14} />}
+              <span>Escuta automática</span>
+              <span style={switchTrackStyle(wakeEnabled)}>
+                <span style={switchKnobStyle(wakeEnabled)} />
+              </span>
             </button>
             <button
               type="button"
@@ -1011,7 +1083,7 @@ export default function ChatPage() {
               }
               disabled={!conversation.supported}
             >
-              <Radio size={16} />
+              <Radio size={14} />
               {conversationActive
                 ? conversation.listening
                   ? "Conversa LIVE"
@@ -1031,13 +1103,40 @@ export default function ChatPage() {
                   : `Voz automática desligada (${tts.voiceLabel})`
               }
             >
-              {ttsEnabled ? <Volume2 size={16} /> : <VolumeX size={16} />}
+              {ttsEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
               {ttsEnabled ? "Voz ON" : "Voz OFF"}
               {(tts.engine === "elevenlabs" || tts.engine === "fishaudio") && (
-                <span style={{ fontSize: 10, opacity: 0.7, marginLeft: 2 }}>
+                <span style={{ fontSize: 9, opacity: 0.7, marginLeft: 2 }}>
                   · {tts.engine === "fishaudio" ? "fish" : "11labs"}
                 </span>
               )}
+            </button>
+            <select
+              value={selectedAgent}
+              onChange={(e) => setSelectedAgent(e.target.value)}
+              style={selectStyle}
+              title="Agente ativo"
+              disabled={stream.isStreaming}
+            >
+              {agents.length === 0 && <option value="main">main</option>}
+              {agents.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.emoji} {a.name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={toggleChatMode}
+              style={toggleButtonStyle(chatMode === "quick")}
+              title={
+                chatMode === "quick"
+                  ? "Jarvis rápido: conversa por Ollama local, sem skills do OpenClaw. Clique para voltar ao OpenClaw."
+                  : "OpenClaw Skills: usa o agente completo com skills e memória do OpenClaw. Clique para testar Jarvis rápido."
+              }
+              disabled={stream.isStreaming}
+            >
+              {chatMode === "quick" ? "Jarvis rápido" : "OpenClaw Skills"}
             </button>
             <button
               type="button"
@@ -1051,64 +1150,63 @@ export default function ChatPage() {
             >
               {thinkingMode === "instant" ? "⚡ Rápido" : "🧠 Raciocínio"}
             </button>
+            <span style={controlDividerStyle} />
             <button
               type="button"
               onClick={() => setShowVoiceModal(true)}
-              style={toggleButtonStyle(false)}
+              style={iconButtonStyle}
               title="Configurar voz (ElevenLabs / Fish Audio)"
             >
               <SettingsIcon size={14} />
             </button>
             <button
               type="button"
+              onClick={() => setShowWakeModal(true)}
+              style={iconButtonStyle}
+              title="Configurar wake word (Web Speech / openWakeWord / Picovoice)"
+            >
+              <Ear size={14} />
+            </button>
+            <button
+              type="button"
               onClick={() => setShowImportModal(true)}
-              style={toggleButtonStyle(false)}
+              style={iconButtonStyle}
               title="Importar sessions do OpenClaw"
             >
-              <Download size={16} />
-              Importar
+              <Download size={14} />
             </button>
             <button
               type="button"
               onClick={() => setShowTranscribe(true)}
-              style={toggleButtonStyle(false)}
+              style={iconButtonStyle}
               title="Transcrever áudio ao vivo (reuniões, conversas)"
             >
-              <AudioLines size={16} />
-              Transcrever
+              <AudioLines size={14} />
             </button>
             <Link
               href="/transcriptions"
-              style={{ ...toggleButtonStyle(false), textDecoration: "none" }}
+              style={{ ...iconButtonStyle, textDecoration: "none" }}
               title="Ver todas as transcrições"
             >
-              <Captions size={16} />
-              Transcrições
+              <Captions size={14} />
             </Link>
-            <WakeIndicator
-              state={effectiveWakeState}
-              enabled={wakeEnabled}
-              phrases={effectiveWakePhrases}
-              lastHeard={effectiveWakeLastHeard}
-              onToggle={() => setWakeEnabled((v) => !v)}
-            />
-            <button
-              type="button"
-              onClick={() => setShowWakeModal(true)}
-              style={toggleButtonStyle(false)}
-              title="Configurar wake word (Picovoice)"
-            >
-              ⚙ Wake
-            </button>
           </div>
         </header>
 
         <div style={pipelineBarStyle}>
           <span
-            style={pipelinePillStyle(wakeEnabled && effectiveWakeState !== "error" ? "ok" : "warn")}
-            title={`Wake engine: ${wakeEngine}; estado: ${effectiveWakeState}`}
+            style={pipelinePillStyle(
+              !wakeEnabled
+                ? "neutral"
+                : effectiveWakeState !== "error"
+                ? "ok"
+                : "warn",
+            )}
+            title={`Wake engine: ${wakeEngine}; estado: ${effectiveWakeState}${
+              effectiveWakeLastHeard ? `; último ouvido: "${effectiveWakeLastHeard}"` : ""
+            }`}
           >
-            Wake: {wakeEnabled ? wakeEngineLabel(wakeEngine) : "desligado"}
+            Wake: {wakeEnabled ? wakeEngineLabel(wakeEngine) : "em espera"}
           </span>
           <span
             style={pipelinePillStyle(tts.configured && !tts.lastError ? "ok" : "warn")}
@@ -1631,10 +1729,25 @@ export default function ChatPage() {
         )}
 
         <div style={messageScrollStyle}>
+          {messages.length === 0 && !stream.isStreaming ? (
+            <JarvisStage
+              mode={coreMode}
+              status={coreStatus}
+              hint={coreHint}
+              wakeEnabled={wakeEnabled}
+              onEnableAutoListen={toggleAutoListen}
+            />
+          ) : (
           <div style={messageListStyle}>
-            {messages.length === 0 && !stream.isStreaming && (
-              <EmptyState />
-            )}
+            <div style={dockedCoreStyle}>
+              <JarvisCore mode={coreMode} size={88} />
+              <div style={dockedStatusWrapStyle}>
+                <span style={dockedStatusLabelStyle(coreStatus.color)}>
+                  {coreStatus.label}
+                </span>
+                <span style={dockedHintStyle}>{coreHint}</span>
+              </div>
+            </div>
             {messages
               .filter((m) => {
                 if (m.role === "tool_use" || m.role === "tool_result") {
@@ -1655,6 +1768,7 @@ export default function ChatPage() {
               ))}
             <div ref={messagesEndRef} />
           </div>
+          )}
         </div>
 
         <Composer
@@ -1737,39 +1851,88 @@ function transportLabel(
   return "desconhecido";
 }
 
-function EmptyState() {
+// ---------------------------------------------------------------------------
+// HUD theme — Jarvis-inspired cyan-on-dark with mono accents.
+// ---------------------------------------------------------------------------
+
+const JARVIS_CYAN = "#22d3ee";
+
+const CORE_STATUS: Record<JarvisMode, { label: string; color: string }> = {
+  off: { label: "EM ESPERA", color: "#94a3b8" },
+  listening: { label: "OUVINDO", color: JARVIS_CYAN },
+  hearing: { label: "CAPTANDO VOZ", color: "#34d399" },
+  thinking: { label: "PROCESSANDO", color: "#a78bfa" },
+  responding: { label: "RESPONDENDO", color: "#fb923c" },
+  speaking: { label: "FALANDO", color: "#ff453a" },
+  error: { label: "FALHA NO MICROFONE", color: "#ef4444" },
+};
+
+const CORE_HINTS: Record<JarvisMode, string> = {
+  off: "ative a escuta automática, use o Modo Conversa ou segure ESPAÇO para falar",
+  listening: "aguardando wake word…",
+  hearing: "capturando seu comando…",
+  thinking: "Jarvis está analisando sua solicitação…",
+  responding: "recebendo resposta em tempo real…",
+  speaking: "reproduzindo voz (TTS)…",
+  error: "verifique a permissão do microfone",
+};
+
+const HUD_KEYFRAMES = `
+@keyframes jarvis-status-glow {
+  0%, 100% { opacity: 0.82; text-shadow: 0 0 10px currentColor; }
+  50% { opacity: 1; text-shadow: 0 0 24px currentColor; }
+}
+@keyframes jarvis-chip-breathe {
+  0%, 100% { box-shadow: 0 0 6px rgba(34, 211, 238, 0.12); }
+  50% { box-shadow: 0 0 14px rgba(34, 211, 238, 0.28); }
+}
+`;
+
+function JarvisStage({
+  mode,
+  status,
+  hint,
+  wakeEnabled,
+  onEnableAutoListen,
+}: {
+  mode: JarvisMode;
+  status: { label: string; color: string };
+  hint: string;
+  wakeEnabled: boolean;
+  onEnableAutoListen: () => void;
+}) {
   return (
-    <div style={emptyStateStyle}>
-      <Bot size={42} style={{ color: "var(--accent)" }} />
-      <h2 style={{ margin: 0, fontSize: 20 }}>Pronto para conversar</h2>
-      <p style={{ margin: 0, color: "var(--text-secondary)", maxWidth: 520 }}>
-        Microfone e voz já estão ativos. Diga{" "}
-        <strong>&ldquo;ei Jarvis&rdquo;</strong> e fale seu comando em
-        seguida — a resposta volta em tempo real (WebSocket) e o Jarvis fala
-        de volta usando o TTS configurado (Fish Audio / ElevenLabs).
-      </p>
-      <ul style={emptyStateListStyle}>
-        <li>
-          <strong>📡 Modo Conversa</strong> — clique no botão{" "}
-          <kbd style={kbdStyle}>Conversa</kbd> no topo: o microfone fica
-          aberto e qualquer frase que você falar é enviada
-          automaticamente, sem precisar dizer &ldquo;ei Jarvis&rdquo;.
-          Ideal se o wake word estiver falhando.
-        </li>
-        <li>
-          <strong>&ldquo;ei Jarvis&rdquo;</strong> / <strong>&ldquo;Atlas&rdquo;</strong>{" "}
-          — wake word automático em pt-BR (aliases cobrem variantes como
-          &ldquo;jarves&rdquo;, &ldquo;hey jarvis&rdquo;, &ldquo;olá jarvis&rdquo;)
-        </li>
-        <li>
-          <kbd style={kbdStyle}>ESPAÇO</kbd> — segure para falar, solte para
-          enviar (push-to-talk)
-        </li>
-        <li>🎙 clique no microfone do composer para gravar manualmente</li>
-        <li>
-          configure outras opções de wake em <kbd style={kbdStyle}>⚙ Wake</kbd>
-        </li>
-      </ul>
+    <div style={stageStyle}>
+      <JarvisCore mode={mode} size={330} />
+      <div style={stageStatusStyle(status.color)}>{status.label}</div>
+      <div style={stageHintStyle}>{hint}</div>
+      {!wakeEnabled && (
+        <button
+          type="button"
+          onClick={onEnableAutoListen}
+          style={stageCtaStyle}
+          title="Liga a escuta automática — fica salvo e ativo nas próximas visitas"
+        >
+          <Ear size={15} />
+          Ativar escuta automática
+        </button>
+      )}
+      <div style={stageTipsStyle}>
+        <span style={tipChipStyle}>
+          📡 <strong>Conversa</strong> — mic sempre aberto, sem wake word
+        </span>
+        <span style={tipChipStyle}>
+          🗣 &ldquo;ei Jarvis&rdquo; / &ldquo;Atlas&rdquo; — wake word pt-BR
+        </span>
+        <span style={tipChipStyle}>
+          <kbd style={kbdStyle}>ESPAÇO</kbd> segure para falar, solte para enviar
+        </span>
+        <span style={tipChipStyle}>🎙 microfone do composer grava manualmente</span>
+        <span style={tipChipStyle}>
+          <Ear size={11} style={{ verticalAlign: "-1px" }} /> ícone de orelha no topo
+          configura o wake word
+        </span>
+      </div>
     </div>
   );
 }
@@ -1779,7 +1942,7 @@ const shellStyle: CSSProperties = {
   height: "calc(100vh - 48px - 32px - 48px)",
   margin: "-24px",
   borderRadius: 0,
-  background: "var(--bg)",
+  background: "#070b12",
 };
 
 const mainStyle: CSSProperties = {
@@ -1787,15 +1950,18 @@ const mainStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   minWidth: 0,
+  position: "relative",
 };
 
 const topBarStyle: CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
   alignItems: "center",
-  padding: "12px 20px",
-  borderBottom: "1px solid var(--border)",
-  background: "var(--surface)",
+  gap: 12,
+  flexWrap: "wrap",
+  padding: "10px 20px",
+  borderBottom: `1px solid rgba(34, 211, 238, 0.18)`,
+  background: "linear-gradient(180deg, rgba(13, 22, 33, 0.95), rgba(8, 13, 21, 0.92))",
 };
 
 const titleAreaStyle: CSSProperties = {
@@ -1806,81 +1972,186 @@ const titleAreaStyle: CSSProperties = {
 
 const pageTitleStyle: CSSProperties = {
   margin: 0,
-  fontSize: 16,
+  fontSize: 15,
   fontWeight: 600,
   display: "flex",
   alignItems: "center",
   gap: 8,
 };
 
+const jarvisWordmarkStyle: CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontSize: 14,
+  fontWeight: 700,
+  letterSpacing: 3,
+  color: JARVIS_CYAN,
+  textShadow: "0 0 12px rgba(34, 211, 238, 0.45)",
+};
+
+const threadTitleStyle: CSSProperties = {
+  fontSize: 12,
+  fontWeight: 500,
+  color: "var(--text-secondary)",
+  maxWidth: 280,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+  borderLeft: "1px solid rgba(148, 163, 184, 0.25)",
+  paddingLeft: 8,
+};
+
 const pageSubStyle: CSSProperties = {
-  fontSize: 11,
+  fontSize: 10,
   color: "var(--text-muted)",
+  fontFamily: "var(--font-mono)",
+  letterSpacing: 0.5,
 };
 
 const controlsStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
-  gap: 8,
+  gap: 6,
+  flexWrap: "wrap",
 };
+
+const controlDividerStyle: CSSProperties = {
+  width: 1,
+  height: 18,
+  background: "rgba(148, 163, 184, 0.25)",
+  margin: "0 2px",
+};
+
+/** Prominent persistent "Escuta automática" switch. */
+function autoListenStyle(enabled: boolean, state: string): CSSProperties {
+  const live = enabled && state !== "error";
+  return {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 7,
+    padding: "5px 10px",
+    borderRadius: 999,
+    background: live ? "rgba(34, 211, 238, 0.12)" : "rgba(148, 163, 184, 0.06)",
+    border: `1px solid ${
+      enabled
+        ? state === "error"
+          ? "#ef4444"
+          : "rgba(34, 211, 238, 0.6)"
+        : "rgba(148, 163, 184, 0.3)"
+    }`,
+    color: enabled ? (state === "error" ? "#ef4444" : "#67e8f9") : "#94a3b8",
+    fontSize: 11,
+    fontWeight: 600,
+    letterSpacing: 0.4,
+    cursor: "pointer",
+    animation: live ? "jarvis-chip-breathe 2.6s ease-in-out infinite" : undefined,
+    transition: "all 0.25s ease",
+  };
+}
+
+function switchTrackStyle(on: boolean): CSSProperties {
+  return {
+    display: "inline-flex",
+    alignItems: "center",
+    width: 26,
+    height: 14,
+    borderRadius: 999,
+    padding: 2,
+    background: on ? "rgba(34, 211, 238, 0.55)" : "rgba(148, 163, 184, 0.25)",
+    transition: "background 0.25s ease",
+  };
+}
+
+function switchKnobStyle(on: boolean): CSSProperties {
+  return {
+    width: 10,
+    height: 10,
+    borderRadius: "50%",
+    background: on ? "#e0fbff" : "#64748b",
+    transform: on ? "translateX(12px)" : "translateX(0)",
+    transition: "transform 0.25s ease, background 0.25s ease",
+    boxShadow: on ? "0 0 6px rgba(34, 211, 238, 0.8)" : "none",
+  };
+}
 
 const pipelineBarStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: 8,
   flexWrap: "wrap",
-  padding: "7px 20px",
-  borderBottom: "1px solid var(--border)",
-  background: "rgba(0,0,0,0.16)",
+  padding: "6px 20px",
+  borderBottom: "1px solid rgba(34, 211, 238, 0.1)",
+  background: "rgba(4, 8, 14, 0.6)",
   color: "var(--text-secondary)",
-  fontSize: 11,
+  fontSize: 10,
+  fontFamily: "var(--font-mono)",
+  letterSpacing: 0.4,
 };
 
 function pipelinePillStyle(state: "ok" | "warn" | "neutral"): CSSProperties {
   const color =
-    state === "ok" ? "#10b981" : state === "warn" ? "#f59e0b" : "var(--text-muted)";
+    state === "ok" ? "#10b981" : state === "warn" ? "#f59e0b" : "#64748b";
   const bg =
     state === "ok"
-      ? "rgba(16,185,129,0.10)"
+      ? "rgba(16,185,129,0.08)"
       : state === "warn"
-      ? "rgba(245,158,11,0.10)"
-      : "rgba(148,163,184,0.08)";
+      ? "rgba(245,158,11,0.08)"
+      : "rgba(100,116,139,0.08)";
   return {
     display: "inline-flex",
     alignItems: "center",
     gap: 4,
-    padding: "3px 8px",
-    borderRadius: 999,
-    border: `1px solid ${color}`,
+    padding: "2px 9px",
+    borderRadius: 3,
+    border: `1px solid ${color}55`,
+    borderLeft: `2px solid ${color}`,
     background: bg,
     color,
     whiteSpace: "nowrap",
+    textTransform: "uppercase",
   };
 }
 
 const selectStyle: CSSProperties = {
-  padding: "6px 10px",
-  borderRadius: 8,
-  background: "var(--bg)",
-  border: "1px solid var(--border)",
+  padding: "5px 8px",
+  borderRadius: 6,
+  background: "rgba(8, 14, 22, 0.9)",
+  border: "1px solid rgba(34, 211, 238, 0.25)",
   color: "var(--text-primary)",
-  fontSize: 13,
+  fontSize: 12,
+  maxWidth: 150,
 };
 
 function toggleButtonStyle(active: boolean): CSSProperties {
   return {
     display: "inline-flex",
     alignItems: "center",
-    gap: 6,
-    padding: "6px 10px",
-    borderRadius: 8,
-    background: active ? "var(--accent-soft)" : "var(--bg)",
-    border: `1px solid ${active ? "var(--accent)" : "var(--border)"}`,
-    color: active ? "var(--accent)" : "var(--text-secondary)",
-    fontSize: 12,
+    gap: 5,
+    padding: "5px 9px",
+    borderRadius: 6,
+    background: active ? "rgba(34, 211, 238, 0.12)" : "rgba(148, 163, 184, 0.05)",
+    border: `1px solid ${active ? "rgba(34, 211, 238, 0.55)" : "rgba(148, 163, 184, 0.22)"}`,
+    color: active ? "#67e8f9" : "#94a3b8",
+    fontSize: 11,
+    fontWeight: 500,
+    letterSpacing: 0.3,
     cursor: "pointer",
+    transition: "all 0.2s ease",
   };
 }
+
+const iconButtonStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: 28,
+  height: 28,
+  borderRadius: 6,
+  background: "rgba(148, 163, 184, 0.05)",
+  border: "1px solid rgba(148, 163, 184, 0.22)",
+  color: "#94a3b8",
+  cursor: "pointer",
+  transition: "all 0.2s ease",
+};
 
 /**
  * Conversation-mode button has three visual states: idle (off), live
@@ -1893,32 +2164,20 @@ function conversationButtonStyle(active: boolean, listening: boolean): CSSProper
   }
   if (listening) {
     return {
-      display: "inline-flex",
-      alignItems: "center",
-      gap: 6,
-      padding: "6px 10px",
-      borderRadius: 8,
-      background: "rgba(16, 185, 129, 0.18)",
+      ...toggleButtonStyle(true),
+      background: "rgba(16, 185, 129, 0.15)",
       border: "1px solid #10b981",
       color: "#10b981",
-      fontSize: 12,
       fontWeight: 600,
-      cursor: "pointer",
       animation: "atlas-conversation-pulse 1.6s ease-in-out infinite",
     };
   }
   return {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 6,
-    padding: "6px 10px",
-    borderRadius: 8,
-    background: "rgba(245, 158, 11, 0.18)",
+    ...toggleButtonStyle(true),
+    background: "rgba(245, 158, 11, 0.15)",
     border: "1px solid #f59e0b",
     color: "#f59e0b",
-    fontSize: 12,
     fontWeight: 600,
-    cursor: "pointer",
   };
 }
 
@@ -2003,8 +2262,14 @@ const BUFFERED_CONFIG_SNIPPET = `"blockStreamingDefault": "on",
 const messageScrollStyle: CSSProperties = {
   flex: 1,
   overflow: "auto",
-  padding: "20px 24px",
-  background: "var(--bg)",
+  padding: "0 24px 20px",
+  background: [
+    "radial-gradient(ellipse 90% 55% at 50% -10%, rgba(34, 211, 238, 0.07), transparent)",
+    "linear-gradient(rgba(34, 211, 238, 0.03) 1px, transparent 1px)",
+    "linear-gradient(90deg, rgba(34, 211, 238, 0.03) 1px, transparent 1px)",
+    "#070b12",
+  ].join(", "),
+  backgroundSize: "auto, 44px 44px, 44px 44px, auto",
 };
 
 const messageListStyle: CSSProperties = {
@@ -2015,27 +2280,121 @@ const messageListStyle: CSSProperties = {
   margin: "0 auto",
 };
 
-const emptyStateStyle: CSSProperties = {
+// Compact always-on core docked at the top of the timeline. Sticky so
+// it keeps reacting (pensando/falando/ouvindo) while messages scroll
+// underneath it.
+const dockedCoreStyle: CSSProperties = {
+  position: "sticky",
+  top: 0,
+  zIndex: 5,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 14,
+  padding: "6px 0 2px",
+  pointerEvents: "none",
+  background:
+    "radial-gradient(ellipse 55% 100% at 50% 0%, rgba(7, 11, 18, 0.92), transparent)",
+};
+
+const dockedStatusWrapStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 3,
+  maxWidth: 360,
+};
+
+function dockedStatusLabelStyle(color: string): CSSProperties {
+  return {
+    fontFamily: "var(--font-mono)",
+    fontSize: 12,
+    fontWeight: 700,
+    letterSpacing: 3,
+    color,
+    animation: "jarvis-status-glow 2.4s ease-in-out infinite",
+  };
+}
+
+const dockedHintStyle: CSSProperties = {
+  fontSize: 10,
+  color: "var(--text-muted)",
+  fontFamily: "var(--font-mono)",
+  letterSpacing: 0.4,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+
+// ---- full-size stage (empty conversation) ---------------------------------
+
+const stageStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   alignItems: "center",
-  gap: 12,
-  padding: "60px 20px",
-  color: "var(--text-secondary)",
+  justifyContent: "center",
+  gap: 10,
+  minHeight: "100%",
+  padding: "24px 20px",
   textAlign: "center",
 };
 
-const emptyStateListStyle: CSSProperties = {
-  textAlign: "left",
-  margin: 0,
-  padding: 0,
-  listStyle: "none",
-  display: "flex",
-  flexDirection: "column",
-  gap: 8,
-  maxWidth: 480,
-  fontSize: 13,
+function stageStatusStyle(color: string): CSSProperties {
+  return {
+    fontFamily: "var(--font-mono)",
+    fontSize: 19,
+    fontWeight: 700,
+    letterSpacing: 7,
+    color,
+    animation: "jarvis-status-glow 2.4s ease-in-out infinite",
+    marginTop: -12,
+  };
+}
+
+const stageHintStyle: CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontSize: 12,
+  letterSpacing: 0.6,
   color: "var(--text-secondary)",
+  maxWidth: 560,
+  minHeight: 18,
+};
+
+const stageCtaStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 8,
+  marginTop: 8,
+  padding: "9px 20px",
+  borderRadius: 999,
+  background: "rgba(34, 211, 238, 0.1)",
+  border: "1px solid rgba(34, 211, 238, 0.6)",
+  color: JARVIS_CYAN,
+  fontSize: 13,
+  fontWeight: 600,
+  letterSpacing: 0.5,
+  cursor: "pointer",
+  animation: "jarvis-chip-breathe 2.6s ease-in-out infinite",
+};
+
+const stageTipsStyle: CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  justifyContent: "center",
+  gap: 8,
+  marginTop: 18,
+  maxWidth: 720,
+};
+
+const tipChipStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 5,
+  padding: "5px 12px",
+  borderRadius: 999,
+  border: "1px solid rgba(148, 163, 184, 0.2)",
+  background: "rgba(148, 163, 184, 0.05)",
+  color: "var(--text-secondary)",
+  fontSize: 11,
 };
 
 const kbdStyle: CSSProperties = {
