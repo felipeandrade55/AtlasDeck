@@ -576,6 +576,13 @@ export async function executeTool(
           agent: task.assigned_to ?? undefined,
           metadata: { task_id: task.id },
         });
+        // Approval may unblock pipeline stages that depend_on this task —
+        // dispatch immediately so the next specialist starts right away.
+        try {
+          runDispatcher();
+        } catch {
+          /* best-effort */
+        }
         return { ok: true, tool: name, result: { task: updated ?? task } };
       }
 

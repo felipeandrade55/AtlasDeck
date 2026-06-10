@@ -52,11 +52,27 @@ async function notifyOwnerForReview(
   const resultPreview = output.trim().length > 1200
     ? `${output.trim().slice(0, 1200)}…`
     : output.trim();
+  // Pipeline awareness: if other tasks depend on this one, approving it is
+  // what releases the next specialist — say so explicitly.
+  let nextStage = "";
+  try {
+    const dependents = listTasks({ limit: 200, sort: "newest" }).filter(
+      (t) => t.depends_on?.includes(task.id) && t.status !== "cancelled" && t.status !== "failed",
+    );
+    if (dependents.length) {
+      const names = dependents
+        .map((t) => `${t.assigned_to ?? "?"} (“${t.title || t.id.slice(0, 8)}”)`)
+        .join(", ");
+      nextStage = `\n\n➡️ Aprovar libera a PRÓXIMA etapa do pipeline: ${escapeHtml(names)}.`;
+    }
+  } catch {
+    /* best-effort */
+  }
   const text =
     `<b>🔖 Entrega para revisão — ${escapeHtml(agentId)}</b>\n\n` +
     `<b>${escapeHtml(title)}</b>\n` +
     `<code>${short}</code>\n\n` +
-    `${escapeHtml(resultPreview)}\n\n` +
+    `${escapeHtml(resultPreview)}${nextStage}\n\n` +
     `Para aprovar, responda: <b>aprovar ${short}</b>\n` +
     `Para pedir ajustes: <b>rejeitar ${short} &lt;o que mudar&gt;</b>\n` +
     `(ou aprove pelo painel Live Mission)`;
@@ -129,12 +145,46 @@ async function executeTask(task: Task): Promise<void> {
       status: "complete",
     });
 
+    // Pipeline stage handoff: when this task depends on earlier stages
+    // (decompose chains like pesquisador → escritor → dev), inject their
+    // results so this specialist builds ON the previous work. Without this,
+    // a chained stage runs blind and the "team" is a team in name only.
+    let depsContext = "";
+    if (task.depends_on && task.depends_on.length > 0) {
+      const blocks: string[] = [];
+      for (const depId of task.depends_on) {
+        const dep = getTaskById(depId);
+        if (dep?.result?.trim()) {
+          blocks.push(
+            `--- Entrega da etapa anterior (${dep.assigned_to ?? "?"} · "${dep.title || dep.id.slice(0, 8)}") ---\n` +
+              dep.result.trim(),
+          );
+        }
+      }
+      if (blocks.length) {
+        depsContext =
+          `\n\n[atlas:pipeline] Esta tarefa é uma ETAPA de um trabalho em equipe. ` +
+          `Use as entregas das etapas anteriores abaixo como base do seu trabalho:\n\n` +
+          blocks.join("\n\n");
+      }
+    }
+
+    // Rejection loop: when the user rejected a previous delivery, the task
+    // comes back through here — surface their feedback so the redo actually
+    // addresses it (the mailbox message alone is invisible to the sub-agent).
+    const feedbackContext =
+      task.user_approved === false && task.user_feedback?.trim()
+        ? `\n\n[atlas:feedback] A entrega anterior foi REJEITADA pelo usuário. Refaça ` +
+          `levando em conta este pedido de ajuste: ${task.user_feedback.trim()}` +
+          (task.result?.trim() ? `\n\nEntrega anterior (para referência):\n${task.result.trim().slice(0, 2000)}` : "")
+        : "";
+
     // Anti-cascade: a specialist run by the worker must DO the work itself,
     // never re-delegate. The sub-agent has the same delegate_to/decompose MCP
     // tools as the orchestrator, so without this it can spawn a second task
     // (the confusing "two cards at once") and, worse, an unbounded chain.
     const workerPrompt =
-      `${task.prompt}\n\n[atlas:worker] Você é um sub-agente especialista executando uma ` +
+      `${task.prompt}${depsContext}${feedbackContext}\n\n[atlas:worker] Você é um sub-agente especialista executando uma ` +
       `tarefa que JÁ foi delegada a você. FAÇA o trabalho você mesmo e entregue o resultado ` +
       `aqui. NÃO chame delegate_to, decompose nem nenhuma ferramenta de delegação — você é o ` +
       `executor final, não o orquestrador. ` +

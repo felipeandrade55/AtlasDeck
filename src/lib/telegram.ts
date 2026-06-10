@@ -50,6 +50,21 @@ export async function sendTelegramAlert(
   let botToken = botTokenOverride;
   let chatId = chatIdOverride;
 
+  // chatId lives in AtlasDeck's LOCAL store (data/telegram-accounts.json) —
+  // OpenClaw 2026.5.x strict schema rejects `chatId` inside openclaw.json, so
+  // the migration moved it out. Reading only openclaw.json here is why every
+  // proactive alert (review notify, watchdog, costs) silently failed with
+  // "credenciais ausentes" after that migration.
+  if (!chatId) {
+    try {
+      const { getTelegramAccountLocal } = await import("./telegram-accounts-local");
+      const local = getTelegramAccountLocal("main");
+      if (local.chatId?.trim()) chatId = local.chatId.trim();
+    } catch (e) {
+      console.error("Failed to read telegram-accounts-local for chatId:", e);
+    }
+  }
+
   if (!botToken || !chatId) {
     try {
       const configPath = path.join(
@@ -60,6 +75,7 @@ export async function sendTelegramAlert(
         const openclawConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
         const mainAccount = openclawConfig?.channels?.telegram?.accounts?.main;
         if (!botToken && mainAccount?.botToken) botToken = mainAccount.botToken;
+        // Legacy pre-migration configs may still carry chatId here.
         if (!chatId && mainAccount?.chatId) chatId = mainAccount.chatId;
       }
     } catch (e) {
