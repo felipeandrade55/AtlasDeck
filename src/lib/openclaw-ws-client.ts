@@ -891,9 +891,20 @@ function translateMessageRaw(raw: unknown, state: RunnerState): WsChatEvent[] {
 
       switch (inferredState) {
         case "final": {
-          const isBuffered = !state.tokensEmitted;
+          // "Buffered" = the whole reply arrived only in the final frame,
+          // with zero delta frames before it. BUT a short reply (one
+          // greeting sentence) legitimately fits a single frame even when
+          // the gateway streams correctly — flagging those spams the user
+          // with a false "ligue blockStreaming" banner. Only flag when the
+          // reply is long enough that a streaming gateway would have had
+          // to split it (default chunk maxChars is 200).
+          const finalTextForBuffered = !state.tokensEmitted
+            ? extractPayloadText(payload)
+            : null;
+          const isBuffered =
+            !state.tokensEmitted && (finalTextForBuffered?.length ?? 0) > 240;
           if (!state.tokensEmitted) {
-            const finalText = extractPayloadText(payload);
+            const finalText = finalTextForBuffered;
             if (finalText) {
               events.push({ type: "token", delta: finalText });
               state.tokensEmitted = true;

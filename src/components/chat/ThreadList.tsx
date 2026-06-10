@@ -85,10 +85,21 @@ export function ThreadList({
           const isActive = thread.id === activeId;
           const agent = agentById.get(thread.agent_id);
           return (
-            <button
+            // div[role=button] em vez de <button>: os botões de fixar/excluir
+            // ficam DENTRO do item, e <button> aninhado em <button> é HTML
+            // inválido — o React 19 descarta o DOM inteiro na hidratação e
+            // remonta a página, apagando estado em progresso.
+            <div
               key={thread.id}
-              type="button"
+              role="button"
+              tabIndex={0}
               onClick={() => handleSelect(thread.id)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  handleSelect(thread.id);
+                }
+              }}
               style={threadItemStyle(isActive)}
             >
               <div style={threadHeaderStyle}>
@@ -132,7 +143,7 @@ export function ThreadList({
                   <Trash2 size={12} />
                 </button>
               </div>
-            </button>
+            </div>
           );
         })}
       </div>

@@ -363,7 +363,15 @@ export default function ChatPage() {
     }
   }, []);
 
+  // Monotonic guard for message loads. A slow GET /threads/:id response
+  // landing AFTER the user already sent a new message would overwrite the
+  // optimistic user/assistant bubbles with stale server state ("boa tarde"
+  // vanishing from the timeline). Every optimistic insert bumps the epoch;
+  // any in-flight load from before the bump discards its response.
+  const messagesEpochRef = useRef(0);
+
   const loadMessages = useCallback(async (threadId: string) => {
+    const epoch = ++messagesEpochRef.current;
     try {
       const res = await fetch(`/api/chat/threads/${threadId}`);
       if (!res.ok) return;
@@ -371,6 +379,7 @@ export default function ChatPage() {
         thread: ChatThread;
         messages: ChatMessage[];
       };
+      if (messagesEpochRef.current !== epoch) return; // superseded
       setMessages(data.messages ?? []);
       setThreads((current) => {
         const idx = current.findIndex((t) => t.id === threadId);
@@ -389,10 +398,17 @@ export default function ChatPage() {
     loadThreads();
   }, [loadAgents, loadThreads]);
 
+  // While a turn is streaming, the SSE stream is the source of truth —
+  // reloading from the DB mid-turn wiped the optimistic bubbles (the
+  // thread is created server-side a beat before the user message lands,
+  // so the fetch returned an empty list). When the stream settles this
+  // effect re-runs (isStreaming flips false) and syncs the timeline with
+  // what the server persisted, including tool_use/tool_result rows.
   useEffect(() => {
+    if (stream.isStreaming) return;
     if (activeThreadId) loadMessages(activeThreadId);
     else setMessages([]);
-  }, [activeThreadId, loadMessages]);
+  }, [activeThreadId, loadMessages, stream.isStreaming]);
 
   useEffect(() => {
     if (activeThread) setSelectedAgent(activeThread.agent_id);
@@ -518,6 +534,9 @@ export default function ChatPage() {
         created_at: nowIso,
       };
 
+      // Invalidate any in-flight loadMessages response — it predates this
+      // turn and would wipe the optimistic bubbles below.
+      messagesEpochRef.current++;
       // Optimistic insert. On retry, the previous user turn is already in
       // state and the trailing assistant bubble is an error placeholder —
       // strip it so the user doesn't see a stale red bubble next to the
