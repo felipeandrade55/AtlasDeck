@@ -186,7 +186,7 @@ function buildPayload(
         `] }`,
         "```",
         "",
-        `O sistema cuida do resto AUTOMATICAMENTE: cada etapa só começa quando a anterior for concluída E aprovada, e a entrega da etapa anterior é injetada na próxima (o dev recebe o texto do escritor, etc.). Você NÃO precisa re-disparar nada entre etapas. O usuário aprova cada entrega pelo Telegram ou pelo painel.`,
+        `O sistema cuida do resto AUTOMATICAMENTE: as etapas INTERMEDIÁRIAS avançam sozinhas (sem aprovação do usuário), e a entrega de cada etapa é injetada na próxima (o dev recebe o texto do escritor, etc.). Você NÃO precisa re-disparar nada entre etapas. Somente a entrega FINAL do pipeline vai para o usuário aprovar (Telegram + painel). Por isso, monte a corrente de modo que a ÚLTIMA subtask seja a entrega final completa que o usuário vai avaliar.`,
         ``,
         `Fluxo correto de um pedido operacional:`,
         `1. Emita o(s) bloco(s) \`atlas-tool\` para delegar (delegate_to / decompose).`,

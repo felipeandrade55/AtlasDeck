@@ -284,11 +284,22 @@ async function executeTask(task: Task): Promise<void> {
     const autonomous = isAutonomousFor(meta.override_autonomous);
     const ok = usable;
 
-    // Autonomous + no mandatory approval → straight to done. Otherwise the
-    // card lands in `review` for the user/orchestrator to sign off.
+    // Pipeline flow (Felipe's review model): INTERMEDIATE stages — tasks that
+    // another task depends_on — auto-advance to `done` so the chain flows
+    // without per-stage approvals. Only the FINAL deliverable (no dependents)
+    // lands in `review` and pings Telegram. Stage-by-stage detail stays
+    // visible on the Live Mission board for optional inspection.
+    const dependents = listTasks({ limit: 200, sort: "newest" }).filter(
+      (t) =>
+        t.depends_on?.includes(task.id) &&
+        t.status !== "cancelled" &&
+        t.status !== "failed",
+    );
+    const isIntermediateStage = dependents.length > 0;
+
     const nextStatus: Task["status"] = !ok
       ? "failed"
-      : autonomous && !settings.require_user_approval
+      : isIntermediateStage || (autonomous && !settings.require_user_approval)
         ? "done"
         : "review";
 
@@ -311,14 +322,35 @@ async function executeTask(task: Task): Promise<void> {
     });
     recordHeartbeat({ agent_id: agentId, state: "idle", current_task_id: null });
 
-    // Telegram approval: when a specialist's work lands in `review`, push the
-    // result to the owner's Telegram so they can approve WITHOUT opening the
-    // dashboard — replying "aprovar <id>" / "rejeitar <id> <motivo>" lets
+    // Telegram approval: when the FINAL deliverable lands in `review`, push
+    // the result to the owner's Telegram so they can approve WITHOUT opening
+    // the dashboard — replying "aprovar <id>" / "rejeitar <id> <motivo>" lets
     // Jarvis call approve_task / reject_task. (Also still approvable in the UI.)
     if (nextStatus === "review") {
       void notifyOwnerForReview(task, agentId, output).catch((e) =>
         console.warn("[task-worker] telegram review notify failed:", e),
       );
+    } else if (nextStatus === "done" && isIntermediateStage) {
+      // Intermediate stage finished → release the next specialist right away
+      // instead of waiting for the next tick.
+      try {
+        runDispatcher();
+      } catch {
+        /* best-effort */
+      }
+    } else if (nextStatus === "failed") {
+      // A silent mid-pipeline failure would stall the chain with no signal —
+      // exactly the "ficou travado e não me respondeu" the user reported. Ping
+      // Telegram so they know the pipeline paused and where.
+      void sendTelegramAlert(
+        "",
+        "",
+        `<b>⚠️ Etapa do pipeline falhou — ${escapeHtml(agentId)}</b>\n\n` +
+          `<b>${escapeHtml(task.title || task.prompt.slice(0, 80))}</b>\n` +
+          `<code>${task.id.slice(0, 8)}</code>\n\n` +
+          `O especialista não entregou resultado (gateway vazio/timeout, 2 tentativas). ` +
+          `O pipeline pausou nesta etapa — veja o painel Live Mission para re-delegar ou cancelar.`,
+      ).catch((e) => console.warn("[task-worker] telegram failure notify failed:", e));
     }
 
     logActivity(
