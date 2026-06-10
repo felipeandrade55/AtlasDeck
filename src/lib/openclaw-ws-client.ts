@@ -152,7 +152,10 @@ interface RunnerState {
 }
 
 const FRAME_LOG_MAX = 80;
-const FRAME_LOG_TRUNC = 800;
+// Per-frame budget generous enough that a reply-bearing frame (text +
+// envelope) survives intact in the failure dump — at 800 the crucial
+// frame arrived cut off and diagnosing took an extra round-trip.
+const FRAME_LOG_TRUNC = 2000;
 
 /**
  * Field names where OpenClaw builds have historically placed the visible
@@ -317,6 +320,7 @@ const NON_REPLY_ITEM_KINDS = new Set([
   "thinking",
   "agentReasoning",
   "agent_reasoning",
+  "tool",
   "tool_call",
   "tool_result",
   "function_call",
@@ -989,7 +993,13 @@ function translateMessageRaw(raw: unknown, state: RunnerState): WsChatEvent[] {
                 `[ws] state=final without any text — gateway swallowed the reply.\n` +
                   `Full session trace:\n${trace}`,
               );
-              const inlineTrace = trace.slice(0, 4000);
+              // Show the END of the session — the reply-bearing frames
+              // (agentMessage / tool call / final) arrive last; the first
+              // 4KB is always the same handshake+lifecycle boilerplate.
+              const inlineTrace =
+                trace.length > 4000
+                  ? `… (início omitido — handshake/lifecycle)\n${trace.slice(-4000)}`
+                  : trace;
               events.push({
                 type: "token",
                 delta:
