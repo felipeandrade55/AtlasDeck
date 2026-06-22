@@ -15,6 +15,7 @@ const PROVIDER_LABEL: Record<ModelProvider, string> = {
   anthropic: "Anthropic",
   ollama: "Ollama (local)",
   google: "Google",
+  openclaw: "OpenClaw Gateway",
   custom: "Outro",
 };
 
@@ -23,6 +24,7 @@ const PROVIDER_COLOR: Record<ModelProvider, string> = {
   anthropic: "#d97757",
   ollama: "#3b82f6",
   google: "#f59e0b",
+  openclaw: "#a855f7",
   custom: "#6b7280",
 };
 
@@ -67,7 +69,7 @@ export function ModelPicker({
 
   const grouped = useMemo(() => {
     const g: Record<ModelProvider, typeof KNOWN_MODELS> = {
-      openai: [], anthropic: [], ollama: [], google: [], custom: [],
+      openai: [], anthropic: [], ollama: [], google: [], openclaw: [], custom: [],
     };
     for (const m of KNOWN_MODELS) g[m.provider].push(m);
     return g;

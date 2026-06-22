@@ -10,7 +10,7 @@
  */
 
 export type ModelTier = "primary" | "balanced" | "fast" | "fallback" | "legacy";
-export type ModelProvider = "openai" | "anthropic" | "ollama" | "google" | "custom";
+export type ModelProvider = "openai" | "anthropic" | "ollama" | "google" | "openclaw" | "custom";
 
 export interface KnownModel {
   id: string;
@@ -40,6 +40,11 @@ export const KNOWN_MODELS: KnownModel[] = [
   // Google
   { id: "google/gemini-2.0-flash", label: "Gemini 2.0 Flash", provider: "google", tier: "fast" },
   { id: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro", provider: "google", tier: "balanced" },
+
+  // OpenClaw Gateway (roteia pelo gateway local — usa as credenciais já configuradas no OpenClaw)
+  { id: "openclaw/main", label: "Via OpenClaw — agente main ⭐ RECOMENDADO", provider: "openclaw", tier: "primary", notes: "Usa o agente 'main' do gateway OpenClaw. Sem necessidade de configurar chaves separadas — usa as credenciais já autenticadas (Codex OAuth, etc.)" },
+  { id: "openclaw/devops", label: "Via OpenClaw — agente devops", provider: "openclaw", tier: "balanced", notes: "Agente DevOps Sentinel via gateway local" },
+  { id: "openclaw/coder", label: "Via OpenClaw — agente coder", provider: "openclaw", tier: "balanced", notes: "Agente Code Architect via gateway local" },
 
   // Ollama (local — exige o modelo puxado no host com `ollama pull <id>`)
   { id: "ollama/qwen2.5-coder:14b", label: "Qwen 2.5 Coder 14B (local)", provider: "ollama", tier: "fallback", notes: "Local; precisa de `ollama pull qwen2.5-coder:14b`" },
@@ -115,8 +120,8 @@ export function findKnownModel(id: string): KnownModel | null {
 
 export function detectProvider(id: string): ModelProvider {
   const prefix = id.split("/")[0]?.toLowerCase();
-  if (prefix === "openai" || prefix === "anthropic" || prefix === "ollama" || prefix === "google") {
-    return prefix;
+  if (prefix === "openai" || prefix === "anthropic" || prefix === "ollama" || prefix === "google" || prefix === "openclaw") {
+    return prefix as ModelProvider;
   }
   return "custom";
 }
