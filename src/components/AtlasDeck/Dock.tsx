@@ -18,6 +18,7 @@ import {
   History,
   MessageCircle,
   NotebookPen,
+  FileCog,
 } from "lucide-react";
 
 const dockItems = [
@@ -28,6 +29,7 @@ const dockItems = [
   { href: "/memory", label: "Memória", icon: Brain },
   { href: "/notes", label: "Notas", icon: NotebookPen },
   { href: "/agents", label: "Agentes", icon: Bot },
+  { href: "/agent-instructions", label: "Instruções", icon: FileCog },
   { href: "/office", label: "Escritório", icon: Building2 },
   { href: "/activity", label: "Atividades", icon: Activity },
   { href: "/cron", label: "Tarefas Agendadas", icon: Clock },
