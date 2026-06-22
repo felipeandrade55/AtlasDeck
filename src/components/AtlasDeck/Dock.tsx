@@ -19,6 +19,7 @@ import {
   MessageCircle,
   NotebookPen,
   FileCog,
+  ShieldAlert,
 } from "lucide-react";
 
 const dockItems = [
@@ -36,6 +37,7 @@ const dockItems = [
   { href: "/calendar", label: "Calendário", icon: CalendarDays },
   { href: "/sessions", label: "Sessões", icon: History },
   { href: "/skills", label: "Habilidades", icon: Puzzle },
+  { href: "/pentest", label: "Pentest", icon: ShieldAlert },
   { href: "/costs", label: "Custos & Análises", icon: DollarSign },
   { href: "/settings", label: "Configurações", icon: Settings },
 

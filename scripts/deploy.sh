@@ -1387,6 +1387,84 @@ if command -v openclaw &>/dev/null; then
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
+# FASE 8.5 — TOOLBOX DE PENTEST (Docker sidecar)
+# ══════════════════════════════════════════════════════════════════════════════
+# O módulo /pentest executa ferramentas reais (nmap, nuclei, etc.) dentro de um
+# container isolado ("toolbox"), nunca no host. O app fala com ele por HTTP em
+# 127.0.0.1:8099 — sem Docker socket do host, então é seguro também no modelo
+# multi-tenant (Coolify). Esta fase builda a imagem e (re)sobe o container.
+#
+# Soft-fail: se Docker não existir ou o build falhar, apenas avisa — o resto do
+# AtlasDeck segue funcionando; só o módulo Pentest fica indisponível.
+step "Toolbox de Pentest (Docker sidecar)..."
+T=$(now)
+phase_status "pentest-toolbox" "running"
+
+TOOLBOX_DIR="$VPS_DIR/docker/pentest-toolbox"
+TOOLBOX_IMAGE="atlasdeck/pentest-toolbox"
+TOOLBOX_CONTAINER="atlasdeck-pentest-toolbox"
+TOOLBOX_PORT="8099"
+ENV_FILE="$VPS_DIR/.env"
+HOST_UPLOAD_DIR="$VPS_DIR/data/pentest-uploads"
+
+if ! command -v docker &>/dev/null; then
+  warn "Docker não encontrado — toolbox de pentest não pode subir (o módulo Pentest fica indisponível até instalar Docker)."
+  record "Pentest toolbox" "skip" "$(elapsed $T)"
+  phase_status "pentest-toolbox" "skip" "$(elapsed $T)" "docker not installed"
+elif [[ ! -d "$TOOLBOX_DIR" ]]; then
+  warn "Diretório do toolbox ($TOOLBOX_DIR) não existe nesta versão — pulando."
+  record "Pentest toolbox" "skip" "$(elapsed $T)"
+  phase_status "pentest-toolbox" "skip" "$(elapsed $T)"
+else
+  # 1) Garante token + URL + dir de upload no .env (gera token forte na 1ª vez).
+  TOKEN_ADDED=false
+  touch "$ENV_FILE"
+  if ! grep -q '^PENTEST_TOOLBOX_TOKEN=' "$ENV_FILE"; then
+    NEW_TOKEN=$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    printf 'PENTEST_TOOLBOX_TOKEN=%s\n' "$NEW_TOKEN" >> "$ENV_FILE"
+    TOKEN_ADDED=true
+    info "Token do toolbox gerado e salvo no .env (segredo app↔toolbox)"
+  fi
+  grep -q '^PENTEST_TOOLBOX_URL=' "$ENV_FILE" || printf 'PENTEST_TOOLBOX_URL=http://127.0.0.1:%s\n' "$TOOLBOX_PORT" >> "$ENV_FILE"
+  grep -q '^PENTEST_TOOLBOX_UPLOAD_DIR=' "$ENV_FILE" || printf 'PENTEST_TOOLBOX_UPLOAD_DIR=/uploads\n' >> "$ENV_FILE"
+  TOOLBOX_TOKEN=$(grep '^PENTEST_TOOLBOX_TOKEN=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)
+  mkdir -p "$HOST_UPLOAD_DIR"
+
+  # 2) Build da imagem (idempotente; cache de layers torna rápido quando nada
+  #    mudou; a 1ª vez baixa o Kali e pode levar minutos).
+  info "Buildando imagem $TOOLBOX_IMAGE (1ª vez é demorada)..."
+  if docker build -t "$TOOLBOX_IMAGE" "$TOOLBOX_DIR" 2>&1 | tee /tmp/pentest-toolbox-build.log | tail -8; then
+    # 3) (Re)sobe o container escutando só em loopback, com limites de recurso.
+    #    O dir de upload do host é montado em /uploads para o perfil mobile —
+    #    o app escreve em data/pentest-uploads e o toolbox lê no mesmo lugar.
+    docker rm -f "$TOOLBOX_CONTAINER" >/dev/null 2>&1 || true
+    if docker run -d --name "$TOOLBOX_CONTAINER" --restart unless-stopped \
+         -p "127.0.0.1:${TOOLBOX_PORT}:8099" \
+         -e PENTEST_TOOLBOX_TOKEN="$TOOLBOX_TOKEN" \
+         --memory 1g --cpus 1.0 --pids-limit 512 \
+         -v "$HOST_UPLOAD_DIR":/uploads \
+         "$TOOLBOX_IMAGE" >/dev/null; then
+      ok "Toolbox de pentest no ar em 127.0.0.1:${TOOLBOX_PORT}"
+      # Se o token acabou de nascer, o app precisa recarregar o env pra enxergá-lo.
+      if [[ "$TOKEN_ADDED" == true ]] && command -v pm2 &>/dev/null; then
+        info "Recarregando env do app ($APP_NAME) para aplicar o token..."
+        pm2 restart "$APP_NAME" --update-env < /dev/null >/dev/null 2>&1 || true
+      fi
+      record "Pentest toolbox" "ok" "$(elapsed $T)"
+      phase_status "pentest-toolbox" "ok" "$(elapsed $T)"
+    else
+      warn "Falha ao subir o container do toolbox — veja 'docker logs $TOOLBOX_CONTAINER'"
+      record "Pentest toolbox" "fail" "$(elapsed $T)"
+      phase_status "pentest-toolbox" "fail" "$(elapsed $T)" "container start failed"
+    fi
+  else
+    warn "Build da imagem do toolbox falhou — veja /tmp/pentest-toolbox-build.log"
+    record "Pentest toolbox" "fail" "$(elapsed $T)"
+    phase_status "pentest-toolbox" "fail" "$(elapsed $T)" "image build failed"
+  fi
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
 # FASE 9 — SEGURANÇA: FAIL2BAN
 # ══════════════════════════════════════════════════════════════════════════════
 step "Verificando Fail2Ban (Proteção contra Brute Force)..."

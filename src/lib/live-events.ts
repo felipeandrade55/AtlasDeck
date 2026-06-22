@@ -35,7 +35,18 @@ export type LiveEventType =
   | "dispatcher.run"
   | "chat.turn_started"
   | "chat.tool_use"
-  | "chat.turn_completed";
+  | "chat.turn_completed"
+  // Pentest module — run/phase/tool/finding lifecycle. task_id carries the
+  // pentest run_id so the SSE stream can filter a single run.
+  | "pentest.run_started"
+  | "pentest.phase_started"
+  | "pentest.phase_completed"
+  | "pentest.tool_started"
+  | "pentest.tool_output"
+  | "pentest.tool_completed"
+  | "pentest.finding"
+  | "pentest.run_completed"
+  | "pentest.run_failed";
 
 export interface LiveEvent {
   id: string;

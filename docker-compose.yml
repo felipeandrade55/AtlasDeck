@@ -1,0 +1,106 @@
+# =============================================================================
+# AtlasDeck — docker-compose (foco: wiring do Pentest Toolbox Sidecar)
+#
+# MODELO DE ISOLAMENTO
+# --------------------
+# O "toolbox" e um container Kali que expoe SOMENTE um servidor HTTP. O app
+# fala com ele pela rede privada do projeto (servico "toolbox", porta 8099).
+# NAO montamos o Docker socket do host em lugar nenhum: o app nao tem poder
+# para criar/controlar containers — apenas envia requisicoes HTTP ao gateway.
+# Isso confina as ferramentas de pentest dentro do sidecar.
+#
+# DOIS CENARIOS DE DEPLOY
+# -----------------------
+#  (A) App CONTEINERIZADO (ex.: Coolify multi-servico):
+#      app e toolbox sobem juntos nesta compose; o app resolve o toolbox pelo
+#      DNS interno "toolbox:8099". Nenhuma porta do toolbox e publicada.
+#
+#  (B) App NATIVO no VPS (cenario atual do AtlasDeck):
+#      so o toolbox sobe via Docker; o app roda nativo no host e fala com o
+#      toolbox via 127.0.0.1:8099. Para isso, descomente o mapeamento de
+#      porta "127.0.0.1:8099:8099" no servico toolbox.
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Servico APP (CENARIO A — conteinerizado).
+  #
+  # O Dockerfile do app ainda NAO existe (e um plano separado). Por isso o
+  # build esta comentado e usamos uma imagem placeholder so para documentar o
+  # wiring de rede/env/volume. No cenario B (VPS app-nativo) este servico nem
+  # e usado — apenas o toolbox sobe.
+  # ---------------------------------------------------------------------------
+  app:
+    # TODO: trocar pelo build real quando o Dockerfile do app existir:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    image: node:20-slim # placeholder — substituir pelo build do AtlasDeck
+    command: ["node", "-e", "setInterval(()=>{}, 1e9)"] # no-op para placeholder
+    depends_on:
+      - toolbox
+    environment:
+      # URL do gateway do toolbox na rede interna do projeto.
+      PENTEST_TOOLBOX_URL: http://toolbox:8099
+      # Token bearer compartilhado (definir no .env do projeto).
+      PENTEST_TOOLBOX_TOKEN: ${PENTEST_TOOLBOX_TOKEN}
+      # Diretorio de uploads (APK/IPA) — mesmo volume montado no toolbox.
+      PENTEST_TOOLBOX_UPLOAD_DIR: /uploads
+    volumes:
+      # Volume compartilhado de uploads (app grava, toolbox le).
+      - pentest-uploads:/uploads
+    networks:
+      - atlasdeck
+
+  # ---------------------------------------------------------------------------
+  # Servico TOOLBOX — o sidecar Kali com o gateway HTTP.
+  # ---------------------------------------------------------------------------
+  toolbox:
+    build:
+      context: ./docker/pentest-toolbox
+      dockerfile: Dockerfile
+    image: atlasdeck/pentest-toolbox:latest
+    restart: unless-stopped
+    environment:
+      # Token bearer exigido no header Authorization das requisicoes /run.
+      PENTEST_TOOLBOX_TOKEN: ${PENTEST_TOOLBOX_TOKEN}
+      PORT: "8099"
+    volumes:
+      # Mesmo volume de uploads para ler os binarios mobile enviados pelo app.
+      - pentest-uploads:/uploads
+    networks:
+      - atlasdeck
+    # NAO publicamos porta por padrao — so a rede interna do projeto acessa
+    # o toolbox (cenario A, app conteinerizado).
+    #
+    # CENARIO B (app nativo no VPS): descomente o bloco abaixo para expor o
+    # gateway SOMENTE no loopback do host, acessivel pelo app nativo via
+    # http://127.0.0.1:8099. Bind em 127.0.0.1 evita exposicao na internet.
+    # ports:
+    #   - "127.0.0.1:8099:8099"
+    deploy:
+      resources:
+        limits:
+          # Contem o uso de recursos das ferramentas de pentest.
+          cpus: "1.0"
+          memory: 1G
+    # Healthcheck usando o proprio endpoint /health (nao exige token).
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8099/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+# -----------------------------------------------------------------------------
+# Volume nomeado de uploads — compartilhado entre app e toolbox.
+# -----------------------------------------------------------------------------
+volumes:
+  pentest-uploads:
+
+# -----------------------------------------------------------------------------
+# Rede privada do projeto — isola app + toolbox do restante do host.
+# -----------------------------------------------------------------------------
+networks:
+  atlasdeck:
+    driver: bridge

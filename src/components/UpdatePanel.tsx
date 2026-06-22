@@ -34,6 +34,7 @@ const PHASE_DEF: { name: string; label: string }[] = [
   { name: "pm2-restart", label: "Restart PM2" },
   { name: "health-check", label: "Health Check" },
   { name: "openclaw-gateway", label: "OpenClaw Gateway" },
+  { name: "pentest-toolbox", label: "Toolbox Pentest" },
   { name: "fail2ban", label: "Fail2Ban" },
   { name: "firewall", label: "Firewall" },
 ];
