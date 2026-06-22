@@ -250,13 +250,15 @@ function formatRel(iso: string): string {
 }
 
 const containerStyle: CSSProperties = {
-  width: 280,
+  width: "100%",
+  boxSizing: "border-box",
   display: "flex",
   flexDirection: "column",
   borderRight: "1px solid var(--border)",
   background: "var(--bg)",
   flex: 1,
   minHeight: 0,
+  minWidth: 0,
 };
 
 function mobileContainerStyle(open: boolean): CSSProperties {
@@ -314,7 +316,8 @@ const collapseToggleBtnStyle: CSSProperties = {
 };
 
 const collapsedContainerStyle: CSSProperties = {
-  width: 52,
+  width: "100%",
+  boxSizing: "border-box",
   display: "flex",
   flexDirection: "column",
   alignItems: "center",

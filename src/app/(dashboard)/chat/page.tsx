@@ -1046,7 +1046,7 @@ export default function ChatPage() {
           onClose={() => setThreadsOpen(false)}
         />
       ) : (
-        <div style={sidebarWrapStyle}>
+        <div style={sidebarWrapStyle(sidebarCollapsed)}>
           <ThreadList
             threads={threads}
             activeId={activeThreadId}
@@ -2367,11 +2367,18 @@ const messageListStyle: CSSProperties = {
 
 // ---- sidebar wrapper (desktop only) anchors ThreadList + JarvisCore panel --
 
-const sidebarWrapStyle: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  height: "100%",
-};
+// Fixed width so the JarvisCore panel's long status hint (nowrap) can't
+// stretch the column and shove the chat area to the right.
+function sidebarWrapStyle(collapsed: boolean): CSSProperties {
+  return {
+    display: "flex",
+    flexDirection: "column",
+    height: "100%",
+    width: collapsed ? 52 : 280,
+    flexShrink: 0,
+    transition: "width 0.2s ease",
+  };
+}
 
 function sidebarCoreWrapStyle(collapsed: boolean): CSSProperties {
   return {
@@ -2385,6 +2392,9 @@ function sidebarCoreWrapStyle(collapsed: boolean): CSSProperties {
     borderRight: "1px solid var(--border)",
     background: "rgba(7, 11, 18, 0.80)",
     flexShrink: 0,
+    width: "100%",
+    boxSizing: "border-box",
+    minWidth: 0,
     minHeight: collapsed ? 64 : 90,
   };
 }
