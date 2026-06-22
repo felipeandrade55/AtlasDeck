@@ -72,6 +72,10 @@ interface AgentApiResponse {
 export default function ChatPage() {
   const isMobile = useIsMobile();
   const [threadsOpen, setThreadsOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem("atlas_sidebar_collapsed") === "true";
+  });
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -101,6 +105,10 @@ export default function ChatPage() {
   useEffect(() => {
     if (localStorage.getItem(AUTO_LISTEN_KEY) === "1") setWakeEnabled(true);
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem("atlas_sidebar_collapsed", sidebarCollapsed ? "true" : "false");
+  }, [sidebarCollapsed]);
   const toggleAutoListen = useCallback(() => {
     setWakeEnabled((v) => {
       const next = !v;
@@ -1000,18 +1008,45 @@ export default function ChatPage() {
           : shellStyle
       }
     >
-      <ThreadList
-        threads={threads}
-        activeId={activeThreadId}
-        agents={agents}
-        onSelect={handleSelectThread}
-        onCreate={handleCreateThread}
-        onPin={handleTogglePin}
-        onDelete={handleDeleteThread}
-        isMobile={isMobile}
-        open={threadsOpen}
-        onClose={() => setThreadsOpen(false)}
-      />
+      {isMobile ? (
+        <ThreadList
+          threads={threads}
+          activeId={activeThreadId}
+          agents={agents}
+          onSelect={handleSelectThread}
+          onCreate={handleCreateThread}
+          onPin={handleTogglePin}
+          onDelete={handleDeleteThread}
+          isMobile={true}
+          open={threadsOpen}
+          onClose={() => setThreadsOpen(false)}
+        />
+      ) : (
+        <div style={sidebarWrapStyle}>
+          <ThreadList
+            threads={threads}
+            activeId={activeThreadId}
+            agents={agents}
+            onSelect={handleSelectThread}
+            onCreate={handleCreateThread}
+            onPin={handleTogglePin}
+            onDelete={handleDeleteThread}
+            collapsed={sidebarCollapsed}
+            onCollapse={() => setSidebarCollapsed((v) => !v)}
+          />
+          <div style={sidebarCoreWrapStyle(sidebarCollapsed)}>
+            <JarvisCore mode={coreMode} size={sidebarCollapsed ? 44 : 52} />
+            {!sidebarCollapsed && (
+              <div style={sidebarCoreStatusStyle}>
+                <span style={sidebarCoreLabel(coreStatus.color)}>
+                  {coreStatus.label}
+                </span>
+                <span style={sidebarCoreHintStyle}>{coreHint}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       <section style={mainStyle}>
         <style>{HUD_KEYFRAMES}</style>
@@ -1758,15 +1793,6 @@ export default function ChatPage() {
             />
           ) : (
           <div style={messageListStyle}>
-            <div style={dockedCoreStyle}>
-              <JarvisCore mode={coreMode} size={88} />
-              <div style={dockedStatusWrapStyle}>
-                <span style={dockedStatusLabelStyle(coreStatus.color)}>
-                  {coreStatus.label}
-                </span>
-                <span style={dockedHintStyle}>{coreHint}</span>
-              </div>
-            </div>
             {messages
               .filter((m) => {
                 if (m.role === "tool_use" || m.role === "tool_result") {
@@ -2299,49 +2325,62 @@ const messageListStyle: CSSProperties = {
   margin: "0 auto",
 };
 
-// Compact always-on core docked at the top of the timeline. Sticky so
-// it keeps reacting (pensando/falando/ouvindo) while messages scroll
-// underneath it.
-const dockedCoreStyle: CSSProperties = {
-  position: "sticky",
-  top: 0,
-  zIndex: 5,
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  gap: 14,
-  padding: "6px 0 2px",
-  pointerEvents: "none",
-  background:
-    "radial-gradient(ellipse 55% 100% at 50% 0%, rgba(7, 11, 18, 0.92), transparent)",
-};
+// ---- sidebar wrapper (desktop only) anchors ThreadList + JarvisCore panel --
 
-const dockedStatusWrapStyle: CSSProperties = {
+const sidebarWrapStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
-  gap: 3,
-  maxWidth: 360,
+  height: "100%",
 };
 
-function dockedStatusLabelStyle(color: string): CSSProperties {
+function sidebarCoreWrapStyle(collapsed: boolean): CSSProperties {
   return {
-    fontFamily: "var(--font-mono)",
-    fontSize: 12,
-    fontWeight: 700,
-    letterSpacing: 3,
-    color,
-    animation: "jarvis-status-glow 2.4s ease-in-out infinite",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: collapsed ? 0 : 6,
+    padding: collapsed ? "10px 0" : "12px 8px",
+    borderTop: "1px solid rgba(34, 211, 238, 0.10)",
+    borderRight: "1px solid var(--border)",
+    background: "rgba(7, 11, 18, 0.80)",
+    flexShrink: 0,
+    minHeight: collapsed ? 64 : 90,
   };
 }
 
-const dockedHintStyle: CSSProperties = {
-  fontSize: 10,
+const sidebarCoreStatusStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  gap: 3,
+  width: "100%",
+  padding: "0 8px",
+  overflow: "hidden",
+};
+
+function sidebarCoreLabel(color: string): CSSProperties {
+  return {
+    fontFamily: "var(--font-mono)",
+    fontSize: 10,
+    fontWeight: 700,
+    letterSpacing: 2,
+    color,
+    animation: "jarvis-status-glow 2.4s ease-in-out infinite",
+    textAlign: "center",
+  };
+}
+
+const sidebarCoreHintStyle: CSSProperties = {
+  fontSize: 9,
   color: "var(--text-muted)",
   fontFamily: "var(--font-mono)",
-  letterSpacing: 0.4,
+  letterSpacing: 0.3,
   overflow: "hidden",
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
+  width: "100%",
+  textAlign: "center",
 };
 
 // ---- full-size stage (empty conversation) ---------------------------------

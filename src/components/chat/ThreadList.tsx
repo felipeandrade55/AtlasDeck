@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, type CSSProperties } from "react";
-import { MessageSquare, Pin, Plus, Search, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, MessageSquare, Pin, Plus, Search, Trash2 } from "lucide-react";
 import type { ChatThread, AgentSummary } from "./types";
 
 interface ThreadListProps {
@@ -16,6 +16,9 @@ interface ThreadListProps {
   isMobile?: boolean;
   open?: boolean;
   onClose?: () => void;
+  /** Desktop only: render as narrow icon rail instead of full panel. */
+  collapsed?: boolean;
+  onCollapse?: () => void;
 }
 
 export function ThreadList({
@@ -29,6 +32,8 @@ export function ThreadList({
   isMobile = false,
   open = false,
   onClose,
+  collapsed = false,
+  onCollapse,
 }: ThreadListProps) {
   const [query, setQuery] = useState("");
 
@@ -54,6 +59,54 @@ export function ThreadList({
     return threads.filter((t) => t.title.toLowerCase().includes(q));
   }, [threads, query]);
 
+  // Desktop collapsed: render a narrow 52px icon rail
+  if (!isMobile && collapsed) {
+    return (
+      <aside style={collapsedContainerStyle}>
+        <button
+          type="button"
+          onClick={onCollapse}
+          title="Expandir sidebar"
+          style={collapsedIconBtnStyle}
+        >
+          <ChevronRight size={16} />
+        </button>
+        <button
+          type="button"
+          onClick={handleCreate}
+          title="Nova conversa"
+          style={collapsedIconBtnStyle}
+        >
+          <Plus size={16} />
+        </button>
+        <div style={collapsedListStyle}>
+          {threads.slice(0, 24).map((thread) => {
+            const isActive = thread.id === activeId;
+            const agent = agentById.get(thread.agent_id);
+            return (
+              <div
+                key={thread.id}
+                role="button"
+                tabIndex={0}
+                title={thread.title}
+                onClick={() => handleSelect(thread.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    handleSelect(thread.id);
+                  }
+                }}
+                style={collapsedThreadDotStyle(isActive)}
+              >
+                {agent?.emoji ?? thread.title.charAt(0).toUpperCase()}
+              </div>
+            );
+          })}
+        </div>
+      </aside>
+    );
+  }
+
   const aside = (
     <aside style={isMobile ? mobileContainerStyle(open) : containerStyle}>
       <div style={headerStyle}>
@@ -61,6 +114,16 @@ export function ThreadList({
           <Plus size={16} />
           Nova conversa
         </button>
+        {!isMobile && onCollapse && (
+          <button
+            type="button"
+            onClick={onCollapse}
+            title="Colapsar sidebar"
+            style={collapseToggleBtnStyle}
+          >
+            <ChevronLeft size={16} />
+          </button>
+        )}
       </div>
 
       <div style={searchWrapStyle}>
@@ -192,7 +255,8 @@ const containerStyle: CSSProperties = {
   flexDirection: "column",
   borderRight: "1px solid var(--border)",
   background: "var(--bg)",
-  height: "100%",
+  flex: 1,
+  minHeight: 0,
 };
 
 function mobileContainerStyle(open: boolean): CSSProperties {
@@ -215,10 +279,13 @@ function mobileContainerStyle(open: boolean): CSSProperties {
 const headerStyle: CSSProperties = {
   padding: 12,
   borderBottom: "1px solid var(--border)",
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
 };
 
 const newButtonStyle: CSSProperties = {
-  width: "100%",
+  flex: 1,
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
@@ -231,6 +298,77 @@ const newButtonStyle: CSSProperties = {
   cursor: "pointer",
   fontWeight: 500,
 };
+
+const collapseToggleBtnStyle: CSSProperties = {
+  flexShrink: 0,
+  width: 30,
+  height: 30,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  borderRadius: 6,
+  background: "transparent",
+  border: "1px solid var(--border)",
+  color: "var(--text-muted)",
+  cursor: "pointer",
+};
+
+const collapsedContainerStyle: CSSProperties = {
+  width: 52,
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  gap: 4,
+  paddingTop: 8,
+  borderRight: "1px solid var(--border)",
+  background: "var(--bg)",
+  flex: 1,
+  minHeight: 0,
+  overflow: "hidden",
+};
+
+const collapsedIconBtnStyle: CSSProperties = {
+  width: 36,
+  height: 36,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  borderRadius: 8,
+  background: "transparent",
+  border: "1px solid var(--border)",
+  color: "var(--text-muted)",
+  cursor: "pointer",
+  flexShrink: 0,
+};
+
+const collapsedListStyle: CSSProperties = {
+  flex: 1,
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  gap: 4,
+  overflowY: "auto",
+  overflowX: "hidden",
+  paddingBottom: 8,
+  width: "100%",
+};
+
+function collapsedThreadDotStyle(active: boolean): CSSProperties {
+  return {
+    width: 36,
+    height: 36,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 8,
+    background: active ? "var(--accent-soft)" : "transparent",
+    border: active ? "1px solid var(--accent)" : "1px solid transparent",
+    color: "var(--text-primary)",
+    fontSize: 14,
+    cursor: "pointer",
+    flexShrink: 0,
+  };
+}
 
 const searchWrapStyle: CSSProperties = {
   display: "flex",
