@@ -1407,6 +1407,17 @@ TOOLBOX_PORT="8099"
 ENV_FILE="$VPS_DIR/.env"
 HOST_UPLOAD_DIR="$VPS_DIR/data/pentest-uploads"
 
+# Instalação automática do Docker quando ausente — meta "tudo sobe sozinho" em
+# instalação nova. Tenta o script oficial (get.docker.com); soft-fail se não der.
+if ! command -v docker &>/dev/null; then
+  info "Docker não encontrado — tentando instalar automaticamente (get.docker.com)..."
+  if curl -fsSL https://get.docker.com 2>/dev/null | sudo sh >/tmp/docker-install.log 2>&1; then
+    sudo systemctl enable --now docker >/dev/null 2>&1 || true
+  else
+    warn "Instalação automática do Docker falhou — veja /tmp/docker-install.log"
+  fi
+fi
+
 if ! command -v docker &>/dev/null; then
   warn "Docker não encontrado — toolbox de pentest não pode subir (o módulo Pentest fica indisponível até instalar Docker)."
   record "Pentest toolbox" "skip" "$(elapsed $T)"
@@ -1444,14 +1455,58 @@ else
          --memory 1g --cpus 1.0 --pids-limit 512 \
          -v "$HOST_UPLOAD_DIR":/uploads \
          "$TOOLBOX_IMAGE" >/dev/null; then
-      ok "Toolbox de pentest no ar em 127.0.0.1:${TOOLBOX_PORT}"
-      # Se o token acabou de nascer, o app precisa recarregar o env pra enxergá-lo.
-      if [[ "$TOKEN_ADDED" == true ]] && command -v pm2 &>/dev/null; then
-        info "Recarregando env do app ($APP_NAME) para aplicar o token..."
-        pm2 restart "$APP_NAME" --update-env < /dev/null >/dev/null 2>&1 || true
+
+      # 3.1) Espera o /health responder — `docker run -d` retornar não garante
+      #      que o servidor subiu (pode crashar logo após). Faz polling ~20s.
+      TOOLBOX_UP=false
+      for _i in $(seq 1 20); do
+        if curl -sf -m 3 "http://127.0.0.1:${TOOLBOX_PORT}/health" >/dev/null 2>&1; then
+          TOOLBOX_UP=true; break
+        fi
+        sleep 1
+      done
+
+      if [[ "$TOOLBOX_UP" != true ]]; then
+        warn "Container subiu mas /health não respondeu — veja 'docker logs $TOOLBOX_CONTAINER'"
+        docker logs --tail 20 "$TOOLBOX_CONTAINER" 2>&1 | sed 's/^/    /' || true
+        record "Pentest toolbox" "fail" "$(elapsed $T)"
+        phase_status "pentest-toolbox" "fail" "$(elapsed $T)" "health check failed"
+      else
+        ok "Toolbox de pentest no ar em 127.0.0.1:${TOOLBOX_PORT}"
+
+        # 3.2) Sincroniza o token DO APP com o do container. Causa nº1 de "tudo
+        #      falhou com 401": o processo Next em execução carrega um token
+        #      antigo (do pm2/env) que sombreia o .env. Detectamos divergência
+        #      lendo o env do processo vivo e só então reiniciamos — exportando
+        #      o token no shell, pois `--update-env` lê o ambiente do shell, não
+        #      o arquivo .env.
+        if command -v pm2 &>/dev/null; then
+          APP_PID=$(pm2 pid "$APP_NAME" 2>/dev/null | head -1)
+          LIVE_TOKEN=""
+          if [[ -n "$APP_PID" && -r "/proc/$APP_PID/environ" ]]; then
+            LIVE_TOKEN=$(tr '\0' '\n' < "/proc/$APP_PID/environ" 2>/dev/null | grep '^PENTEST_TOOLBOX_TOKEN=' | cut -d= -f2-)
+          fi
+          if [[ "$LIVE_TOKEN" != "$TOOLBOX_TOKEN" ]]; then
+            info "Token do app desatualizado — sincronizando env e reiniciando $APP_NAME..."
+            export PENTEST_TOOLBOX_TOKEN="$TOOLBOX_TOKEN"
+            export PENTEST_TOOLBOX_URL="http://127.0.0.1:${TOOLBOX_PORT}"
+            pm2 restart "$APP_NAME" --update-env < /dev/null >/dev/null 2>&1 || true
+          fi
+        fi
+
+        # 3.3) Self-test de autenticação: confirma que um /run autenticado NÃO
+        #      volta 401. Pega regressões de token/auth antes do usuário ver.
+        AUTH_OK=$(curl -s -m 8 -X POST "http://127.0.0.1:${TOOLBOX_PORT}/run" \
+            -H "Authorization: Bearer ${TOOLBOX_TOKEN}" -H "Content-Type: application/json" \
+            -d '{"tool":"whois","bin":"whois","args":["example.com"],"timeoutMs":5000}' 2>/dev/null \
+            | grep -c 'nao autorizado' || true)
+        if [[ "$AUTH_OK" != "0" ]]; then
+          warn "Self-test do toolbox retornou 401 — token app↔container divergente."
+        fi
+
+        record "Pentest toolbox" "ok" "$(elapsed $T)"
+        phase_status "pentest-toolbox" "ok" "$(elapsed $T)"
       fi
-      record "Pentest toolbox" "ok" "$(elapsed $T)"
-      phase_status "pentest-toolbox" "ok" "$(elapsed $T)"
     else
       warn "Falha ao subir o container do toolbox — veja 'docker logs $TOOLBOX_CONTAINER'"
       record "Pentest toolbox" "fail" "$(elapsed $T)"
