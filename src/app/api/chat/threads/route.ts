@@ -24,6 +24,10 @@ export async function GET(req: NextRequest) {
     pinned: pinnedParam === null ? undefined : pinnedParam === "1" || pinnedParam === "true",
     limit: Number.isFinite(limit) ? limit : 100,
     offset: Number.isFinite(offset) ? offset : 0,
+    // "worker" threads are delegated task executions — they live on the
+    // missions/kanban board, not the chat sidebar. Hiding them keeps one card
+    // per actual user conversation.
+    excludeSources: ["worker"],
   });
 
   return NextResponse.json({

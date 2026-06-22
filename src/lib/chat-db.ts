@@ -297,6 +297,9 @@ export interface ListThreadsOptions {
   limit?: number;
   offset?: number;
   search?: string;
+  /** Sources to omit from the result (e.g. "worker" task-execution threads
+   * that belong on the missions board, not the chat sidebar). */
+  excludeSources?: ChatSource[];
 }
 
 export function listThreads(opts: ListThreadsOptions = {}): ThreadRow[] {
@@ -322,6 +325,10 @@ export function listThreads(opts: ListThreadsOptions = {}): ThreadRow[] {
     where.push("(t.title LIKE ? OR EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = t.id AND m.content LIKE ?))");
     const term = `%${opts.search}%`;
     params.push(term, term);
+  }
+  if (opts.excludeSources && opts.excludeSources.length > 0) {
+    where.push(`t.source NOT IN (${opts.excludeSources.map(() => "?").join(", ")})`);
+    params.push(...opts.excludeSources);
   }
 
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
