@@ -15,6 +15,7 @@ import { promises as fs } from "fs";
 import fsSync from "fs";
 import path from "path";
 import { OPENCLAW_DIR } from "@/lib/paths";
+import { resolveWorkspaceLikeGateway } from "@/lib/openclaw-config";
 import { getAllAgentMeta } from "@/lib/agents-meta";
 import { listTasks } from "@/lib/tasks-db";
 import { getPreferencesForPrompt } from "@/lib/preference-model";
@@ -51,11 +52,15 @@ function resolveWorkspaceAbsPath(workspace: string): string {
   if (!workspace) return "";
   if (path.isAbsolute(workspace)) return workspace;
 
-  // Production: OpenClaw dir exists and we can write — use it.
+  // Production: OpenClaw dir exists and we can write — resolve the SAME way the
+  // gateway does (HOME-based for relative paths), NOT against OPENCLAW_DIR.
+  // Resolving against OPENCLAW_DIR landed injections inside AtlasDeck's own app
+  // folder, which the agent never reads (the split-brain bug). See
+  // resolveWorkspaceLikeGateway.
   if (fsSync.existsSync(OPENCLAW_DIR)) {
     try {
       fsSync.accessSync(OPENCLAW_DIR, fsSync.constants.W_OK);
-      return path.join(OPENCLAW_DIR, workspace);
+      return resolveWorkspaceLikeGateway(workspace);
     } catch {
       // fall through
     }

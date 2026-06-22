@@ -1,4 +1,5 @@
 import fs from "fs";
+import os from "os";
 import path from "path";
 
 const FALLBACK_AGENTS_CONFIG_PATH = path.join(process.cwd(), "data", "openclaw-fallback.json");
@@ -214,6 +215,35 @@ export function resolveOpenClawAgentsConfigPath(): { path: string; isFallback: b
  * Falls back to <openclawDir>/<workspace> (relative path resolution)
  * to match how the daemon itself interprets these values.
  */
+/**
+ * Resolve an agent `workspace` value to an absolute path **the same way the
+ * OpenClaw gateway does**.
+ *
+ * This is the crux of writing to the file the agent actually reads. The gateway
+ * runs with cwd/HOME = the user home (e.g. `/root`) and resolves a RELATIVE
+ * workspace (`./workspace/mission-control`) against HOME — NOT against the
+ * OpenClaw state dir (`/root/.openclaw`). Resolving against the state dir lands
+ * inside AtlasDeck's OWN app folder (`<state>/workspace/mission-control`), which
+ * is a different directory the agent never reads — the historical "split-brain"
+ * where injected MEMORY.md never reached the agent.
+ *
+ * We mirror the gateway: absolute → as-is; relative → prefer the HOME-based
+ * path, fall back to the state-dir path only if the home-based one doesn't
+ * exist, and default to the home-based rule otherwise.
+ */
+export function resolveWorkspaceLikeGateway(workspace: string): string {
+  if (path.isAbsolute(workspace)) return workspace;
+  const homeBased = path.resolve(os.homedir(), workspace);
+  const dirBased = path.resolve(getOpenClawDir(), workspace);
+  try {
+    if (fs.existsSync(homeBased)) return homeBased;
+    if (fs.existsSync(dirBased)) return dirBased;
+  } catch {
+    /* fall through to the gateway's default rule */
+  }
+  return homeBased;
+}
+
 export function getAgentWorkspacePath(agentId: string): string | null {
   try {
     const openclawDir = getOpenClawDir();
@@ -226,12 +256,9 @@ export function getAgentWorkspacePath(agentId: string): string | null {
     if (!Array.isArray(list)) return null;
     const entry = list.find((a) => a?.id === agentId);
     if (!entry?.workspace || typeof entry.workspace !== "string") return null;
-    // OpenClaw treats workspace as a path relative to openclawDir when
-    // it starts with "./" or is a bare segment. Absolute paths are kept
-    // as-is.
-    return path.isAbsolute(entry.workspace)
-      ? entry.workspace
-      : path.resolve(openclawDir, entry.workspace);
+    // Resolve like the gateway (HOME-based for relative paths), NOT against
+    // openclawDir — see resolveWorkspaceLikeGateway.
+    return resolveWorkspaceLikeGateway(entry.workspace);
   } catch {
     return null;
   }
