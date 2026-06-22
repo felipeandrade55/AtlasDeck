@@ -54,8 +54,54 @@ function writeAll(data: KeyMap) {
 }
 
 export function getProviderKey(provider: ProviderId): string | null {
+  // 1. AtlasDeck's own store (set via Settings → Provedores)
   const entry = readAll()[provider];
-  return entry?.apiKey?.trim() || null;
+  if (entry?.apiKey?.trim()) return entry.apiKey.trim();
+
+  // 2. Process environment (PM2 env, Docker, systemd EnvironmentFile)
+  const envVar = PROVIDER_ENV_VAR[provider];
+  const envVal = process.env[envVar]?.trim();
+  if (envVal) return envVal;
+
+  // 3. ~/.openclaw/.env (where OpenClaw stores provider credentials, including
+  //    Codex OAuth — the key is written there when credentials are configured
+  //    via the OpenClaw CLI/gateway without going through AtlasDeck settings)
+  try {
+    const openclawDir = getOpenClawDir();
+    const envPath = path.join(openclawDir, ".env");
+    const content = fs.readFileSync(envPath, "utf-8");
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith(envVar + "=")) {
+        const val = trimmed.slice(envVar.length + 1).trim();
+        if (val) return val;
+      }
+    }
+  } catch {
+    // openclaw dir or .env not present — ignore
+  }
+
+  // 4. ~/.openclaw/openclaw.json — providers section (written by Codex OAuth flow)
+  //    Tries common key paths: providers.<id>.apiKey, providers.<id>.key, providers.<id>.token
+  try {
+    const openclawDir = getOpenClawDir();
+    const cfgPath = path.join(openclawDir, "openclaw.json");
+    const raw = fs.readFileSync(cfgPath, "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const providerSection = (parsed.providers as Record<string, Record<string, string>> | undefined)?.[provider];
+    if (providerSection && typeof providerSection === "object") {
+      const key =
+        providerSection.apiKey?.trim() ||
+        providerSection.key?.trim() ||
+        providerSection.token?.trim() ||
+        providerSection.accessToken?.trim();
+      if (key) return key;
+    }
+  } catch {
+    // openclaw.json not present or doesn't have providers section — ignore
+  }
+
+  return null;
 }
 
 export function setProviderKey(provider: ProviderId, apiKey: string): void {
