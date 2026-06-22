@@ -14,6 +14,12 @@ function freshState() {
     pendingUsage: null,
     historyReqId: null,
     historyRetried: false,
+    observedSessionKey: null,
+    agentRunActive: false,
+    agentRunEnded: false,
+    finalized: false,
+    historyAttempts: 0,
+    lastHistoryAttemptAt: 0,
   } as Parameters<typeof translateMessage>[1];
 }
 
@@ -184,6 +190,93 @@ for (const v of replyVariants) {
       failures++;
       console.log(`FAIL  history: ${s.label} -> "${got}" (esperado "${s.expect}")`);
     }
+  }
+}
+
+// 6) NEW trace (2026-06-22): premature `chat` final arrives while the codex
+//    run only reached `startup` (DIFFERENT runId). It must NOT be treated as
+//    terminal — no done, no park — so the socket stays open for the real
+//    reply. Then a late agentMessage delivers the text, and the codex run's
+//    `lifecycle` end closes the turn cleanly.
+{
+  const state = freshState();
+  const st = state as unknown as {
+    pendingEmptyFinalAt: number;
+    observedSessionKey: string | null;
+    agentRunActive: boolean;
+    agentRunEnded: boolean;
+    tokensEmitted: boolean;
+  };
+
+  // Codex run starts up (own runId), then a premature empty `chat` final
+  // with a DIFFERENT runId — exactly the user's trace.
+  translateMessage(
+    { type: "event", event: "agent", payload: { runId: "52063dab", stream: "codex_app_server.lifecycle", data: { phase: "startup" }, sessionKey: SK, seq: 1 }, seq: 3 },
+    state,
+  );
+  const prematureFinal = translateMessage(
+    { type: "event", event: "chat", payload: { runId: "10a1cd36", sessionKey: SK, seq: 1, state: "final" }, seq: 4 },
+    state,
+  );
+  const doneOnPremature = prematureFinal.some((e) => e.type === "done");
+
+  if (
+    !doneOnPremature &&
+    st.pendingEmptyFinalAt === 0 &&
+    st.observedSessionKey === SK &&
+    st.agentRunActive &&
+    !st.agentRunEnded
+  ) {
+    console.log("PASS  premature chat final ignored (no done/park, agent-scoped key captured)");
+  } else {
+    failures++;
+    console.log(
+      `FAIL  premature final: done=${doneOnPremature} pending=${st.pendingEmptyFinalAt} ` +
+        `observedKey=${st.observedSessionKey} active=${st.agentRunActive} ended=${st.agentRunEnded}`,
+    );
+  }
+
+  // Late agentMessage with the real reply must still emit as a token.
+  const lateReply = translateMessage(
+    { type: "event", event: "agent", payload: { runId: "52063dab", stream: "codex_app_server.item", data: { phase: "completed", itemId: "msg_z", type: "agentMessage", text: "Na GTX 1080 (8GB) você roda modelos quantizados..." }, sessionKey: SK } },
+    state,
+  );
+  const lateText = lateReply.filter((e) => e.type === "token").map((e) => (e as { delta: string }).delta).join("");
+
+  // The codex run's lifecycle end closes the turn (done), now that text exists.
+  const endEvents = translateMessage(
+    { type: "event", event: "agent", payload: { runId: "52063dab", stream: "lifecycle", data: { phase: "end", endedAt: 9 }, sessionKey: SK } },
+    state,
+  );
+  const doneOnEnd = endEvents.some((e) => e.type === "done");
+
+  if (lateText.includes("GTX 1080") && doneOnEnd && st.agentRunEnded) {
+    console.log(`PASS  late agentMessage emitted + lifecycle end closes turn -> "${lateText.slice(0, 40)}"`);
+  } else {
+    failures++;
+    console.log(`FAIL  late reply: text="${lateText}" doneOnEnd=${doneOnEnd} ended=${st.agentRunEnded}`);
+  }
+}
+
+// 7) Codex run that ends WITHOUT any text must PARK for chat.history
+//    recovery (not emit done), and a done must NOT fire on lifecycle end.
+{
+  const state = freshState();
+  const st = state as unknown as { pendingEmptyFinalAt: number; tokensEmitted: boolean };
+  translateMessage(
+    { type: "event", event: "agent", payload: { runId: RUN, stream: "codex_app_server.lifecycle", data: { phase: "startup" }, sessionKey: SK }, seq: 3 },
+    state,
+  );
+  const endEvents = translateMessage(
+    { type: "event", event: "agent", payload: { runId: RUN, stream: "lifecycle", data: { phase: "end", endedAt: 2 }, sessionKey: SK } },
+    state,
+  );
+  const doneOnEnd = endEvents.some((e) => e.type === "done");
+  if (!doneOnEnd && !st.tokensEmitted && st.pendingEmptyFinalAt > 0) {
+    console.log("PASS  empty run end parks for chat.history recovery (no premature done)");
+  } else {
+    failures++;
+    console.log(`FAIL  empty run end: done=${doneOnEnd} pending=${st.pendingEmptyFinalAt} tokens=${st.tokensEmitted}`);
   }
 }
 

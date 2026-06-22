@@ -172,7 +172,44 @@ interface RunnerState {
   pendingUsage: WsChatEvent | null;
   historyReqId: string | null;
   historyRetried: boolean;
+  /**
+   * The agent-scoped sessionKey the gateway actually stores the thread
+   * under — observed on every `event` frame as e.g.
+   * `agent:main:web:atlasdeck`. We send `chat.send` with the SHORT alias
+   * (`web:atlasdeck`), but `chat.history` must query the FULL key or it
+   * resolves to an empty/foreign session and recovery always fails. Null
+   * until the first event frame reveals it; then it wins over input.sessionKey.
+   */
+  observedSessionKey: string | null;
+  /**
+   * Codex app-server run lifecycle tracking. A premature `chat` `final`
+   * (a DIFFERENT runId from the codex run) can arrive while the codex run
+   * is still in `startup` — long before it emits the `agentMessage` item.
+   * We must NOT treat that `chat` final as the end of the turn: the
+   * authoritative end is the codex run's own `lifecycle` end. These two
+   * flags let the final/empty handler decide between "keep listening" and
+   * "the run really ended without text → recover/diagnose".
+   */
+  agentRunActive: boolean;
+  agentRunEnded: boolean;
+  /** Whether we've already emitted a terminal `done` for this turn. */
+  finalized: boolean;
+  /**
+   * chat.history recovery polling. The codex run persists its reply to
+   * the thread a beat AFTER the run ends, so a single immediate pull
+   * often races and comes back empty. We poll a few times before giving
+   * up. `historyAttempts` counts pulls; `lastHistoryAttemptAt` paces them.
+   */
+  historyAttempts: number;
+  lastHistoryAttemptAt: number;
 }
+
+// chat.history recovery: how many pulls before surfacing the diagnostic.
+// More while the run might still be writing the thread, fewer once it
+// has demonstrably ended.
+const HISTORY_MAX_ATTEMPTS_RUN_ACTIVE = 8;
+const HISTORY_MAX_ATTEMPTS_RUN_ENDED = 3;
+const HISTORY_RETRY_PACING_MS = 1500;
 
 const FRAME_LOG_MAX = 80;
 // Per-frame budget generous enough that a reply-bearing frame (text +
@@ -827,6 +864,10 @@ export function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[
           filteredEvents.push({ type: "token", delta: suffix });
           state.emittedText = text;
           state.tokensEmitted = true;
+          // Real text arrived (possibly after a premature empty final) —
+          // cancel any pending chat.history recovery so we don't overwrite
+          // the live reply with a stale/empty pull.
+          state.pendingEmptyFinalAt = 0;
         }
         continue;
       }
@@ -834,6 +875,7 @@ export function translateMessage(raw: unknown, state: RunnerState): WsChatEvent[
       filteredEvents.push({ type: "token", delta: text });
       state.emittedText = current + text;
       state.tokensEmitted = true;
+      state.pendingEmptyFinalAt = 0;
     } else {
       filteredEvents.push(evt);
     }
@@ -940,6 +982,59 @@ function translateMessageRaw(raw: unknown, state: RunnerState): WsChatEvent[] {
       // frame as a delta-shaped chunk and try the Codex-aware
       // extractor.
       if (eventName === "agent") {
+        // Capture the agent-scoped sessionKey the gateway stores the
+        // thread under (e.g. "agent:main:web:atlasdeck"). chat.history
+        // MUST use this, not the "web:atlasdeck" alias we sent.
+        if (
+          typeof payload.sessionKey === "string" &&
+          payload.sessionKey.includes(":") &&
+          payload.sessionKey !== state.observedSessionKey
+        ) {
+          state.observedSessionKey = payload.sessionKey;
+        }
+
+        // Track the codex run lifecycle. `codex_app_server.*` and the
+        // plain `lifecycle` stream both signal an active run; the plain
+        // `lifecycle` end (phase "end" / data.endedAt) is the AUTHORITATIVE
+        // end of the turn for codex app-server gateways — NOT the `chat`
+        // final, which can fire prematurely with a different runId.
+        if (stream === "lifecycle" || stream.startsWith("codex_app_server")) {
+          state.agentRunActive = true;
+        }
+        const lcData = isRecord(payload.data)
+          ? (payload.data as Record<string, unknown>)
+          : null;
+        const lcPhase =
+          lcData && typeof lcData.phase === "string" ? (lcData.phase as string) : "";
+        const isLifecycleEnd =
+          stream === "lifecycle" &&
+          (lcPhase === "end" || (lcData != null && lcData.endedAt != null));
+        if (isLifecycleEnd) {
+          state.agentRunEnded = true;
+          if (state.tokensEmitted) {
+            // Late `agentMessage` frames already delivered the reply after
+            // a premature empty `chat` final — close the turn cleanly.
+            if (!state.finalized) {
+              state.pendingEmptyFinalAt = 0;
+              state.finalized = true;
+              if (state.pendingUsage) {
+                events.push(state.pendingUsage);
+                state.pendingUsage = null;
+              }
+              events.push({
+                type: "done",
+                buffered: false,
+                routedViaTool: state.sawRoutingTool || undefined,
+              });
+            }
+          } else if (!state.pendingEmptyFinalAt && !state.finalized) {
+            // Run ended without any text on the socket → start chat.history
+            // recovery (the runner loop polls; see maybeRequestHistory).
+            state.pendingEmptyFinalAt = Date.now();
+          }
+          return events;
+        }
+
         if (!stream || isMetaAgentStream(stream)) {
           return events;
         }
@@ -1102,20 +1197,34 @@ function translateMessageRaw(raw: unknown, state: RunnerState): WsChatEvent[] {
             if (finalText) {
               events.push({ type: "token", delta: finalText });
               state.tokensEmitted = true;
+            } else if (state.agentRunActive && !state.agentRunEnded) {
+              // PREMATURE `chat` final. The codex run is still in flight
+              // (it only reached `startup`/`turn_starting`) and a `chat`
+              // final with a DIFFERENT runId fired early. Treat it as
+              // NON-terminal: do NOT park, do NOT request history, do NOT
+              // close the socket. The authoritative end is the codex run's
+              // own `lifecycle` end (handled in the agent branch), and the
+              // real reply arrives in later `codex_app_server.item` frames.
+              // Park the usage so we don't lose it if recovery kicks in later.
+              if (usageEvent) state.pendingUsage = usageEvent;
+              return events;
             } else {
-              // Gateway closed the turn without ever sending reply text.
-              // OpenClaw 2026.5.x + Codex app-server emits item events as
-              // pure LIFECYCLE (agentMessage started/completed, no text
-              // field) — the reply text simply never crosses the WS. Do
-              // NOT give up yet: park the final and ask the gateway for
-              // the session history; the runner loop sends chat.history
-              // and either emits the recovered reply or the diagnostic
-              // (see resolveEmptyFinal / buildEmptyReplyDiagnostic).
+              // Gateway closed the turn without ever sending reply text AND
+              // no codex run is in flight (buffered/legacy build, or the run
+              // already ended empty). OpenClaw 2026.5.x + Codex app-server
+              // emits item events as pure LIFECYCLE (agentMessage
+              // started/completed, no text field) — the reply text simply
+              // never crosses the WS. Do NOT give up yet: park the final and
+              // ask the gateway for the session history; the runner loop
+              // polls chat.history and either emits the recovered reply or
+              // the diagnostic (see maybeRequestHistory / buildEmptyReplyDiagnostic).
               state.pendingEmptyFinalAt = Date.now();
               state.pendingUsage = usageEvent;
               return events;
             }
           }
+          if (state.finalized) break;
+          state.finalized = true;
           if (usageEvent) events.push(usageEvent);
           events.push({
             type: "done",
@@ -1340,6 +1449,12 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
     pendingUsage: null,
     historyReqId: null,
     historyRetried: false,
+    observedSessionKey: null,
+    agentRunActive: false,
+    agentRunEnded: false,
+    finalized: false,
+    historyAttempts: 0,
+    lastHistoryAttemptAt: 0,
   };
 
   // Timing instrumentation — each phase records its delta from t0.
@@ -1385,6 +1500,48 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
     chatSentAt = Date.now();
     emitTiming("chat-send", chatSentAt);
     send(buildChatSendRequest(input));
+  };
+
+  // Drives the chat.history recovery loop. Called both on each inbound
+  // frame and on the generator's idle tick so recovery makes progress even
+  // when the gateway has gone silent. Sends one chat.history pull at a
+  // time (paced), querying the AGENT-SCOPED sessionKey observed on the
+  // event frames — the "web:atlasdeck" alias we sent in chat.send resolves
+  // to an empty session on history. When pulls are exhausted, surfaces the
+  // diagnostic so the turn never hangs.
+  const maybeRequestHistory = () => {
+    if (closed || state.finalized) return;
+    if (!state.pendingEmptyFinalAt || state.historyReqId) return;
+    const now = Date.now();
+    if (state.lastHistoryAttemptAt && now - state.lastHistoryAttemptAt < HISTORY_RETRY_PACING_MS) {
+      return;
+    }
+    const maxAttempts = state.agentRunEnded
+      ? HISTORY_MAX_ATTEMPTS_RUN_ENDED
+      : HISTORY_MAX_ATTEMPTS_RUN_ACTIVE;
+    if (state.historyAttempts >= maxAttempts) {
+      for (const evt of buildEmptyReplyDiagnostic(state)) queue.push(evt);
+      state.pendingEmptyFinalAt = 0;
+      state.finalized = true;
+      wake();
+      return;
+    }
+    const key = state.observedSessionKey ?? input.sessionKey;
+    const reqId = randomUUID();
+    state.historyReqId = reqId;
+    state.historyAttempts += 1;
+    state.lastHistoryAttemptAt = now;
+    if (debug) {
+      console.log(
+        `[ws] chat.history attempt ${state.historyAttempts}/${maxAttempts} key=${key}`,
+      );
+    }
+    send({
+      type: "req",
+      id: reqId,
+      method: "chat.history",
+      params: { sessionKey: key, limit: 30 },
+    });
   };
 
   ws.on("open", () => {
@@ -1446,6 +1603,7 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
           if (debug) console.log("[ws] chat.history recovery OK:", recovered.slice(0, 80));
           state.pendingEmptyFinalAt = 0;
           state.tokensEmitted = true;
+          state.finalized = true;
           queue.push({ type: "token", delta: recovered });
           if (state.pendingUsage) queue.push(state.pendingUsage);
           queue.push({
@@ -1456,9 +1614,12 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
           wake();
           return;
         }
-        queue.push(...buildEmptyReplyDiagnostic(state));
-        state.pendingEmptyFinalAt = 0;
-        wake();
+        // Empty pull — the run may still be writing the thread. Don't give
+        // up here; leave pendingEmptyFinalAt set so maybeRequestHistory
+        // re-polls (paced) and surfaces the diagnostic only once attempts
+        // are exhausted.
+        if (debug) console.log("[ws] chat.history empty, will re-poll");
+        maybeRequestHistory();
         return;
       }
       const err = isRecord(parsed.error) ? (parsed.error as Record<string, unknown>) : {};
@@ -1471,32 +1632,23 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
           type: "req",
           id: retryId,
           method: "chat.history",
-          params: { sessionKey: input.sessionKey },
+          params: { sessionKey: state.observedSessionKey ?? input.sessionKey },
         });
         return;
       }
       if (debug) console.log("[ws] chat.history recovery failed:", errMsg);
       queue.push(...buildEmptyReplyDiagnostic(state));
       state.pendingEmptyFinalAt = 0;
+      state.finalized = true;
       wake();
       return;
     }
 
     const events = translateMessage(parsed, state);
 
-    // Empty final just parked by the translate step → kick off the
-    // chat.history recovery request (one in flight at a time).
-    if (state.pendingEmptyFinalAt && !state.historyReqId && !closed) {
-      const reqId = randomUUID();
-      state.historyReqId = reqId;
-      if (debug) console.log("[ws] final without text — requesting chat.history");
-      send({
-        type: "req",
-        id: reqId,
-        method: "chat.history",
-        params: { sessionKey: input.sessionKey, limit: 30 },
-      });
-    }
+    // Empty final / run-ended-without-text parked by the translate step →
+    // drive the chat.history recovery loop (paced, agent-scoped key).
+    maybeRequestHistory();
     if (events.length > 0) {
       const sawHelloOk = events.some((e) => e.type === "session");
       if (sawHelloOk && helloOkAt === 0) {
@@ -1607,18 +1759,34 @@ export async function* runOpenClawWsChat(input: WsChatInput): AsyncGenerator<WsC
         } catch {}
         return;
       }
-      // chat.history recovery watchdog: the gateway never answered (or
-      // the socket dropped mid-recovery) — emit the diagnostic instead
-      // of hanging until the overall deadline.
+      // A codex run is in flight (premature `chat` final was ignored) but
+      // it has gone silent past a generous window without any text — kick
+      // off recovery so the user gets a real answer-or-diagnostic instead
+      // of a bare 2-min timeout.
       if (
-        state.pendingEmptyFinalAt &&
-        Date.now() - state.pendingEmptyFinalAt > 6_000
+        state.agentRunActive &&
+        !state.agentRunEnded &&
+        !state.tokensEmitted &&
+        !state.pendingEmptyFinalAt &&
+        !state.finalized &&
+        chatSentAt > 0 &&
+        Date.now() - chatSentAt > 60_000
       ) {
-        state.pendingEmptyFinalAt = 0;
-        state.historyReqId = null;
-        for (const evt of buildEmptyReplyDiagnostic(state)) queue.push(evt);
-        continue;
+        if (debug) console.log("[ws] codex run silent >60s — starting recovery");
+        state.pendingEmptyFinalAt = Date.now();
       }
+      // A chat.history pull was sent but the gateway never answered it —
+      // free the slot so the recovery loop can re-poll / give up.
+      if (
+        state.historyReqId &&
+        state.lastHistoryAttemptAt &&
+        Date.now() - state.lastHistoryAttemptAt > 4_000
+      ) {
+        state.historyReqId = null;
+      }
+      // Drive the paced chat.history recovery loop (emits the diagnostic
+      // itself once attempts are exhausted).
+      maybeRequestHistory();
       await new Promise<void>((resolve) => {
         resolveNext = resolve;
         setTimeout(resolve, 500);
