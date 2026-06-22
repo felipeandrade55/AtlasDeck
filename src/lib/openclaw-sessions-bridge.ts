@@ -21,6 +21,7 @@ import {
   appendMessage,
   createThread,
   deleteMessage,
+  deleteThread,
   getThreadBySource,
   listMessages,
   updateThread,
@@ -36,6 +37,15 @@ import { publishEvent } from "@/lib/live-events";
 // sub-agent runs already get their own cards from the task-worker, so we don't
 // want the watcher to double-count them when it later imports their sessions.
 const ORCHESTRATOR_IDS = new Set(["main", "jarvis"]);
+
+// AtlasDeck sends a `web:` sessionKey for every web/CLI chat ("web:atlasdeck"
+// or "web:<uuid>"); the gateway echoes that scope into the session prelude.
+// Telegram uses ":telegram:" and WhatsApp ":whatsapp:", so a `web:` channel
+// token is a reliable "this came from the AtlasDeck UI" marker. Matched only
+// against the prelude (first few KB) so a stray "web:" inside user message
+// text can't trip it. Requires a colon right after "web" so "webhook" etc.
+// don't match.
+const WEB_SESSION_MARKER = /(?:^|[:"'\s,{[])web:[a-z0-9]/i;
 
 // Heuristic: which Telegram/CLI turns are "real work" worth a kanban card.
 // Mirrors the chat-stream gate so "bom dia" / quick Q&A don't flood the board.
@@ -301,6 +311,23 @@ export function importOpenClawSessions(opts: ImportOptions = {}): ImportSummary 
       // (user sent the message via the web UI → OpenClaw gateway wrote a JSONL
       // file → watcher would create a ghost duplicate here).
       if (getThreadBySource("web", session.sessionId)) {
+        summary.skipped += 1;
+        continue;
+      }
+
+      // Skip ANY session that originated in the AtlasDeck web/CLI UI. The WS
+      // gateway names the JSONL with its OWN session id (it ignores the id we
+      // send in chat.send), so the filename-based check above misses these and
+      // the watcher imports a ghost duplicate. The conversation is already
+      // persisted as a `source:"web"` thread, so we must not import it. We
+      // detect origin the same way the telegram/whatsapp rotators do — the
+      // gateway embeds the sessionKey/channel scope in the session prelude;
+      // AtlasDeck always sends a `web:` sessionKey ("web:atlasdeck" or
+      // "web:<uuid>"). If a prior run already created a ghost import thread,
+      // delete it so the duplicate disappears on the next pass.
+      if (WEB_SESSION_MARKER.test(raw.slice(0, 4096))) {
+        const ghost = getThreadBySource("openclaw_import", session.sessionId);
+        if (ghost) deleteThread(ghost.id);
         summary.skipped += 1;
         continue;
       }
