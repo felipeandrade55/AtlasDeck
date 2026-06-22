@@ -28,6 +28,7 @@ import {
   updateThread,
   type UpdateThreadInput,
 } from "@/lib/chat-db";
+import { randomUUID } from "crypto";
 import { runOpenClawChat, type RunnerEvent } from "@/lib/openclaw-runner";
 import { summarizeChatTitle } from "@/lib/chat-title";
 import { logActivity, updateActivity } from "@/lib/activities-db";
@@ -518,12 +519,27 @@ export async function POST(req: NextRequest) {
       workspace: body.workspace ?? null,
       source: "web",
       title: deriveTitleFromPrompt(prompt),
+      // AtlasDeck OWNS this conversation's OpenClaw session id. We generate
+      // it up front and pass it to the gateway (chat.send sessionId / CLI
+      // --session-id), so the gateway names its JSONL file with the SAME id.
+      // The openclaw-watcher then dedups deterministically (getThreadBySource
+      // "web", id → skip) instead of importing a ghost duplicate. The WS path
+      // can't recover the gateway's own session id (it only sees a transient
+      // connId), so claiming it here is the only transport-agnostic fix.
+      source_session_id: randomUUID(),
     });
   } else {
     const patch: UpdateThreadInput = {};
     if (thread.title === "Nova conversa") patch.title = deriveTitleFromPrompt(prompt);
     if (thread.agent_id !== agentId) patch.agentId = agentId;
-    if (patch.title !== undefined || patch.agentId !== undefined) {
+    // Existing web thread that never got a session id (created via the
+    // frontend POST /threads, or pre-dating this change) — claim one now.
+    if (!thread.source_session_id) patch.source_session_id = randomUUID();
+    if (
+      patch.title !== undefined ||
+      patch.agentId !== undefined ||
+      patch.source_session_id !== undefined
+    ) {
       thread = updateThread(thread.id, patch) ?? thread;
     }
   }
@@ -931,15 +947,14 @@ export async function POST(req: NextRequest) {
             break;
           case "session":
             sessionId = evt.sessionId;
-            // Claim this OpenClaw session for the web thread IMMEDIATELY.
-            // The session event arrives at the start of the turn, while the
-            // gateway is still writing the JSONL file. The openclaw-watcher
-            // debounces FS changes ~800ms and then imports — its dedup looks
-            // for a web thread already bound to this session id. If we wait
-            // until the `finally` block (turn end) to bind it, the import can
-            // win the race and create a ghost `openclaw_import` thread for the
-            // same conversation. Binding here closes that window.
-            if (evt.sessionId && thread!.source_session_id !== evt.sessionId) {
+            // Only bind the reported session id when the thread doesn't
+            // already own one. On WS this event carries a transient `connId`
+            // (NOT the gateway's JSONL session id), so it must never overwrite
+            // the deterministic id we assigned at thread creation — doing so
+            // would re-open the duplicate-import race. This branch only fires
+            // for legacy threads that somehow reached the gateway without an
+            // id pre-assigned.
+            if (evt.sessionId && !thread!.source_session_id) {
               thread =
                 updateThread(thread!.id, {
                   source_session_id: evt.sessionId,

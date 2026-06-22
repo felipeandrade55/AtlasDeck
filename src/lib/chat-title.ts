@@ -22,9 +22,18 @@ export function summarizeChatTitle(raw: string): string {
 
   let s = collapsed;
 
-  // 1. leading greeting / vocative addressed to the assistant
-  s = s.replace(/^(ei|oi|olá|ola|hey|hello|opa|fala)\s+/i, "");
+  // 1. leading greeting / vocative addressed to the assistant. Multi-word
+  //    greetings ("bom dia", "boa tarde") come first, then single words, and
+  //    we allow a trailing comma/space so "bom dia, jarvis" fully unwinds.
+  s = s.replace(
+    /^(bom\s+dia|boa\s+tarde|boa\s+noite|e\s*aí|eaí|eai|ei|oi|olá|ola|hey|hello|hi|opa|fala|alô|alo)\b[\s,!:.\-–—]*/i,
+    "",
+  );
   s = s.replace(/^jarvis[\s,!:.\-–—]+/i, "").trim();
+  // A greeting may sit *after* the vocative too ("jarvis, bom dia, ...").
+  s = s
+    .replace(/^(bom\s+dia|boa\s+tarde|boa\s+noite)\b[\s,!:.\-–—]*/i, "")
+    .trim();
 
   // 2. leading imperative verb (optionally prefixed by "me")
   s = s
