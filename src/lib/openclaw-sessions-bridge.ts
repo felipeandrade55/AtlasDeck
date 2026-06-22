@@ -297,6 +297,14 @@ export function importOpenClawSessions(opts: ImportOptions = {}): ImportSummary 
       const raw = readFileSync(session.filePath, "utf8");
       const lines = raw.split(/\r?\n/);
 
+      // Skip sessions that are already being tracked by a live web thread
+      // (user sent the message via the web UI → OpenClaw gateway wrote a JSONL
+      // file → watcher would create a ghost duplicate here).
+      if (getThreadBySource("web", session.sessionId)) {
+        summary.skipped += 1;
+        continue;
+      }
+
       let thread = getThreadBySource("openclaw_import", session.sessionId);
       const existingMetaImport = thread?.metadata?.openclawImport as
         | { mtimeMs?: number; lineCount?: number }

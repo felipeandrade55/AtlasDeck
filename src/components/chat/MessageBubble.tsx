@@ -3,7 +3,7 @@
 import { useState, type CSSProperties } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Bot, ChevronDown, ChevronRight, User, Volume2, Wrench } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronRight, Copy, User, Volume2, Wrench } from "lucide-react";
 import type { ChatMessage, AgentSummary } from "./types";
 
 interface MessageBubbleProps {
@@ -15,6 +15,31 @@ interface MessageBubbleProps {
 
 export function MessageBubble({ message, agent, onSpeak, isSpeaking }: MessageBubbleProps) {
   const [collapsed, setCollapsed] = useState(message.role === "tool_use" || message.role === "tool_result");
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    const text = message.content ?? "";
+    if (!text) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        // Fallback para contextos não-seguros (http) onde a Clipboard API não existe.
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // silencioso: copiar é best-effort
+    }
+  };
 
   if (message.role === "tool_use" || message.role === "tool_result") {
     return (
@@ -74,6 +99,16 @@ export function MessageBubble({ message, agent, onSpeak, isSpeaking }: MessageBu
               title={isSpeaking ? "Falando…" : "Ouvir resposta"}
             >
               <Volume2 size={14} />
+            </button>
+          )}
+          {!isUser && message.content && !isStreaming && (
+            <button
+              type="button"
+              onClick={handleCopy}
+              style={ttsButtonStyle(copied)}
+              title={copied ? "Copiado!" : "Copiar resposta"}
+            >
+              {copied ? <Check size={14} /> : <Copy size={14} />}
             </button>
           )}
         </div>

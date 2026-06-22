@@ -26,6 +26,7 @@ import {
   listMessages,
   updateMessage,
   updateThread,
+  type UpdateThreadInput,
 } from "@/lib/chat-db";
 import { runOpenClawChat, type RunnerEvent } from "@/lib/openclaw-runner";
 import { logActivity, updateActivity } from "@/lib/activities-db";
@@ -505,8 +506,13 @@ export async function POST(req: NextRequest) {
       source: "web",
       title: deriveTitleFromPrompt(prompt),
     });
-  } else if (thread.agent_id !== agentId) {
-    thread = updateThread(thread.id, { agentId }) ?? thread;
+  } else {
+    const patch: UpdateThreadInput = {};
+    if (thread.title === "Nova conversa") patch.title = deriveTitleFromPrompt(prompt);
+    if (thread.agent_id !== agentId) patch.agentId = agentId;
+    if (patch.title !== undefined || patch.agentId !== undefined) {
+      thread = updateThread(thread.id, patch) ?? thread;
+    }
   }
 
   const userMsg = appendMessage({
@@ -789,11 +795,14 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // If we learned the OpenClaw session id, attach it to the thread
+        // If we learned the OpenClaw session id, attach it to the thread so
+        // the sessions bridge can detect this web thread and skip creating a
+        // duplicate openclaw_import thread for the same conversation.
         if (sessionId && !thread!.source_session_id) {
-          updateThread(thread!.id, {
+          thread = updateThread(thread!.id, {
+            source_session_id: sessionId,
             metadata: { ...thread!.metadata, openclawSessionId: sessionId },
-          });
+          }) ?? thread!;
         }
 
         send("done", {

@@ -346,6 +346,7 @@ export interface UpdateThreadInput {
   archived?: boolean;
   metadata?: Record<string, unknown>;
   agentId?: string;
+  source_session_id?: string;
 }
 
 export function updateThread(id: string, patch: UpdateThreadInput): ThreadRow | null {
@@ -372,6 +373,10 @@ export function updateThread(id: string, patch: UpdateThreadInput): ThreadRow | 
   if (patch.agentId !== undefined) {
     sets.push("agent_id = ?");
     params.push(patch.agentId);
+  }
+  if (patch.source_session_id !== undefined) {
+    sets.push("source_session_id = ?");
+    params.push(patch.source_session_id);
   }
 
   if (sets.length === 0) return getThread(id);
