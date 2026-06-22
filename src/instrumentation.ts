@@ -200,7 +200,17 @@ export async function register(): Promise<void> {
     console.warn("[instrumentation] memory MCP install hook failed:", err);
   }
 
-  // WhatsApp briefing ingester — reconstructs the assessor briefing from
+  // Pentest toolbox token — gera data/.pentest-toolbox.token no primeiro boot
+  // e seta process.env.PENTEST_TOOLBOX_TOKEN automaticamente. Zero config
+  // manual: novas instalações pegam o token sincronizado com o Docker sidecar.
+  try {
+    const { ensurePentestToken } = await import('@/lib/pentest-token');
+    ensurePentestToken();
+  } catch (err) {
+    console.warn('[instrumentation] pentest token bootstrap failed:', err);
+  }
+
+    // WhatsApp briefing ingester — reconstructs the assessor briefing from
   // session transcripts so the audit trail no longer depends on the model
   // voluntarily calling the briefing tool. Idempotent (dedup + cursor).
   try {

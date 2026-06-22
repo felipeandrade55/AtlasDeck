@@ -63,10 +63,12 @@ services:
     restart: unless-stopped
     environment:
       # Token bearer exigido no header Authorization das requisicoes /run.
-      PENTEST_TOOLBOX_TOKEN: ${PENTEST_TOOLBOX_TOKEN}
+      PENTEST_TOOLBOX_TOKEN_FILE: /data/.pentest-toolbox.token
       PORT: "8099"
     volumes:
-      # Mesmo volume de uploads para ler os binarios mobile enviados pelo app.
+      # Token compartilhado com o app nativo — montado read-only.
+      - ./data:/data:ro
+      # Volume de uploads para binarios mobile enviados pelo app.
       - pentest-uploads:/uploads
     networks:
       - atlasdeck
