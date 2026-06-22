@@ -426,25 +426,48 @@ export default function ChatPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages]);
 
+  // Idempotency guards for thread creation. `activeThreadId` lives in a ref so
+  // ensureThread reads the freshest value (React state updates aren't visible
+  // to the closure within the same tick), and `ensureThreadInFlightRef` makes
+  // concurrent calls share one POST instead of each creating its own thread —
+  // the root of the "1 message → 2 chats" duplication when auto-listen or a
+  // retry fires a second send before the first thread id has settled.
+  const activeThreadIdRef = useRef<string | null>(activeThreadId);
+  useEffect(() => {
+    activeThreadIdRef.current = activeThreadId;
+  }, [activeThreadId]);
+  const ensureThreadInFlightRef = useRef<Promise<string | null> | null>(null);
+
   const ensureThread = useCallback(async (): Promise<string | null> => {
-    if (activeThreadId) return activeThreadId;
+    if (activeThreadIdRef.current) return activeThreadIdRef.current;
+    if (ensureThreadInFlightRef.current) return ensureThreadInFlightRef.current;
+    const promise = (async (): Promise<string | null> => {
+      try {
+        const res = await fetch("/api/chat/threads", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ agentId: selectedAgent }),
+        });
+        if (!res.ok) return null;
+        const data = (await res.json()) as { thread: ChatThread };
+        activeThreadIdRef.current = data.thread.id;
+        setThreads((prev) => [data.thread, ...prev]);
+        setActiveThreadId(data.thread.id);
+        return data.thread.id;
+      } catch {
+        return null;
+      }
+    })();
+    ensureThreadInFlightRef.current = promise;
     try {
-      const res = await fetch("/api/chat/threads", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ agentId: selectedAgent }),
-      });
-      if (!res.ok) return null;
-      const data = (await res.json()) as { thread: ChatThread };
-      setThreads((prev) => [data.thread, ...prev]);
-      setActiveThreadId(data.thread.id);
-      return data.thread.id;
-    } catch {
-      return null;
+      return await promise;
+    } finally {
+      ensureThreadInFlightRef.current = null;
     }
-  }, [activeThreadId, selectedAgent]);
+  }, [selectedAgent]);
 
   const handleCreateThread = useCallback(async () => {
+    activeThreadIdRef.current = null;
     setActiveThreadId(null);
     setMessages([]);
     setStatusBanner(null);
@@ -452,6 +475,7 @@ export default function ChatPage() {
   }, []);
 
   const handleSelectThread = useCallback((id: string) => {
+    activeThreadIdRef.current = id;
     setActiveThreadId(id);
     setStatusBanner(null);
     setStatusBannerCode(null);
@@ -1204,46 +1228,51 @@ export default function ChatPage() {
             >
               {thinkingMode === "instant" ? "⚡ Rápido" : "🧠 Raciocínio"}
             </button>
-            <span style={controlDividerStyle} />
-            <button
-              type="button"
-              onClick={() => setShowVoiceModal(true)}
-              style={iconButtonStyle}
-              title="Configurar voz (ElevenLabs / Fish Audio)"
-            >
-              <SettingsIcon size={14} />
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowWakeModal(true)}
-              style={iconButtonStyle}
-              title="Configurar wake word (Web Speech / openWakeWord / Picovoice)"
-            >
-              <Ear size={14} />
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowImportModal(true)}
-              style={iconButtonStyle}
-              title="Importar sessions do OpenClaw"
-            >
-              <Download size={14} />
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowTranscribe(true)}
-              style={iconButtonStyle}
-              title="Transcrever áudio ao vivo (reuniões, conversas)"
-            >
-              <AudioLines size={14} />
-            </button>
-            <Link
-              href="/transcriptions"
-              style={{ ...iconButtonStyle, textDecoration: "none" }}
-              title="Ver todas as transcrições"
-            >
-              <Captions size={14} />
-            </Link>
+            {/* Trailing icon cluster — kept together as one non-shrinking
+                block so it wraps as a unit. Previously each icon could wrap
+                independently, stranding the last one alone on its own row. */}
+            <div style={iconGroupStyle}>
+              <span style={controlDividerStyle} />
+              <button
+                type="button"
+                onClick={() => setShowVoiceModal(true)}
+                style={iconButtonStyle}
+                title="Configurar voz (ElevenLabs / Fish Audio)"
+              >
+                <SettingsIcon size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowWakeModal(true)}
+                style={iconButtonStyle}
+                title="Configurar wake word (Web Speech / openWakeWord / Picovoice)"
+              >
+                <Ear size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowImportModal(true)}
+                style={iconButtonStyle}
+                title="Importar sessions do OpenClaw"
+              >
+                <Download size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowTranscribe(true)}
+                style={iconButtonStyle}
+                title="Transcrever áudio ao vivo (reuniões, conversas)"
+              >
+                <AudioLines size={14} />
+              </button>
+              <Link
+                href="/transcriptions"
+                style={{ ...iconButtonStyle, textDecoration: "none" }}
+                title="Ver todas as transcrições"
+              >
+                <Captions size={14} />
+              </Link>
+            </div>
           </div>
         </header>
 
@@ -1984,7 +2013,11 @@ function JarvisStage({
 
 const shellStyle: CSSProperties = {
   display: "flex",
-  height: "calc(100vh - 48px - 32px - 48px)",
+  // Fill the entire dashboard content box. The parent <main> reserves the top
+  // bar (48px) and status bar (32px); the -24px margin reclaims <main>'s 24px
+  // padding on every side, so the shell runs edge-to-edge. The earlier extra
+  // "- 48px" left a dead gap below the composer.
+  height: "calc(100vh - 48px - 32px)",
   margin: "-24px",
   borderRadius: 0,
   background: "#070b12",
@@ -2057,6 +2090,13 @@ const controlsStyle: CSSProperties = {
   alignItems: "center",
   gap: 6,
   flexWrap: "wrap",
+};
+
+const iconGroupStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  flexShrink: 0,
 };
 
 const controlDividerStyle: CSSProperties = {

@@ -27,6 +27,7 @@ import {
   type ChatRole,
 } from "@/lib/chat-db";
 import { readOpenClawConfig } from "@/lib/openclaw-config";
+import { summarizeChatTitle } from "@/lib/chat-title";
 import { logActivity } from "@/lib/activities-db";
 import { createTask, updateTask } from "@/lib/tasks-db";
 import { publishEvent } from "@/lib/live-events";
@@ -202,8 +203,7 @@ function parseLine(line: string): ParsedRecord[] {
 function deriveTitle(records: ParsedRecord[], sessionId: string): string {
   const firstUser = records.find((r) => r.role === "user" && r.content.trim().length > 0);
   if (firstUser) {
-    const collapsed = firstUser.content.replace(/\s+/g, " ").trim();
-    return collapsed.length > 80 ? `${collapsed.slice(0, 77)}…` : collapsed;
+    return summarizeChatTitle(firstUser.content);
   }
   return `Sessão ${sessionId.slice(0, 12)}…`;
 }

@@ -29,6 +29,7 @@ import {
   type UpdateThreadInput,
 } from "@/lib/chat-db";
 import { runOpenClawChat, type RunnerEvent } from "@/lib/openclaw-runner";
+import { summarizeChatTitle } from "@/lib/chat-title";
 import { logActivity, updateActivity } from "@/lib/activities-db";
 import { publishEvent } from "@/lib/live-events";
 import { createTask, updateTask } from "@/lib/tasks-db";
@@ -400,9 +401,7 @@ function sseLine(event: string, data: unknown): string {
 }
 
 function deriveTitleFromPrompt(prompt: string): string {
-  const collapsed = prompt.replace(/\s+/g, " ").trim();
-  if (!collapsed) return "Nova conversa";
-  return collapsed.length > 60 ? `${collapsed.slice(0, 57)}…` : collapsed;
+  return summarizeChatTitle(prompt);
 }
 
 // Every chat turn becomes a Live Mission kanban card. The earlier
@@ -932,6 +931,21 @@ export async function POST(req: NextRequest) {
             break;
           case "session":
             sessionId = evt.sessionId;
+            // Claim this OpenClaw session for the web thread IMMEDIATELY.
+            // The session event arrives at the start of the turn, while the
+            // gateway is still writing the JSONL file. The openclaw-watcher
+            // debounces FS changes ~800ms and then imports — its dedup looks
+            // for a web thread already bound to this session id. If we wait
+            // until the `finally` block (turn end) to bind it, the import can
+            // win the race and create a ghost `openclaw_import` thread for the
+            // same conversation. Binding here closes that window.
+            if (evt.sessionId && thread!.source_session_id !== evt.sessionId) {
+              thread =
+                updateThread(thread!.id, {
+                  source_session_id: evt.sessionId,
+                  metadata: { ...thread!.metadata, openclawSessionId: evt.sessionId },
+                }) ?? thread!;
+            }
             send("session", { sessionId: evt.sessionId });
             break;
           case "usage":
