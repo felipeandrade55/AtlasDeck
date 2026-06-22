@@ -17,9 +17,10 @@
  */
 import { promises as fs } from "fs";
 import fsSync from "fs";
+import os from "os";
 import path from "path";
 import {
-  getAgentWorkspacePath,
+  getOpenClawDir,
   resolveOpenClawAgentsConfigPath,
 } from "@/lib/openclaw-config";
 
@@ -262,8 +263,37 @@ export function analyze(content: string): FileAnalysis {
 
 // ─── Public API: read / preview / apply ────────────────────────────────────
 
+/**
+ * Resolve the on-disk workspace for an agent the same way the OpenClaw gateway
+ * does — which is the crux of writing to the file the agent actually reads.
+ *
+ * openclaw.json stores e.g. `workspace: "./workspace/mission-control"`. The
+ * gateway resolves a RELATIVE workspace against its working dir / HOME (e.g.
+ * `/root`), NOT against the OpenClaw state dir (`/root/.openclaw`). AtlasDeck's
+ * generic `getAgentWorkspacePath` resolves against the state dir, which on this
+ * install points at a stale leftover copy. We mirror the gateway's rule here,
+ * preferring the home-based path, then falling back to the state-dir path only
+ * if the home-based one doesn't exist.
+ */
 function resolveWorkspaceAbs(agentId: string): string | null {
-  return getAgentWorkspacePath(agentId);
+  let raw: string | undefined;
+  try {
+    const { path: cfgPath } = resolveOpenClawAgentsConfigPath();
+    const parsed = JSON.parse(fsSync.readFileSync(cfgPath, "utf8")) as {
+      agents?: { list?: Array<{ id?: string; workspace?: string }> };
+    };
+    raw = parsed.agents?.list?.find((a) => a?.id === agentId)?.workspace;
+  } catch {
+    return null;
+  }
+  if (!raw || typeof raw !== "string") return null;
+  if (path.isAbsolute(raw)) return raw;
+
+  const homeBased = path.resolve(os.homedir(), raw);
+  const dirBased = path.resolve(getOpenClawDir(), raw);
+  if (fsSync.existsSync(homeBased)) return homeBased;
+  if (fsSync.existsSync(dirBased)) return dirBased;
+  return homeBased; // honor the gateway's rule even before the dir is created
 }
 
 export interface InstructionFilePreview {
