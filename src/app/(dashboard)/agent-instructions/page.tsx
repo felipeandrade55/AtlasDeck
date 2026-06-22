@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useIsMobile } from "@/hooks/useMediaQuery";
 import {
   FileCog,
   RefreshCw,
@@ -63,6 +64,7 @@ export default function AgentInstructionsPage() {
   const [applying, setApplying] = useState(false);
   const [status, setStatus] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const isMobile = useIsMobile();
 
   // Populate the agent selector. Tolerates either an array or {agents:[...]}.
   useEffect(() => {
@@ -247,7 +249,7 @@ export default function AgentInstructionsPage() {
             return (
               <div key={f.file} style={{ ...card, marginBottom: 12 }}>
                 <div
-                  style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}
+                  style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", flexWrap: "wrap" }}
                   onClick={() => setExpanded((s) => ({ ...s, [f.file]: !s[f.file] }))}
                 >
                   {isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
@@ -269,7 +271,7 @@ export default function AgentInstructionsPage() {
                 </div>
 
                 {isOpen && (
-                  <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
                     <div>
                       <div style={colHead}>Antes</div>
                       <pre style={pre}>{f.before || "(arquivo vazio / inexistente)"}</pre>
