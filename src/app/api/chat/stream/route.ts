@@ -350,6 +350,20 @@ const QUICK_MODE_HINT =
   "Se o usuário pedir uma ação operacional (editar arquivo, rodar comando, usar skill, acessar sistema), " +
   "explique brevemente que isso precisa ser feito pelo modo OpenClaw Skills.";
 
+// Formatação da resposta no /chat. PADRÃO = Markdown. O renderer (MessageBubble)
+// usa react-markdown + GFM e também aceita HTML+CSS sanitizado, mas só queremos
+// HTML quando o usuário PEDIR explicitamente algo visual — caso contrário a
+// resposta normal vira uma sopa de tags. JS nunca executa (onclick/script são
+// removidos pelo sanitize), então não adianta tentar interatividade.
+const FORMATTING_HINT =
+  "\n\n[atlas:format] PADRÃO: responda em **Markdown** (títulos, listas, tabelas GFM, " +
+  "código em ```). NÃO use HTML por conta própria. " +
+  "Use HTML+CSS inline SOMENTE quando o usuário pedir explicitamente algo visual " +
+  "(ex.: 'em html', 'formate bonito', 'card visual', 'com cores', 'estilizado', 'layout'). " +
+  "Quando usar HTML: pode estilizar com `style` inline (cores, padding, bordas, grid/flex), " +
+  "mas NÃO inclua `<script>`, `onclick` nem qualquer JS — é removido na renderização e não funciona. " +
+  "Para copiar a resposta o usuário já tem um botão nativo na bolha; não gere botões de copiar.";
+
 function normalizeIntent(text: string): string {
   return text
     .normalize("NFD")
@@ -557,10 +571,10 @@ export async function POST(req: NextRequest) {
       ? { lat: body.liveLat, lon: body.liveLon }
       : null;
   const userContext = await buildUserContextPreamble(prompt, live);
-  const openclawPrompt = `${userContext}${prompt}${FORCE_INLINE_HINT}`;
+  const openclawPrompt = `${userContext}${prompt}${FORCE_INLINE_HINT}${FORMATTING_HINT}`;
   const effectivePrompt =
     chatMode === "quick"
-      ? `${userContext}${prompt}${QUICK_MODE_HINT}`
+      ? `${userContext}${prompt}${QUICK_MODE_HINT}${FORMATTING_HINT}`
       : openclawPrompt;
 
   // Pre-create assistant message in streaming state so the UI gets an ID up front.

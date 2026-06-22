@@ -3,6 +3,9 @@
 import { useState, type CSSProperties } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeRaw from "rehype-raw";
+import rehypeSanitize from "rehype-sanitize";
+import { chatSanitizeSchema } from "./markdown-sanitize";
 import { Bot, Check, ChevronDown, ChevronRight, Copy, User, Volume2, Wrench } from "lucide-react";
 import type { ChatMessage, AgentSummary } from "./types";
 
@@ -124,7 +127,10 @@ export function MessageBubble({ message, agent, onSpeak, isSpeaking }: MessageBu
             <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>{message.content}</p>
           ) : (
             <div className="prose prose-invert max-w-none" style={{ fontSize: 14 }}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                rehypePlugins={[rehypeRaw, [rehypeSanitize, chatSanitizeSchema]]}
+              >
                 {message.content || (isStreaming ? "▋" : "")}
               </ReactMarkdown>
             </div>
