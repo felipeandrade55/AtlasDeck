@@ -38,14 +38,15 @@ import { publishEvent } from "@/lib/live-events";
 // want the watcher to double-count them when it later imports their sessions.
 const ORCHESTRATOR_IDS = new Set(["main", "jarvis"]);
 
-// AtlasDeck sends a `web:` sessionKey for every web/CLI chat ("web:atlasdeck"
-// or "web:<uuid>"); the gateway echoes that scope into the session prelude.
-// Telegram uses ":telegram:" and WhatsApp ":whatsapp:", so a `web:` channel
-// token is a reliable "this came from the AtlasDeck UI" marker. Matched only
-// against the prelude (first few KB) so a stray "web:" inside user message
-// text can't trip it. Requires a colon right after "web" so "webhook" etc.
-// don't match.
-const WEB_SESSION_MARKER = /(?:^|[:"'\s,{[])web:[a-z0-9]/i;
+// Every AtlasDeck web turn injects a fixed `[atlas:hint] Esta sessão é
+// `web:atlasdeck`` line into the prompt (see chat/stream/route.ts), so the
+// literal "web:atlasdeck" always lands in the first user record of a web
+// session's JSONL. Telegram/WhatsApp turns go through the gateway bot, not
+// this route, so they never carry it. We also match the agent-scoped
+// ":web:<id>" sessionKey form for completeness. This is how we recognize a
+// session that ORIGINATED in the AtlasDeck UI (already persisted as a
+// source:"web" thread) and must NOT be re-imported as a duplicate.
+const WEB_SESSION_MARKER = /web:atlasdeck|:web:[a-z0-9]/i;
 
 // Heuristic: which Telegram/CLI turns are "real work" worth a kanban card.
 // Mirrors the chat-stream gate so "bom dia" / quick Q&A don't flood the board.
@@ -303,6 +304,17 @@ export function importOpenClawSessions(opts: ImportOptions = {}): ImportSummary 
 
   for (const session of targets) {
     try {
+      // `<id>.trajectory.jsonl` sidecars are the gateway's internal execution
+      // trace, NOT a conversation — they parse to zero messages and were being
+      // imported as empty "Sessão …" ghost threads (one extra card per chat).
+      // Skip them, and delete any ghost a prior run already created.
+      if (session.sessionId.endsWith(".trajectory")) {
+        const ghost = getThreadBySource("openclaw_import", session.sessionId);
+        if (ghost) deleteThread(ghost.id);
+        summary.skipped += 1;
+        continue;
+      }
+
       const stat = statSync(session.filePath);
       const raw = readFileSync(session.filePath, "utf8");
       const lines = raw.split(/\r?\n/);
