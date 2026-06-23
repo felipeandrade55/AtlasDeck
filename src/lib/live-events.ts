@@ -46,6 +46,7 @@ export type LiveEventType =
   | "pentest.tool_progress"
   | "pentest.tool_completed"
   | "pentest.finding"
+  | "pentest.check"
   | "pentest.run_completed"
   | "pentest.run_failed";
 
