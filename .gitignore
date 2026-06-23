@@ -45,6 +45,8 @@ yarn-error.log*
 /data/*.sqlite3
 /data/incidents/
 /data/dev-workspaces/
+# segredo app↔toolbox de pentest — NUNCA versionar nem deixar `git stash -u` levar
+/data/.pentest-toolbox.token
 
 # vercel
 .vercel

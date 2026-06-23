@@ -1463,13 +1463,16 @@ else
     #    O dir de upload do host é montado em /uploads para o perfil mobile —
     #    o app escreve em data/pentest-uploads e o toolbox lê no mesmo lugar.
     docker rm -f "$TOOLBOX_CONTAINER" >/dev/null 2>&1 || true
+    # Container recebe o token via -e (estável por toda a vida do container). O
+    # app lê o MESMO valor do arquivo data/.pentest-toolbox.token no host — ambos
+    # derivam de $TOOLBOX_TOKEN, então casam. Não montamos o arquivo no container
+    # de propósito: bind-mount de arquivo único é frágil (recriar o arquivo no
+    # host deixa o container preso no inode antigo).
     if docker run -d --name "$TOOLBOX_CONTAINER" --restart unless-stopped \
          -p "127.0.0.1:${TOOLBOX_PORT}:8099" \
          -e PENTEST_TOOLBOX_TOKEN="$TOOLBOX_TOKEN" \
-         -e PENTEST_TOOLBOX_TOKEN_FILE=/data/.pentest-toolbox.token \
          --memory 1g --cpus 1.0 --pids-limit 512 \
          -v "$HOST_UPLOAD_DIR":/uploads \
-         -v "$TOKEN_FILE_HOST":/data/.pentest-toolbox.token:ro \
          "$TOOLBOX_IMAGE" >/dev/null; then
 
       # 3.1) Espera o /health responder — `docker run -d` retornar não garante
