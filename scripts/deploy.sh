@@ -1427,19 +1427,33 @@ elif [[ ! -d "$TOOLBOX_DIR" ]]; then
   record "Pentest toolbox" "skip" "$(elapsed $T)"
   phase_status "pentest-toolbox" "skip" "$(elapsed $T)"
 else
-  # 1) Garante token + URL + dir de upload no .env (gera token forte na 1ª vez).
-  TOKEN_ADDED=false
+  # 1) Token compartilhado app↔container. FONTE DA VERDADE = o ARQUIVO
+  #    data/.pentest-toolbox.token, montado no container e lido fresh pelo app a
+  #    cada chamada. Isso elimina a causa nº1 de "tudo falhou (401)": o token no
+  #    process.env do app (injetado pelo pm2) ficava defasado quando regenerava.
+  #    O arquivo nunca dessincroniza. Migramos de um token já existente no .env.
+  TOKEN_FILE_HOST="$VPS_DIR/data/.pentest-toolbox.token"
+  mkdir -p "$VPS_DIR/data" "$HOST_UPLOAD_DIR"
   touch "$ENV_FILE"
-  if ! grep -q '^PENTEST_TOOLBOX_TOKEN=' "$ENV_FILE"; then
-    NEW_TOKEN=$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
-    printf 'PENTEST_TOOLBOX_TOKEN=%s\n' "$NEW_TOKEN" >> "$ENV_FILE"
-    TOKEN_ADDED=true
-    info "Token do toolbox gerado e salvo no .env (segredo app↔toolbox)"
+  ENV_TOKEN=$(grep '^PENTEST_TOOLBOX_TOKEN=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)
+  if [[ -s "$TOKEN_FILE_HOST" ]]; then
+    TOOLBOX_TOKEN=$(tr -d ' \r\n' < "$TOKEN_FILE_HOST")
+  elif [[ -n "$ENV_TOKEN" ]]; then
+    TOOLBOX_TOKEN="$ENV_TOKEN"                       # migra token pré-existente
+    printf '%s' "$TOOLBOX_TOKEN" > "$TOKEN_FILE_HOST"
+    info "Token do toolbox migrado do .env para data/.pentest-toolbox.token"
+  else
+    TOOLBOX_TOKEN=$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    printf '%s' "$TOOLBOX_TOKEN" > "$TOKEN_FILE_HOST"
+    info "Token do toolbox gerado em data/.pentest-toolbox.token"
+  fi
+  chmod 600 "$TOKEN_FILE_HOST" 2>/dev/null || true
+  # Mantém o .env coerente com o arquivo (compat com outros consumidores).
+  if [[ "$ENV_TOKEN" != "$TOOLBOX_TOKEN" ]]; then
+    { grep -v '^PENTEST_TOOLBOX_TOKEN=' "$ENV_FILE" 2>/dev/null; printf 'PENTEST_TOOLBOX_TOKEN=%s\n' "$TOOLBOX_TOKEN"; } > "$ENV_FILE.tmp" && mv "$ENV_FILE.tmp" "$ENV_FILE"
   fi
   grep -q '^PENTEST_TOOLBOX_URL=' "$ENV_FILE" || printf 'PENTEST_TOOLBOX_URL=http://127.0.0.1:%s\n' "$TOOLBOX_PORT" >> "$ENV_FILE"
   grep -q '^PENTEST_TOOLBOX_UPLOAD_DIR=' "$ENV_FILE" || printf 'PENTEST_TOOLBOX_UPLOAD_DIR=/uploads\n' >> "$ENV_FILE"
-  TOOLBOX_TOKEN=$(grep '^PENTEST_TOOLBOX_TOKEN=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)
-  mkdir -p "$HOST_UPLOAD_DIR"
 
   # 2) Build da imagem (idempotente; cache de layers torna rápido quando nada
   #    mudou; a 1ª vez baixa o Kali e pode levar minutos).
@@ -1452,8 +1466,10 @@ else
     if docker run -d --name "$TOOLBOX_CONTAINER" --restart unless-stopped \
          -p "127.0.0.1:${TOOLBOX_PORT}:8099" \
          -e PENTEST_TOOLBOX_TOKEN="$TOOLBOX_TOKEN" \
+         -e PENTEST_TOOLBOX_TOKEN_FILE=/data/.pentest-toolbox.token \
          --memory 1g --cpus 1.0 --pids-limit 512 \
          -v "$HOST_UPLOAD_DIR":/uploads \
+         -v "$TOKEN_FILE_HOST":/data/.pentest-toolbox.token:ro \
          "$TOOLBOX_IMAGE" >/dev/null; then
 
       # 3.1) Espera o /health responder — `docker run -d` retornar não garante
@@ -1474,25 +1490,10 @@ else
       else
         ok "Toolbox de pentest no ar em 127.0.0.1:${TOOLBOX_PORT}"
 
-        # 3.2) Sincroniza o token DO APP com o do container. Causa nº1 de "tudo
-        #      falhou com 401": o processo Next em execução carrega um token
-        #      antigo (do pm2/env) que sombreia o .env. Detectamos divergência
-        #      lendo o env do processo vivo e só então reiniciamos — exportando
-        #      o token no shell, pois `--update-env` lê o ambiente do shell, não
-        #      o arquivo .env.
-        if command -v pm2 &>/dev/null; then
-          APP_PID=$(pm2 pid "$APP_NAME" 2>/dev/null | head -1)
-          LIVE_TOKEN=""
-          if [[ -n "$APP_PID" && -r "/proc/$APP_PID/environ" ]]; then
-            LIVE_TOKEN=$(tr '\0' '\n' < "/proc/$APP_PID/environ" 2>/dev/null | grep '^PENTEST_TOOLBOX_TOKEN=' | cut -d= -f2-)
-          fi
-          if [[ "$LIVE_TOKEN" != "$TOOLBOX_TOKEN" ]]; then
-            info "Token do app desatualizado — sincronizando env e reiniciando $APP_NAME..."
-            export PENTEST_TOOLBOX_TOKEN="$TOOLBOX_TOKEN"
-            export PENTEST_TOOLBOX_URL="http://127.0.0.1:${TOOLBOX_PORT}"
-            pm2 restart "$APP_NAME" --update-env < /dev/null >/dev/null 2>&1 || true
-          fi
-        fi
+        # 3.2) O app lê o token do ARQUIVO data/.pentest-toolbox.token (o mesmo
+        #      montado no container), fresh a cada chamada — não depende de
+        #      process.env/pm2, então NÃO precisa de restart pra sincronizar. O
+        #      restart do app já acontece na fase PM2 do deploy (carrega o código).
 
         # 3.3) Self-test de autenticação: confirma que um /run autenticado NÃO
         #      volta 401. Pega regressões de token/auth antes do usuário ver.
