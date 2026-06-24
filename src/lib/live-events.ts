@@ -47,6 +47,7 @@ export type LiveEventType =
   | "pentest.tool_completed"
   | "pentest.finding"
   | "pentest.check"
+  | "pentest.asset"
   | "pentest.run_completed"
   | "pentest.run_failed";
 
