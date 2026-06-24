@@ -7,6 +7,7 @@ import {
   scanLandingPages,
   sortPages,
   filterPages,
+  annotateProtection,
   type LandingSort,
 } from "@/lib/landing-index";
 
@@ -65,6 +66,13 @@ export async function GET(request: NextRequest) {
   try {
     const all = await scanLandingPages();
     const pages = sortPages(filterPages(all, q), sort);
+
+    // Marca quais páginas exigem login para o catálogo não carregar o iframe
+    // delas (evita o popup de autenticação do navegador). Só no formato JSON,
+    // consumido pelo catálogo; o formato Telegram não precisa.
+    if (format !== "telegram") {
+      await annotateProtection(pages);
+    }
 
     if (format === "telegram") {
       const base = publicBase(request);

@@ -26,11 +26,23 @@ export interface LandingPage {
   url: string;
   /** Arquivo de entrada relativo a `public/landing`. Ex: "pizzaria/index.html". */
   entryFile: string;
+  /**
+   * Pasta de agrupamento (primeiro segmento do caminho quando a página está
+   * aninhada). Ex: "wiki/painel" → "wiki". Páginas direto na raiz → "" (sem
+   * pasta). Usado pelo filtro de pasta no catálogo.
+   */
+  folder: string;
   title: string;
   description: string;
   createdAt: number;
   modifiedAt: number;
   sizeBytes: number;
+  /**
+   * `true` quando a página exige autenticação (HTTP 401/403) — detectado por
+   * probe HTTP. O catálogo não carrega o iframe dessas páginas (evita o popup
+   * de login do navegador); o link "Abrir" continua funcionando normalmente.
+   */
+  protected?: boolean;
 }
 
 const HTML_ENTRY = "index.html";
@@ -145,12 +157,23 @@ async function buildPage(relDir: string): Promise<LandingPage | null> {
     relPath,
     url,
     entryFile,
+    folder: folderOf(relPath),
     title: extractTitle(html, relPath),
     description: extractDescription(html),
     createdAt: stat.birthtimeMs || stat.ctimeMs,
     modifiedAt: stat.mtimeMs,
     sizeBytes: stat.size,
   };
+}
+
+/**
+ * Pasta de agrupamento de uma página: o primeiro segmento quando o caminho é
+ * aninhado (ex: "wiki/painel" → "wiki"), ou "" para páginas na raiz de landing.
+ */
+function folderOf(relPath: string): string {
+  const norm = relPath.replace(/\\/g, "/");
+  const idx = norm.indexOf("/");
+  return idx > 0 ? norm.slice(0, idx) : "";
 }
 
 /** Trata um arquivo HTML direto na raiz de LANDING_DIR como uma página. */
@@ -177,6 +200,7 @@ async function buildRootFile(filename: string): Promise<LandingPage | null> {
     relPath: filename,
     url: `/landing/${filename}`,
     entryFile: filename,
+    folder: "",
     title: extractTitle(html, slug),
     description: extractDescription(html),
     createdAt: stat.birthtimeMs || stat.ctimeMs,
@@ -274,4 +298,68 @@ export function filterPages(pages: LandingPage[], q?: string): LandingPage[] {
   return pages.filter((p) =>
     `${p.title} ${p.description} ${p.relPath}`.toLowerCase().includes(term),
   );
+}
+
+// ─── Detecção de páginas protegidas (HTTP 401/403) ──────────────────────────
+//
+// Algumas páginas em /landing são servidas atrás de autenticação (ex.: a
+// "Wiki Telecom - Acesso restrito" devolve 401 Basic Auth). Quando o catálogo
+// monta o iframe da miniatura dessas páginas, o navegador abre o popup nativo
+// de login. Para evitar isso, sondamos cada página por HTTP (HEAD) usando a
+// base pública (ATLAS_PUBLIC_URL) e marcamos `protected`. O card então mostra
+// um cadeado em vez do iframe — o link "Abrir" continua pedindo login só quando
+// o usuário realmente acessa a página.
+
+interface ProbeEntry {
+  isProtected: boolean;
+  ts: number;
+}
+
+const PROBE_TTL_MS = 5 * 60 * 1000;
+const PROBE_TIMEOUT_MS = 4000;
+const probeCache = new Map<string, ProbeEntry>();
+
+async function probeProtected(fullUrl: string): Promise<boolean> {
+  const now = Date.now();
+  const cached = probeCache.get(fullUrl);
+  if (cached && now - cached.ts < PROBE_TTL_MS) return cached.isProtected;
+
+  let isProtected = false;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+    const res = await fetch(fullUrl, {
+      method: "HEAD",
+      redirect: "manual",
+      signal: controller.signal,
+      cache: "no-store",
+    });
+    clearTimeout(timer);
+    isProtected = res.status === 401 || res.status === 403;
+  } catch {
+    // Timeout ou erro de rede: não bloqueia a miniatura (assume acessível).
+    isProtected = false;
+  }
+
+  probeCache.set(fullUrl, { isProtected, ts: now });
+  return isProtected;
+}
+
+/**
+ * Anota `protected` em cada página sondando a URL pública. Sem ATLAS_PUBLIC_URL
+ * configurada, não há como sondar de forma confiável — nesse caso assumimos que
+ * tudo é acessível (comportamento anterior) e não marcamos nada.
+ */
+export async function annotateProtection(
+  pages: LandingPage[],
+): Promise<LandingPage[]> {
+  const base = (process.env.ATLAS_PUBLIC_URL || "").trim().replace(/\/+$/, "");
+  if (!base) return pages;
+
+  await Promise.all(
+    pages.map(async (p) => {
+      p.protected = await probeProtected(`${base}${p.url}`);
+    }),
+  );
+  return pages;
 }

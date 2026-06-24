@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Search, RefreshCw, LayoutGrid } from "lucide-react";
+import { Search, RefreshCw, LayoutGrid, FolderTree } from "lucide-react";
 import { LandingCard } from "@/components/Landing/LandingCard";
 import type { LandingPage, LandingSort } from "@/lib/landing-index";
 
@@ -11,12 +11,17 @@ const SORTS: Array<{ key: LandingSort; label: string }> = [
   { key: "title", label: "Título" },
 ];
 
+/** Valores especiais do filtro de pasta. */
+const FOLDER_ALL = "__all__";
+const FOLDER_ROOT = "__root__";
+
 export default function LandingPagesPage() {
   const [pages, setPages] = useState<LandingPage[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<LandingSort>("modified");
+  const [folder, setFolder] = useState<string>(FOLDER_ALL);
 
   const load = async () => {
     setLoading(true);
@@ -38,13 +43,40 @@ export default function LandingPagesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sort]);
 
+  // Pastas existentes (primeiro segmento das páginas aninhadas), auto-detectadas.
+  const folders = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of pages) if (p.folder) set.add(p.folder);
+    return Array.from(set).sort((a, b) => a.localeCompare(b, "pt-BR"));
+  }, [pages]);
+
+  const hasRootPages = useMemo(() => pages.some((p) => !p.folder), [pages]);
+
+  // Reseta o filtro se a pasta selecionada deixar de existir após um refresh.
+  useEffect(() => {
+    if (folder === FOLDER_ALL) return;
+    if (folder === FOLDER_ROOT) {
+      if (!hasRootPages) setFolder(FOLDER_ALL);
+      return;
+    }
+    if (!folders.includes(folder)) setFolder(FOLDER_ALL);
+  }, [folders, hasRootPages, folder]);
+
   const filtered = useMemo(() => {
+    let list = pages;
+    if (folder === FOLDER_ROOT) {
+      list = list.filter((p) => !p.folder);
+    } else if (folder !== FOLDER_ALL) {
+      list = list.filter((p) => p.folder === folder);
+    }
     const term = query.trim().toLowerCase();
-    if (!term) return pages;
-    return pages.filter((p) =>
-      `${p.title} ${p.description} ${p.relPath}`.toLowerCase().includes(term),
-    );
-  }, [pages, query]);
+    if (term) {
+      list = list.filter((p) =>
+        `${p.title} ${p.description} ${p.relPath}`.toLowerCase().includes(term),
+      );
+    }
+    return list;
+  }, [pages, query, folder]);
 
   const handleDelete = async (page: LandingPage) => {
     if (!confirm(`Excluir a página "${page.title}"? Isso apaga a pasta ${page.relPath}.`)) return;
@@ -74,7 +106,12 @@ export default function LandingPagesPage() {
             Páginas
           </h1>
           <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
-            {filtered.length} de {pages.length} landing pages em <code>/landing</code>
+            {filtered.length} de {pages.length} landing pages
+            {folder === FOLDER_ROOT
+              ? " na raiz"
+              : folder !== FOLDER_ALL
+                ? <> na pasta <code>{folder}</code></>
+                : null}
           </p>
         </div>
 
@@ -92,6 +129,30 @@ export default function LandingPagesPage() {
               style={{ color: "var(--text-primary)" }}
             />
           </div>
+
+          {folders.length > 0 && (
+            <div
+              className="flex items-center gap-2 px-3 py-2 rounded-lg"
+              style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
+            >
+              <FolderTree className="w-4 h-4" style={{ color: "var(--text-muted)" }} />
+              <select
+                value={folder}
+                onChange={(e) => setFolder(e.target.value)}
+                className="bg-transparent outline-none text-sm cursor-pointer"
+                style={{ color: "var(--text-primary)" }}
+                title="Filtrar por pasta"
+              >
+                <option value={FOLDER_ALL}>Todas as pastas</option>
+                {hasRootPages && <option value={FOLDER_ROOT}>Raiz (sem pasta)</option>}
+                {folders.map((f) => (
+                  <option key={f} value={f}>
+                    {f}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <div
             className="flex items-center rounded-lg overflow-hidden"

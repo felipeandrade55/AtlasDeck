@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ExternalLink, Copy, Check, Trash2, Clock } from "lucide-react";
+import { ExternalLink, Copy, Check, Trash2, Clock, Lock } from "lucide-react";
 import type { LandingPage } from "@/lib/landing-index";
 
 interface LandingCardProps {
@@ -40,32 +40,57 @@ export function LandingCard({ page, onDelete }: LandingCardProps) {
       className="rounded-xl overflow-hidden flex flex-col transition-all hover:scale-[1.01]"
       style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
     >
-      {/* Miniatura: iframe da própria página escalado, sem interação */}
+      {/* Miniatura: iframe da própria página escalado, sem interação.
+          Páginas protegidas (401/403) NÃO carregam iframe — senão o navegador
+          abre o popup de login no catálogo. Mostramos um cadeado; o clique em
+          "Abrir" leva à página, que aí sim pede a autenticação. */}
       <a
         href={page.url}
         target="_blank"
         rel="noopener noreferrer"
         className="block relative"
         style={{ height: 180, backgroundColor: "var(--card-elevated)", overflow: "hidden" }}
-        title={`Abrir ${page.title}`}
+        title={page.protected ? `Acesso restrito — abrir ${page.title}` : `Abrir ${page.title}`}
       >
-        <iframe
-          src={page.url}
-          loading="lazy"
-          sandbox="allow-same-origin"
-          tabIndex={-1}
-          aria-hidden="true"
-          style={{
-            width: "1280px",
-            height: "800px",
-            border: "none",
-            transform: "scale(0.3125)",
-            transformOrigin: "top left",
-            pointerEvents: "none",
-          }}
-        />
-        {/* camada para garantir que o clique vá pro link, não pro iframe */}
-        <span className="absolute inset-0" />
+        {page.protected ? (
+          <div
+            className="absolute inset-0 flex flex-col items-center justify-center gap-2"
+            style={{
+              background:
+                "linear-gradient(135deg, var(--card-elevated) 0%, var(--card) 100%)",
+            }}
+          >
+            <div
+              className="flex items-center justify-center w-12 h-12 rounded-full"
+              style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
+            >
+              <Lock className="w-5 h-5" style={{ color: "var(--text-muted)" }} />
+            </div>
+            <span className="text-xs font-medium" style={{ color: "var(--text-secondary)" }}>
+              Acesso restrito
+            </span>
+          </div>
+        ) : (
+          <>
+            <iframe
+              src={page.url}
+              loading="lazy"
+              sandbox="allow-same-origin"
+              tabIndex={-1}
+              aria-hidden="true"
+              style={{
+                width: "1280px",
+                height: "800px",
+                border: "none",
+                transform: "scale(0.3125)",
+                transformOrigin: "top left",
+                pointerEvents: "none",
+              }}
+            />
+            {/* camada para garantir que o clique vá pro link, não pro iframe */}
+            <span className="absolute inset-0" />
+          </>
+        )}
       </a>
 
       <div className="p-3 flex flex-col gap-2 flex-1">
