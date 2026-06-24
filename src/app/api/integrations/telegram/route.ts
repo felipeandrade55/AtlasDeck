@@ -9,6 +9,7 @@
  * PUT  /api/integrations/telegram        → upsert config (enabled, dmPolicy, accounts)
  * POST /api/integrations/telegram?action=test → send a test message via the chosen account
  * POST /api/integrations/telegram?action=clear-webhook → deleteWebhook (useful when polling stopped working)
+ * POST /api/integrations/telegram?action=set-commands → setMyCommands (registra /paginas no menu do bot)
  *
  * All persistence happens in OpenClaw's `openclaw.json` under `channels.telegram`,
  * the same file `/api/agents` and `lib/telegram.ts` already read from.
@@ -422,6 +423,24 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, sentTo: chatId });
     }
 
+    if (action === "set-commands") {
+      // Registra o menu de comandos do bot (BotFather) para que /paginas
+      // apareça na listinha de comandos do chat. Idempotente: sobrescreve a
+      // lista inteira. Os comandos extras são só atalhos — o agente também
+      // entende texto livre ("lista minhas páginas") via instrução em TOOLS.md.
+      const commands = [
+        { command: "paginas", description: "Listar todas as landing pages criadas (com links)" },
+      ];
+      const r = await tgCall(token, "setMyCommands", { commands });
+      if (!r.ok) {
+        return NextResponse.json({
+          success: false,
+          error: r.description || r.networkError || `HTTP ${r.httpStatus ?? "?"}`,
+        });
+      }
+      return NextResponse.json({ success: true, commands });
+    }
+
     if (action === "clear-webhook") {
       const r = await tgCall(token, "deleteWebhook", { drop_pending_updates: !!body.dropPending });
       if (!r.ok) {
@@ -434,7 +453,7 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json(
-      { error: `Ação desconhecida: "${action}". Use ?action=test ou ?action=clear-webhook` },
+      { error: `Ação desconhecida: "${action}". Use ?action=test, ?action=clear-webhook ou ?action=set-commands` },
       { status: 400 },
     );
   } catch (e) {

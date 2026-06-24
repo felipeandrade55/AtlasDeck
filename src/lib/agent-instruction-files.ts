@@ -193,6 +193,18 @@ function buildToolsBase(): string {
     "# TOOLS.md — Notas locais",
     "",
     "As skills definem *como* as ferramentas funcionam. Aqui ficam só as **suas especificidades** (hosts SSH, vozes de TTS, nomes de dispositivos, nicknames). Adicione o que for útil **abaixo do bloco gerenciado** — o AtlasDeck preserva tudo que estiver fora dos marcadores.",
+    "",
+    "## Páginas / Landing pages (comando `/paginas`)",
+    "As landing pages que você cria ficam em `public/landing/<pasta>/` do AtlasDeck e são servidas em `/landing/<pasta>/`.",
+    "Quando o usuário pedir **`/paginas`** (ou algo como “lista minhas páginas”, “quais páginas já criei”, “acha a página da X”), **não saia procurando arquivo a arquivo**: consulte o índice do AtlasDeck e responda com o resultado.",
+    "A rota exige o service token do OpenClaw no header `x-openclaw-token` (mesmo `gateway.auth.token` do `openclaw.json`). Liste todas, já ordenadas por modificação, com título + descrição + link:",
+    "```sh",
+    'TOKEN=$(jq -r ".gateway.auth.token" "${OPENCLAW_DIR:-/root/.openclaw}/openclaw.json")',
+    "curl -s -H \"x-openclaw-token: $TOKEN\" 'http://localhost:3000/api/landing?format=telegram'",
+    "```",
+    "- Para buscar por um termo específico, acrescente `&q=<termo>` na URL (ex.: `...&format=telegram&q=pizzaria`).",
+    "- Devolva o texto retornado como está (já vem formatado com links clicáveis). Se o usuário pediu uma página específica, destaque a linha correspondente.",
+    "_(Se o AtlasDeck rodar em outra porta/host, ajuste a URL ou use a env `ATLAS_PUBLIC_URL` para os links.)_",
   ].join("\n");
 }
 

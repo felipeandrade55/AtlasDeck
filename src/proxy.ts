@@ -29,6 +29,10 @@ const PUBLIC_API_PREFIXES = [
   // cookie. The route self-protects: it requires a valid service token
   // (gateway.auth.token) OR the admin cookie, validated in the Node handler.
   "/api/orchestrator/tool-call",
+  // Landing pages listing (comando /paginas). Público no edge para o bot do
+  // OpenClaw (sem cookie admin); a rota se auto-protege exigindo service token
+  // OU cookie admin no handler Node.
+  "/api/landing",
 ];
 
 // API prefixes that may also be authenticated via service token (OpenClaw → AtlasDeck)

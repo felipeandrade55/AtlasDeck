@@ -33,6 +33,7 @@ import {
   CloudSun,
   Inbox,
   WalletCards,
+  LayoutGrid,
   type LucideIcon,
 } from "lucide-react";
 import Link from "next/link";
@@ -73,6 +74,7 @@ const QUICK_LINKS: Array<{
   featured?: boolean;
 }> = [
   { href: "/calendar", icon: CalendarDays, label: "Calendário", color: "#FF3B30", group: "Hoje", description: "Eventos e agenda", featured: true },
+  { href: "/landing", icon: LayoutGrid, label: "Páginas", color: "#38bdf8", group: "Operação", description: "Landing pages criadas", featured: true },
   { href: "/actions", icon: Zap, label: "Ações Rápidas", color: "var(--accent)", group: "Hoje", description: "Executar comandos", featured: true },
   { href: "/whatsapp/briefing", icon: Inbox, label: "Recados", color: "#fbbf24", group: "Hoje", description: "WhatsApp Assessor", featured: true },
   { href: "/costs", icon: WalletCards, label: "Custos", color: "#32D74B", group: "Hoje", description: "Orçamento e uso", featured: true },
@@ -93,6 +95,7 @@ const LEGACY_QUICK_LINKS: Array<{
   color: string;
 }> = [
   { href: "/calendar", icon: CalendarDays, label: "Calendário", color: "#FF3B30" },
+  { href: "/landing", icon: LayoutGrid, label: "Páginas", color: "#38bdf8" },
   { href: "/cron", icon: Clock, label: "Tarefas Agendadas", color: "#a78bfa" },
   { href: "/actions", icon: Zap, label: "Ações Rápidas", color: "var(--accent)" },
   { href: "/system", icon: Server, label: "Sistema", color: "var(--success)" },
