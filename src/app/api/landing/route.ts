@@ -85,9 +85,9 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    return NextResponse.json({ pages, total: pages.length });
+    return NextResponse.json({ pages, total: pages.length, _dir: process.env.LANDING_DIR });
   } catch (e) {
-    return NextResponse.json({ error: (e as Error).message }, { status: 500 });
+    return NextResponse.json({ error: (e as Error).message, _dir: process.env.LANDING_DIR }, { status: 500 });
   }
 }
 
