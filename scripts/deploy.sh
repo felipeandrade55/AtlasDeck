@@ -1508,6 +1508,27 @@ else
           warn "Self-test do toolbox retornou 401 — token app↔container divergente."
         fi
 
+        # 3.4) Rede de segurança dos TEMPLATES do nuclei. A imagem tenta bakear
+        #      no build, mas isso tem soft-fail (rede do build instável) e o
+        #      container é recriado a cada deploy. Sem templates o nuclei falha
+        #      com "[FTL] no templates provided for scan". Aqui garantimos, de
+        #      forma idempotente: se faltar, baixamos DENTRO do container.
+        #      IMPORTANTE: o download NÃO pode levar `-disable-update-check` —
+        #      esse flag suprime a instalação inicial (baixa ~3 em vez de ~13k).
+        #      No scan o flag continua válido (pentest-tools.ts) só pra não
+        #      atualizar em runtime. Quando o bake funcionou, o count já é alto
+        #      e este passo só confirma (não baixa nada).
+        NUC_COUNT=$(docker exec "$TOOLBOX_CONTAINER" sh -c 'find "$HOME/.local/nuclei-templates" -name "*.yaml" 2>/dev/null | wc -l' 2>/dev/null || echo 0)
+        if [ "${NUC_COUNT:-0}" -lt 100 ]; then
+          info "nuclei sem templates ($NUC_COUNT) — baixando no container (uma vez, ~1min)..."
+          docker exec "$TOOLBOX_CONTAINER" nuclei -update-templates >/dev/null 2>&1 || true
+          NUC_COUNT=$(docker exec "$TOOLBOX_CONTAINER" sh -c 'find "$HOME/.local/nuclei-templates" -name "*.yaml" 2>/dev/null | wc -l' 2>/dev/null || echo 0)
+          if [ "${NUC_COUNT:-0}" -lt 100 ]; then
+            warn "nuclei ainda sem templates ($NUC_COUNT) — verifique rede do container; o módulo de vuln-scan falhará até resolver."
+          fi
+        fi
+        info "nuclei templates prontos: $NUC_COUNT"
+
         record "Pentest toolbox" "ok" "$(elapsed $T)"
         phase_status "pentest-toolbox" "ok" "$(elapsed $T)"
       fi
