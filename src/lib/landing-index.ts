@@ -4,15 +4,18 @@ import path from "path";
 /**
  * Indexador das landing pages criadas pelo OpenClaw.
  *
- * As páginas vivem em `public/landing/**` e são servidas pelo Next em
- * `/landing/<relPath>/`. Cada subpasta que contém um HTML de entrada
- * (`index.html`, senão o primeiro `*.html`) é tratada como uma página.
+ * As páginas NÃO ficam em public/landing do AtlasDeck. Elas vivem em
+ * /root/.openclaw/workspace/dashboard/landing/ e são servidas pelo
+ * jarvis-dashboard (porta 8080), com nginx roteando /landing/* para ele.
  *
- * Nada de dependências extras: o título/descrição saem por regex simples e a
- * miniatura no front é um <iframe> da própria página (mesma origem).
+ * O LANDING_DIR é configurável via env LANDING_DIR (produção aponta para
+ * /root/.openclaw/workspace/dashboard/landing; dev local pode usar qualquer
+ * pasta de teste). A URL pública usa ATLAS_PUBLIC_URL como base.
  */
 
-export const LANDING_DIR = path.join(process.cwd(), "public", "landing");
+export const LANDING_DIR =
+  process.env.LANDING_DIR ||
+  path.join(process.cwd(), "public", "landing");
 
 export type LandingSort = "modified" | "created" | "title";
 
@@ -131,16 +134,50 @@ async function buildPage(relDir: string): Promise<LandingPage | null> {
 
   const relPath = relDir.split(path.sep).join("/");
   const entryFile = `${relPath}/${entry}`;
+  // O jarvis-dashboard (porta 8080) serve diretórios normalmente com barra final.
+  // Usamos a URL de diretório (/landing/<pasta>/) quando o entry é index.html,
+  // e a URL do arquivo quando é qualquer outro HTML (ex: admin.html, main.html).
+  const url = entry === HTML_ENTRY
+    ? `/landing/${relPath}/`
+    : `/landing/${entryFile}`;
 
   return {
     relPath,
-    // Aponta para o arquivo de entrada (com extensão) de propósito: o middleware
-    // do AtlasDeck (proxy.ts) só libera assets públicos quando o path tem ponto;
-    // `/landing/<pasta>/` redirecionaria para /login. `/landing/<pasta>/index.html`
-    // é servido direto como estático.
-    url: `/landing/${entryFile}`,
+    url,
     entryFile,
     title: extractTitle(html, relPath),
+    description: extractDescription(html),
+    createdAt: stat.birthtimeMs || stat.ctimeMs,
+    modifiedAt: stat.mtimeMs,
+    sizeBytes: stat.size,
+  };
+}
+
+/** Trata um arquivo HTML direto na raiz de LANDING_DIR como uma página. */
+async function buildRootFile(filename: string): Promise<LandingPage | null> {
+  const fileAbs = path.join(LANDING_DIR, filename);
+  let stat: import("fs").Stats;
+  try {
+    stat = await fs.stat(fileAbs);
+    if (!stat.isFile()) return null;
+  } catch {
+    return null;
+  }
+
+  let html = "";
+  try {
+    html = await fs.readFile(fileAbs, "utf-8");
+  } catch {
+    html = "";
+  }
+
+  const slug = filename.replace(/\.html?$/i, "");
+
+  return {
+    relPath: filename,
+    url: `/landing/${filename}`,
+    entryFile: filename,
+    title: extractTitle(html, slug),
     description: extractDescription(html),
     createdAt: stat.birthtimeMs || stat.ctimeMs,
     modifiedAt: stat.mtimeMs,
@@ -156,6 +193,31 @@ async function buildPage(relDir: string): Promise<LandingPage | null> {
 export async function scanLandingPages(): Promise<LandingPage[]> {
   const pages: LandingPage[] = [];
 
+  // Confirma que o diretório base existe antes de varrer.
+  try {
+    const st = await fs.stat(LANDING_DIR);
+    if (!st.isDirectory()) return [];
+  } catch {
+    return [];
+  }
+
+  // Lê o nível raiz uma vez para detectar: arquivos HTML soltos + subpastas.
+  let rootEntries: import("fs").Dirent[];
+  try {
+    rootEntries = await fs.readdir(LANDING_DIR, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  // Arquivos HTML diretos na raiz (ex: as268011-netfacil.html).
+  for (const e of rootEntries) {
+    if (e.isFile() && e.name.toLowerCase().endsWith(".html")) {
+      const page = await buildRootFile(e.name);
+      if (page) pages.push(page);
+    }
+  }
+
+  // Subpastas: cada uma pode ser uma página (com index.html ou outro .html).
   async function walk(relDir: string) {
     const dirAbs = path.join(LANDING_DIR, relDir);
     let entries: import("fs").Dirent[];
@@ -165,7 +227,6 @@ export async function scanLandingPages(): Promise<LandingPage[]> {
       return;
     }
 
-    // Esta pasta é uma página?
     if (relDir) {
       const page = await buildPage(relDir);
       if (page) pages.push(page);
@@ -178,15 +239,12 @@ export async function scanLandingPages(): Promise<LandingPage[]> {
     }
   }
 
-  // Confirma que o diretório base existe antes de varrer.
-  try {
-    const st = await fs.stat(LANDING_DIR);
-    if (!st.isDirectory()) return [];
-  } catch {
-    return [];
+  for (const e of rootEntries) {
+    if (e.isDirectory()) {
+      await walk(e.name);
+    }
   }
 
-  await walk("");
   return pages;
 }
 
