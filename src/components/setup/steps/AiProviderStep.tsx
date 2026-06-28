@@ -1,12 +1,19 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { CheckCircle2, Cloud, Cpu, Loader2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { CheckCircle2, Cloud, Copy, Cpu, ExternalLink, Loader2, LogIn } from "lucide-react";
 import type { SetupStatus } from "../SetupStepper";
 import { KNOWN_MODELS } from "@/lib/openclaw-models";
 
-type Mode = "choose" | "local" | "cloud";
+type Mode = "choose" | "local" | "cloud" | "oauth";
 type CloudProvider = "anthropic" | "openai" | "google";
+
+interface OAuthSnap {
+  status: "idle" | "starting" | "awaiting" | "success" | "error";
+  verificationUrl?: string | null;
+  userCode?: string | null;
+  error?: string | null;
+}
 
 interface Props {
   status: SetupStatus;
@@ -27,6 +34,57 @@ export function AiProviderStep({ status, onAdvance }: Props) {
   const [testResult, setTestResult] = useState<{ ok: boolean; models?: string[]; error?: string } | null>(null);
   const [busy, setBusy] = useState<"test" | "save" | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [oauth, setOauth] = useState<OAuthSnap | null>(null);
+
+  // Poll the device-code session while the user authorizes in the browser.
+  useEffect(() => {
+    if (mode !== "oauth" || !oauth) return;
+    if (oauth.status === "success") {
+      onAdvance();
+      return;
+    }
+    if (oauth.status === "error" || oauth.status === "idle") return;
+    const t = setInterval(async () => {
+      try {
+        const res = await fetch("/api/setup/ai-provider/oauth/poll", { cache: "no-store" });
+        const json = (await res.json()) as OAuthSnap;
+        setOauth(json);
+        if (json.status === "success") {
+          clearInterval(t);
+          onAdvance();
+        }
+      } catch {
+        // transient — keep polling
+      }
+    }, 2500);
+    return () => clearInterval(t);
+  }, [mode, oauth, onAdvance]);
+
+  async function startOAuth() {
+    setMode("oauth");
+    setOauth({ status: "starting" });
+    try {
+      const res = await fetch("/api/setup/ai-provider/oauth/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: "openai" }),
+      });
+      const json = (await res.json()) as OAuthSnap;
+      setOauth(json);
+    } catch (e) {
+      setOauth({ status: "error", error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  async function cancelOAuth() {
+    try {
+      await fetch("/api/setup/ai-provider/oauth/cancel", { method: "POST" });
+    } catch {
+      // ignore
+    }
+    setOauth(null);
+    setMode("choose");
+  }
 
   const cloudModels = useMemo(() => KNOWN_MODELS.filter((m) => m.provider === tab), [tab]);
   const ollamaModels = useMemo(() => KNOWN_MODELS.filter((m) => m.provider === "ollama"), []);
@@ -119,6 +177,14 @@ export function AiProviderStep({ status, onAdvance }: Props) {
       {mode === "choose" && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
           <ChoiceCard
+            icon={LogIn}
+            title="Entrar com OpenAI"
+            badge="Recomendado"
+            body="Conecte sua conta OpenAI por um link seguro — sem colar chave nem mexer em terminal. Mostramos um link e um código; você autoriza no navegador."
+            footer="Usa sua assinatura ChatGPT/OpenAI (login OAuth)"
+            onClick={startOAuth}
+          />
+          <ChoiceCard
             icon={Cpu}
             title="Local com Ollama"
             badge="Gratuito"
@@ -140,6 +206,92 @@ export function AiProviderStep({ status, onAdvance }: Props) {
             footer="Pago por uso — defina orçamento em /costs depois"
             onClick={() => setMode("cloud")}
           />
+        </div>
+      )}
+
+      {mode === "oauth" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <BackLink onClick={cancelOAuth} />
+
+          {(!oauth || oauth.status === "starting") && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, color: "var(--text-secondary)", fontSize: 13.5 }}>
+              <Loader2 size={16} className="spin" /> Preparando o login seguro com a OpenAI…
+            </div>
+          )}
+
+          {oauth && oauth.status === "awaiting" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <p style={{ fontSize: 13.5, color: "var(--text-secondary)", lineHeight: 1.55, margin: 0 }}>
+                Falta só autorizar no navegador. É rápido:
+              </p>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <Step n={1} label="Abra a página de autorização da OpenAI">
+                  {oauth.verificationUrl ? (
+                    <a href={oauth.verificationUrl} target="_blank" rel="noreferrer" style={linkBtn}>
+                      <ExternalLink size={14} /> Abrir página de login
+                    </a>
+                  ) : (
+                    <span style={{ fontSize: 12, color: "var(--text-muted)" }}>aguardando link…</span>
+                  )}
+                </Step>
+
+                <Step n={2} label="Digite (ou cole) este código quando pedirem">
+                  {oauth.userCode ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <code
+                        style={{
+                          fontFamily: "var(--font-mono, monospace)",
+                          fontSize: 22,
+                          fontWeight: 700,
+                          letterSpacing: "0.12em",
+                          color: "var(--text-primary)",
+                          background: "var(--bg)",
+                          border: "1px solid var(--border)",
+                          borderRadius: 8,
+                          padding: "8px 14px",
+                        }}
+                      >
+                        {oauth.userCode}
+                      </code>
+                      <button
+                        type="button"
+                        onClick={() => navigator.clipboard?.writeText(oauth.userCode || "")}
+                        style={ghostBtn}
+                        title="Copiar código"
+                      >
+                        <Copy size={14} /> Copiar
+                      </button>
+                    </div>
+                  ) : (
+                    <span style={{ fontSize: 12, color: "var(--text-muted)" }}>aguardando código…</span>
+                  )}
+                </Step>
+
+                <Step n={3} label="Autorize — detectamos automaticamente">
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "var(--text-secondary)", fontSize: 13 }}>
+                    <Loader2 size={14} className="spin" /> Aguardando sua autorização…
+                  </span>
+                </Step>
+              </div>
+            </div>
+          )}
+
+          {oauth && oauth.status === "error" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <Notice variant="error">
+                {oauth.error || "Não consegui concluir o login."} Você pode tentar de novo ou usar uma chave de API.
+              </Notice>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button type="button" style={primaryBtn} onClick={startOAuth}>
+                  Tentar novamente
+                </button>
+                <button type="button" style={ghostBtn} onClick={() => { setOauth(null); setMode("cloud"); }}>
+                  Usar chave de API
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -414,6 +566,35 @@ function BackLink({ onClick }: { onClick: () => void }) {
   );
 }
 
+function Step({ n, label, children }: { n: number; label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+      <span
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 24,
+          height: 24,
+          borderRadius: 999,
+          background: "var(--accent)",
+          color: "var(--bg)",
+          fontWeight: 700,
+          fontSize: 12,
+          flexShrink: 0,
+          marginTop: 2,
+        }}
+      >
+        {n}
+      </span>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <span style={{ fontSize: 13, color: "var(--text-primary)", fontWeight: 600 }}>{label}</span>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 const inputStyle: React.CSSProperties = {
   width: "100%",
   padding: "9px 12px",
@@ -450,4 +631,20 @@ const ghostBtn: React.CSSProperties = {
   border: "1px solid var(--border)",
   fontSize: 12.5,
   cursor: "pointer",
+};
+
+const linkBtn: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 8,
+  padding: "9px 16px",
+  borderRadius: 8,
+  background: "var(--accent)",
+  color: "var(--bg)",
+  border: "none",
+  fontSize: 13.5,
+  fontWeight: 600,
+  cursor: "pointer",
+  textDecoration: "none",
+  width: "fit-content",
 };

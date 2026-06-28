@@ -18,6 +18,7 @@ import { DoneStep } from "./steps/DoneStep";
 export type StepId = "install" | "ai" | "interview" | "telegram" | "email" | "done";
 
 export interface SetupStatus {
+  deployMode?: "native" | "coolify";
   setup: { step: StepId; completedAt: string | null };
   openclaw: { installed: boolean; binPath: string | null; version: string | null; workspace: string };
   interview: { done: boolean; hasIdentity: boolean; hasSoul: boolean; hasUser: boolean; complete: boolean };

@@ -22,6 +22,9 @@ export function InstallStep({ status, onAdvance }: Props) {
   const logBoxRef = useRef<HTMLDivElement>(null);
 
   const installed = status.openclaw.installed;
+  // No deploy containerizado (Coolify) o OpenClaw já vem embutido na imagem e o
+  // gateway sobe sob PM2 — não há `npm install` a fazer. Só confirmamos e seguimos.
+  const containerMode = status.deployMode === "coolify";
 
   useEffect(() => {
     if (!logBoxRef.current) return;
@@ -79,6 +82,47 @@ export function InstallStep({ status, onAdvance }: Props) {
       setRunning(false);
       onAdvance();
     }
+  }
+
+  if (containerMode) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <div>
+          <h2 style={{ fontSize: 18, fontWeight: 700, color: "var(--text-primary)", marginBottom: 4 }}>
+            OpenClaw já incluído
+          </h2>
+          <p style={{ fontSize: 13.5, color: "var(--text-secondary)", lineHeight: 1.55 }}>
+            Esta instalação já vem com o OpenClaw embutido e rodando — nada para instalar.
+            Vamos direto para a escolha do modelo de IA.
+          </p>
+        </div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "10px 14px",
+            background: "rgba(50,215,75,0.08)",
+            border: "1px solid var(--success, #32D74B)",
+            borderRadius: 10,
+            fontSize: 13,
+          }}
+        >
+          <CheckCircle2 size={16} style={{ color: "var(--success, #32D74B)" }} />
+          <div style={{ flex: 1 }}>
+            <strong style={{ color: "var(--text-primary)" }}>OpenClaw pronto</strong>
+            <div style={{ color: "var(--text-muted)", fontSize: 11.5, marginTop: 2 }}>
+              {status.openclaw.version ? `v${status.openclaw.version}` : "gateway ativo"} · gerenciado pelo container
+            </div>
+          </div>
+        </div>
+        <div>
+          <button type="button" onClick={onAdvance} style={primaryBtn}>
+            Avançar pro próximo passo →
+          </button>
+        </div>
+      </div>
+    );
   }
 
   return (

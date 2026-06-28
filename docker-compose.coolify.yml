@@ -1,0 +1,69 @@
+# =============================================================================
+# Deploy CONTAINERIZADO do AtlasDeck — padrão Coolify (1 projeto por cliente).
+#
+# Sobe a imagem all-in-one (AtlasDeck + OpenClaw sob PM2). O sidecar Kali de
+# Pentest fica sob o profile "pentest" (DESLIGADO por padrão) — ative só para
+# clientes que contratarem o módulo:  docker compose --profile pentest up
+#
+# No Coolify: criar um recurso "Docker Compose" apontando para este arquivo.
+# O domínio (clienteN.seudominio.com) é configurado na UI do Coolify e faz
+# proxy para a porta 3000 do serviço "app". Veja docs/DEPLOY-COOLIFY.md.
+# =============================================================================
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: atlasdeck/app:latest
+    restart: unless-stopped
+    environment:
+      ATLASDECK_DEPLOY_MODE: coolify
+      OPENCLAW_DIR: /root/.openclaw
+      OPENCLAW_GATEWAY_PORT: "18789"
+      # Deixe em branco para o entrypoint gerar e persistir no volume.
+      # (Para reusar credenciais entre re-deploys, defina-as no painel do Coolify.)
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      AUTH_SECRET: ${AUTH_SECRET:-}
+      PENTEST_TOOLBOX_TOKEN: ${PENTEST_TOOLBOX_TOKEN:-}
+      # Preenchido só quando o módulo Pentest estiver ativo (profile pentest).
+      PENTEST_TOOLBOX_URL: ${PENTEST_TOOLBOX_URL:-}
+      # Branding do cliente (opcional).
+      NEXT_PUBLIC_AGENT_NAME: ${NEXT_PUBLIC_AGENT_NAME:-Mission Control}
+      NEXT_PUBLIC_APP_TITLE: ${NEXT_PUBLIC_APP_TITLE:-Mission Control}
+    volumes:
+      - atlasdeck-data:/app/data
+      - openclaw-home:/root/.openclaw
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+
+  # Sidecar Kali — sob demanda (profile "pentest"). Rede interna do projeto;
+  # nenhuma porta publicada. O app o resolve por DNS interno em http://toolbox:8099.
+  toolbox:
+    profiles: ["pentest"]
+    build:
+      context: ./docker/pentest-toolbox
+      dockerfile: Dockerfile
+    image: atlasdeck/pentest-toolbox:latest
+    restart: unless-stopped
+    environment:
+      PENTEST_TOOLBOX_TOKEN: ${PENTEST_TOOLBOX_TOKEN:-}
+      PORT: "8099"
+    volumes:
+      - pentest-uploads:/uploads
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8099/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  atlasdeck-data:
+  openclaw-home:
+  pentest-uploads:

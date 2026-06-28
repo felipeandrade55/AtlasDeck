@@ -15,6 +15,7 @@ import { listProviderKeys, type ProviderId } from "@/lib/provider-keys";
 import { getTelegramAccountLocal } from "@/lib/telegram-accounts-local";
 import { getOllamaStatus } from "@/lib/ollama-client";
 import { countAccounts as countEmailAccounts } from "@/lib/email-store";
+import { getDeployMode } from "@/lib/deploy-mode";
 
 export const dynamic = "force-dynamic";
 
@@ -88,6 +89,9 @@ export async function GET() {
   }
 
   const aiConfigured = (() => {
+    // Configurado via OAuth (OpenAI device-code/Codex): o perfil de auth vive
+    // no store do OpenClaw, não no nosso provider-keys — basta a flag.
+    if (settings.ai_oauth_provider) return true;
     if (!primaryModel) return false;
     if (provider === "anthropic" || provider === "openai" || provider === "google") {
       return cloudKeyMap.get(provider) === true;
@@ -144,6 +148,7 @@ export async function GET() {
   }
 
   return NextResponse.json({
+    deployMode: getDeployMode(),
     setup: {
       step: suggestedStep,
       completedAt: settings.setup_completed_at,

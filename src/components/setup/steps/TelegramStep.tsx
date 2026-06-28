@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, Copy, Loader2, MessageCircle, Smartphone } from "lucide-react";
 import type { SetupStatus } from "../SetupStepper";
+import { ApplyConfigGate } from "../ApplyConfigGate";
 
 interface Props {
   status: SetupStatus;
@@ -31,6 +32,10 @@ export function TelegramStep({ status, onAdvance }: Props) {
   const [pairing, setPairing] = useState<PairingState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [paired, setPaired] = useState<PairedResult | null>(null);
+  // Antes de mostrar o pareamento, rodamos a tela de "Aplicar configuração"
+  // (barra de progresso): aplica o modelo escolhido + sobe o gateway. Pulamos
+  // se o Telegram já estiver conectado (retomada de wizard).
+  const [applied, setApplied] = useState(false);
   const pollAbort = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -95,6 +100,12 @@ export function TelegramStep({ status, onAdvance }: Props) {
         await new Promise((r) => setTimeout(r, 1500));
       }
     }
+  }
+
+  // Gate de "Aplicar configuração" (barra de progresso) — só na primeira vez,
+  // e apenas quando ainda não há Telegram conectado.
+  if (!applied && !status.telegram.connected) {
+    return <ApplyConfigGate onReady={() => setApplied(true)} />;
   }
 
   if (status.telegram.connected && !paired) {

@@ -1021,6 +1021,14 @@ export interface MemorySettings {
    * gets the "isso é com o Felipe" fallback.
    */
   owner_whatsapp_number: string | null;
+  /**
+   * Set when the AI provider was configured via an OpenClaw OAuth flow
+   * (e.g. OpenAI device-code / Codex) instead of a pasted API key. OAuth
+   * profiles live in OpenClaw's own auth store, not in our provider-keys
+   * file, so the setup wizard uses this flag to recognize "AI configured"
+   * without a cloud key present. Holds the provider id (e.g. "openai").
+   */
+  ai_oauth_provider: string | null;
 }
 
 export type WakeEngine = "webspeech" | "openwakeword" | "porcupine";
@@ -1070,6 +1078,7 @@ const DEFAULT_SETTINGS: MemorySettings = {
   setup_completed_at: null,
   setup_email_skipped: false,
   owner_whatsapp_number: null,
+  ai_oauth_provider: null,
 };
 
 function parseSetupStep(value: string | undefined): SetupStep {
@@ -1179,6 +1188,7 @@ export function getSettings(): MemorySettings {
     setup_completed_at: parseNullableString(map.get("setup_completed_at")),
     setup_email_skipped: (map.get("setup_email_skipped") ?? "false") === "true",
     owner_whatsapp_number: parseNullableString(map.get("owner_whatsapp_number")),
+    ai_oauth_provider: parseNullableString(map.get("ai_oauth_provider")),
   };
 }
 
