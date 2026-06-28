@@ -7,6 +7,12 @@
  * output so the web wizard can show them, and keep the child alive until it
  * exits — success (code 0) means the OAuth profile was saved by OpenClaw.
  *
+ * The CLI refuses to run without an interactive TTY ("requires an interactive
+ * TTY"), so we launch it through `script -qec "<cmd>" /dev/null`, which
+ * allocates a pseudo-TTY and mirrors the child output to stdout. That output
+ * carries ANSI escapes + carriage returns from the spinner, so we strip those
+ * before scraping the URL/code (format: "URL: https://… / Code: XXXX-XXXXX").
+ *
  * Single-user app ⇒ a module-level singleton session is enough. The flow is
  * headless-friendly: the user never touches a terminal, only clicks a link and
  * pastes the code OpenClaw shows.
@@ -33,14 +39,23 @@ interface OAuthSession extends OAuthSnapshot {
 
 let session: OAuthSession | null = null;
 
-// Tolerant scrapers: any https URL, and the common XXXX-XXXX device-code shape.
-const URL_RE = /(https?:\/\/[^\s"'<>]+)/i;
+// Tolerant scrapers: any https URL, and the common XXXX-XXXXX device-code shape.
+const URL_RE = /(https?:\/\/[^\s"'<>│╮╯╰╭]+)/i;
 const CODE_RE = /\b([A-Z0-9]{4,}-[A-Z0-9]{4,})\b/;
+
+/** Strip ANSI escapes + carriage returns so the spinner output is scrapable. */
+function stripControl(s: string): string {
+  return s
+    .replace(/\x1B\[[0-9;?]*[ -/]*[@-~]/g, "") // CSI sequences
+    .replace(/\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)/g, "") // OSC sequences
+    .replace(/\r/g, "\n")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, ""); // other control chars (keep \n, \t)
+}
 
 function snapshot(s: OAuthSession): OAuthSnapshot {
   const { child: _child, ...rest } = s;
   void _child;
-  return { ...rest };
+  return { ...rest, output: stripControl(s.output).slice(-2000) };
 }
 
 export function getOAuthSnapshot(): OAuthSnapshot | null {
@@ -56,13 +71,14 @@ export function startOpenAiDeviceLogin(opts: { provider?: string } = {}): OAuthS
     return snapshot(session);
   }
 
-  const provider = opts.provider || "openai";
+  const provider = (opts.provider || "openai").replace(/[^a-z0-9_-]/gi, "") || "openai";
   const bin = readOpenClawConfig().openclawBin || "openclaw";
-  const child = spawn(
-    bin,
-    ["models", "auth", "login", "--provider", provider, "--device-code", "--set-default"],
-    { env: process.env, windowsHide: true },
-  );
+  // `openclaw models auth login` exige TTY; rodamos sob `script` (PTY).
+  const innerCmd = `${bin} models auth login --provider ${provider} --device-code --set-default`;
+  const child = spawn("script", ["-qec", innerCmd, "/dev/null"], {
+    env: process.env,
+    windowsHide: true,
+  });
 
   const s: OAuthSession = {
     child,
@@ -77,14 +93,14 @@ export function startOpenAiDeviceLogin(opts: { provider?: string } = {}): OAuthS
   session = s;
 
   const ingest = (chunk: Buffer | string) => {
-    const text = chunk.toString();
-    s.output = (s.output + text).slice(-8000);
+    s.output = (s.output + chunk.toString()).slice(-12000);
+    const clean = stripControl(s.output);
     if (!s.verificationUrl) {
-      const m = s.output.match(URL_RE);
+      const m = clean.match(URL_RE);
       if (m) s.verificationUrl = m[1];
     }
     if (!s.userCode) {
-      const m = s.output.match(CODE_RE);
+      const m = clean.match(CODE_RE);
       if (m) s.userCode = m[1];
     }
     if (s.status === "starting" && (s.verificationUrl || s.userCode)) {
