@@ -1455,6 +1455,19 @@ else
   grep -q '^PENTEST_TOOLBOX_URL=' "$ENV_FILE" || printf 'PENTEST_TOOLBOX_URL=http://127.0.0.1:%s\n' "$TOOLBOX_PORT" >> "$ENV_FILE"
   grep -q '^PENTEST_TOOLBOX_UPLOAD_DIR=' "$ENV_FILE" || printf 'PENTEST_TOOLBOX_UPLOAD_DIR=/uploads\n' >> "$ENV_FILE"
 
+  # Teto de recursos do container — configurável via .env (defaults seguros). O
+  # teto rígido é a rede de segurança; a prioridade suave (nice/ionice no toolbox)
+  # é quem evita o pentest deixar o VPS lento sem desperdiçar CPU ociosa.
+  TOOLBOX_CPUS=$(grep '^TOOLBOX_CPUS=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true); TOOLBOX_CPUS="${TOOLBOX_CPUS:-1.0}"
+  TOOLBOX_MEMORY=$(grep '^TOOLBOX_MEMORY=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true); TOOLBOX_MEMORY="${TOOLBOX_MEMORY:-1g}"
+  # Repassa os toggles de prioridade suave do .env quando definidos (defaults no
+  # server.js: ligado, nice 19, ionice classe 3/idle).
+  TOOLBOX_PRIO_ENVS=()
+  for _v in TOOLBOX_LOW_PRIORITY TOOLBOX_NICE TOOLBOX_IONICE_CLASS; do
+    _val=$(grep "^${_v}=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)
+    [[ -n "$_val" ]] && TOOLBOX_PRIO_ENVS+=( -e "${_v}=${_val}" )
+  done
+
   # 2) Build da imagem (idempotente; cache de layers torna rápido quando nada
   #    mudou; a 1ª vez baixa o Kali e pode levar minutos).
   info "Buildando imagem $TOOLBOX_IMAGE (1ª vez é demorada)..."
@@ -1471,7 +1484,8 @@ else
     if docker run -d --name "$TOOLBOX_CONTAINER" --restart unless-stopped \
          -p "127.0.0.1:${TOOLBOX_PORT}:8099" \
          -e PENTEST_TOOLBOX_TOKEN="$TOOLBOX_TOKEN" \
-         --memory 1g --cpus 1.0 --pids-limit 512 \
+         "${TOOLBOX_PRIO_ENVS[@]}" \
+         --memory "$TOOLBOX_MEMORY" --cpus "$TOOLBOX_CPUS" --pids-limit 512 \
          -v "$HOST_UPLOAD_DIR":/uploads \
          "$TOOLBOX_IMAGE" >/dev/null; then
 

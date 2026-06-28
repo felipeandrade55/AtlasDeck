@@ -59,8 +59,18 @@ services:
     environment:
       PENTEST_TOOLBOX_TOKEN: ${PENTEST_TOOLBOX_TOKEN:-}
       PORT: "8099"
+      # Prioridade suave: tools cedem CPU/IO ao resto do host sob disputa.
+      TOOLBOX_LOW_PRIORITY: "${TOOLBOX_LOW_PRIORITY:-1}"
+      TOOLBOX_NICE: "${TOOLBOX_NICE:-19}"
+      TOOLBOX_IONICE_CLASS: "${TOOLBOX_IONICE_CLASS:-3}"
     volumes:
       - pentest-uploads:/uploads
+    # Teto rigido de recursos (configuravel via .env) — alem da prioridade suave.
+    deploy:
+      resources:
+        limits:
+          cpus: "${TOOLBOX_CPUS:-1.0}"
+          memory: ${TOOLBOX_MEMORY:-1G}
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8099/health"]
       interval: 30s
