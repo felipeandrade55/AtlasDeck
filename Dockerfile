@@ -54,10 +54,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # App buildada + node_modules (inclui better-sqlite3 já compilado p/ esta base).
 COPY --from=build /app ./
 
-# Orquestração (PM2 + entrypoint anti-falha).
+# Orquestração (PM2 + entrypoint anti-falha + wrapper do gateway).
 COPY docker/atlasdeck/ecosystem.config.js ./ecosystem.config.js
+COPY docker/atlasdeck/start-gateway.sh ./start-gateway.sh
 COPY docker/atlasdeck/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh ./start-gateway.sh
 
 EXPOSE 3000
 # Coolify/Docker usam isto para saber quando o app está pronto e para self-heal.

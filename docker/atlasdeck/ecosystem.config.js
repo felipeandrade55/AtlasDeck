@@ -25,10 +25,11 @@ module.exports = {
     },
     {
       name: "openclaw-gateway",
-      script: "/usr/local/bin/openclaw",
-      // Foreground; loopback porque só o app (mesmo container) conecta.
-      // --allow-unconfigured deixa o gateway subir antes do wizard configurar o modelo.
-      args: "gateway run --port 18789 --bind loopback --auth none --allow-unconfigured",
+      // Via wrapper bash (não direto no binário): no fork mode o PM2 injeta um
+      // canal IPC do Node que faz o gateway subir sem bindar a porta. O wrapper
+      // roda `exec openclaw gateway run …` como neto do PM2, sem esse IPC.
+      script: "/app/start-gateway.sh",
+      interpreter: "bash",
       autorestart: true,
       max_restarts: 50,
       restart_delay: 3000,
