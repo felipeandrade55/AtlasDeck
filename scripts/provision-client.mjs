@@ -147,6 +147,27 @@ async function main() {
   if (!appUuid) die(`Não consegui obter o UUID da aplicação. Resposta: ${JSON.stringify(app)}`);
   console.log(`  ✓ aplicação criada: ${appUuid}`);
 
+  // 2b. Mapeia o domínio ao serviço "app" do compose. SEM isto o Coolify não
+  // gera os labels do proxy nem conecta o container à rede — o app sobe
+  // saudável mas o domínio não roteia (404 / "no available server").
+  let appDomain = DOMAIN ? `https://${DOMAIN}` : null;
+  if (!appDomain) {
+    try {
+      const fresh = await api("GET", `/applications/${appUuid}`);
+      appDomain = (fresh.fqdn || "").toString().split(",")[0] || null;
+    } catch {
+      /* ignore */
+    }
+  }
+  if (appDomain) {
+    await api("PATCH", `/applications/${appUuid}`, {
+      docker_compose_domains: { app: { name: "app", domain: appDomain } },
+    });
+    console.log(`  ✓ domínio mapeado ao serviço app: ${appDomain}`);
+  } else {
+    console.log(`  ! não resolvi o domínio automaticamente — defina docker_compose_domains (serviço app) na UI`);
+  }
+
   // 3. Variáveis de ambiente.
   const adminPassword = genSecret(14);
   const authSecret = crypto.randomBytes(32).toString("base64");
@@ -181,18 +202,12 @@ async function main() {
   }
 
   // 5. Resumo.
-  let fqdn = DOMAIN;
-  try {
-    const fresh = await api("GET", `/applications/${appUuid}`);
-    fqdn = (fresh.fqdn || fresh.domains || fqdn || "").toString().split(",")[0];
-  } catch {
-    /* ignore */
-  }
+  const url = appDomain;
 
   console.log(`\n✅ Cliente provisionado.\n`);
   console.log(`   Projeto:   AtlasDeck - ${NAME} (${projectUuid})`);
   console.log(`   App UUID:  ${appUuid}`);
-  console.log(`   URL:       ${fqdn || "(veja na UI; Coolify gera o domínio)"}`);
+  console.log(`   URL:       ${url || "(veja na UI; Coolify gera o domínio)"}`);
   console.log(`   Login:     admin via ADMIN_PASSWORD`);
   console.log(`   Senha:     ${adminPassword}`);
   console.log(`\n   Guarde a senha — ela também está nas envs do app no Coolify.`);

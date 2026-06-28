@@ -140,6 +140,7 @@ Os **volumes persistem**, então dados e configuração do cliente são preserva
 
 | Sintoma | Verificar |
 |--------|-----------|
+| App "healthy" mas domínio dá 404 / "no available server" | O domínio precisa estar **mapeado ao serviço `app`** do compose (`docker_compose_domains`). O `provision-client.mjs` faz isso automaticamente; na UI, configure o domínio no serviço `app` (porta 3000) e re-deploye. |
 | App não fica "healthy" | Logs do deploy no Coolify; o gateway leva ~30s na 1ª subida. `/api/health` mostra o status de cada dependência. |
 | Não sei a senha de admin | Defina `ADMIN_PASSWORD` nas envs do app; ou leia `/app/data/.container-secrets.env` no volume. |
 | OAuth da OpenAI não conclui | Confirme que o cliente autorizou o **código** mostrado; o passo "Usar chave de API" é o fallback. |
