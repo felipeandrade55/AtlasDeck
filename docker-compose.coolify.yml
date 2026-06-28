@@ -17,19 +17,24 @@ services:
     image: atlasdeck/app:latest
     restart: unless-stopped
     environment:
-      ATLASDECK_DEPLOY_MODE: coolify
-      OPENCLAW_DIR: /root/.openclaw
-      OPENCLAW_GATEWAY_PORT: "18789"
+      # Var mágica do Coolify: gera o domínio do serviço, cria os labels do proxy
+      # (Traefik/Caddy) e conecta o container à rede "coolify". Sem isto o app
+      # sobe saudável mas o domínio não roteia. Para domínio próprio do cliente,
+      # defina SERVICE_FQDN_APP_3000=https://app.cliente.com nas envs do Coolify.
+      - SERVICE_FQDN_APP_3000
+      - ATLASDECK_DEPLOY_MODE=coolify
+      - OPENCLAW_DIR=/root/.openclaw
+      - OPENCLAW_GATEWAY_PORT=18789
       # Deixe em branco para o entrypoint gerar e persistir no volume.
       # (Para reusar credenciais entre re-deploys, defina-as no painel do Coolify.)
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
-      AUTH_SECRET: ${AUTH_SECRET:-}
-      PENTEST_TOOLBOX_TOKEN: ${PENTEST_TOOLBOX_TOKEN:-}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      - AUTH_SECRET=${AUTH_SECRET:-}
+      - PENTEST_TOOLBOX_TOKEN=${PENTEST_TOOLBOX_TOKEN:-}
       # Preenchido só quando o módulo Pentest estiver ativo (profile pentest).
-      PENTEST_TOOLBOX_URL: ${PENTEST_TOOLBOX_URL:-}
+      - PENTEST_TOOLBOX_URL=${PENTEST_TOOLBOX_URL:-}
       # Branding do cliente (opcional).
-      NEXT_PUBLIC_AGENT_NAME: ${NEXT_PUBLIC_AGENT_NAME:-Mission Control}
-      NEXT_PUBLIC_APP_TITLE: ${NEXT_PUBLIC_APP_TITLE:-Mission Control}
+      - NEXT_PUBLIC_AGENT_NAME=${NEXT_PUBLIC_AGENT_NAME:-Mission Control}
+      - NEXT_PUBLIC_APP_TITLE=${NEXT_PUBLIC_APP_TITLE:-Mission Control}
     volumes:
       - atlasdeck-data:/app/data
       - openclaw-home:/root/.openclaw
