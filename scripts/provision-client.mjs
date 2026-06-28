@@ -159,6 +159,11 @@ async function main() {
       /* ignore */
     }
   }
+  // Força HTTPS: o cookie de auth do AtlasDeck é Secure em produção, então
+  // sobre HTTP o login não "cola". Mapear como https faz o Coolify emitir TLS.
+  if (appDomain && appDomain.startsWith("http://")) {
+    appDomain = "https://" + appDomain.slice("http://".length);
+  }
   if (appDomain) {
     await api("PATCH", `/applications/${appUuid}`, {
       docker_compose_domains: { app: { name: "app", domain: appDomain } },
