@@ -117,8 +117,8 @@ async function main() {
 
   // 1. Cria o projeto.
   const project = await api("POST", "/projects", {
-    name: `AtlasDeck — ${NAME}`,
-    description: `Instalação AtlasDeck do cliente ${NAME} (provisionada automaticamente).`,
+    name: `AtlasDeck - ${NAME}`,
+    description: `Instalacao AtlasDeck do cliente ${NAME} (provisionada automaticamente).`,
   });
   const projectUuid = project.uuid || project.id;
   console.log(`  ✓ projeto criado: ${projectUuid}`);
@@ -133,7 +133,7 @@ async function main() {
     build_pack: "dockercompose",
     docker_compose_location: COMPOSE_LOCATION,
     name: `atlasdeck-${SLUG}`,
-    description: `AtlasDeck — ${NAME}`,
+    description: `AtlasDeck - ${NAME}`,
     ports_exposes: "3000",
     is_auto_deploy_enabled: true,
     is_force_https_enabled: true,
@@ -190,7 +190,7 @@ async function main() {
   }
 
   console.log(`\n✅ Cliente provisionado.\n`);
-  console.log(`   Projeto:   AtlasDeck — ${NAME} (${projectUuid})`);
+  console.log(`   Projeto:   AtlasDeck - ${NAME} (${projectUuid})`);
   console.log(`   App UUID:  ${appUuid}`);
   console.log(`   URL:       ${fqdn || "(veja na UI; Coolify gera o domínio)"}`);
   console.log(`   Login:     admin via ADMIN_PASSWORD`);

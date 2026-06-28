@@ -23,6 +23,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 make g++ ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json ./
+# O postinstall (scripts/setup-openwakeword.js) roda durante o `npm ci`, então
+# a pasta scripts/ precisa existir ANTES da instalação.
+COPY scripts ./scripts
 RUN npm ci
 COPY . .
 # Garante os assets de wake-word no public/ (idempotente — postinstall já roda).
