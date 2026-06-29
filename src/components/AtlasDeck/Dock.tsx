@@ -20,6 +20,7 @@ import {
   NotebookPen,
   FileCog,
   ShieldAlert,
+  Users,
 } from "lucide-react";
 
 const dockItems = [
@@ -38,6 +39,7 @@ const dockItems = [
   { href: "/sessions", label: "Sessões", icon: History },
   { href: "/skills", label: "Habilidades", icon: Puzzle },
   { href: "/pentest", label: "Pentest", icon: ShieldAlert },
+  { href: "/saas", label: "Clientes SaaS", icon: Users },
   { href: "/costs", label: "Custos & Análises", icon: DollarSign },
   { href: "/settings", label: "Configurações", icon: Settings },
 

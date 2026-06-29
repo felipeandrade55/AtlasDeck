@@ -70,3 +70,21 @@ export function getClientSlug(host?: string | null): string | null {
 export function clientFqdn(slug: string, baseDomain: string = getBaseDomain()): string {
   return `${slug}.${baseDomain}`;
 }
+
+/**
+ * Normalize an arbitrary name into a DNS/Coolify-safe slug: lowercase,
+ * accents stripped, non-alphanumerics collapsed to single dashes, trimmed.
+ * Single source of truth shared by the CLI, the admin API and the webhook.
+ *
+ *   "Felipe Andrade"  → "felipe-andrade"
+ *   "Bruno Sénior!!"  → "bruno-senior"
+ */
+export function slugify(input: string): string {
+  return (input || "")
+    .toString()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}

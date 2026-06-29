@@ -222,6 +222,16 @@ export async function register(): Promise<void> {
     console.warn("[instrumentation] whatsapp briefing scheduler bootstrap failed:", err);
   }
 
+  // SaaS provisioning worker — drives newly-provisioned clients from
+  // "deploying" to "active" (poll Coolify) and emails their credentials.
+  // Só roda no app do dono (modo native); no-op no container do cliente.
+  try {
+    const { startProvisionScheduler } = await import("@/lib/saas/provision-scheduler");
+    startProvisionScheduler();
+  } catch (err) {
+    console.warn("[instrumentation] SaaS provision scheduler bootstrap failed:", err);
+  }
+
   // Activity bootstrap — if the activity DB is empty, seed it with real
   // system-state activities so the dashboard "Atividade Recente" never
   // looks mocked or static on fresh installs.
