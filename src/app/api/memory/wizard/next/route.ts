@@ -58,33 +58,39 @@ export async function POST(request: NextRequest) {
 
   const asked = new Set(history.map((h) => normalizeQ(h.question)));
 
-  try {
-    const prompt = buildInterviewerPrompt(history);
-    // Short budget: the static plan is a perfectly good interview, so we
-    // don't let a slow/wedged CLI stall the "Próxima" button for minutes.
-    const { data, provider, model } = await runWizardLLM<InterviewerOutput>(prompt, {
-      timeoutMs: 12_000,
-    });
+  // The interview is STATIC by default: instant, deterministic, and the 5
+  // curated questions already cover every topic. We deliberately do NOT
+  // call the LLM here — a real agent turn takes ~10-15s, which would make
+  // every "Próxima" click crawl (and get killed by any timeout, wasting
+  // the wait + tokens). The LLM's real value is the GENERATE step, which
+  // synthesizes the files. Opt into an adaptive LLM interview by setting
+  // WIZARD_LLM_INTERVIEW=1 (accepts the per-question latency).
+  if (process.env.WIZARD_LLM_INTERVIEW === "1") {
+    try {
+      const prompt = buildInterviewerPrompt(history);
+      const { data, provider, model } = await runWizardLLM<InterviewerOutput>(prompt, {
+        timeoutMs: 30_000,
+      });
 
-    if (typeof data?.complete !== "boolean") {
-      throw new Error("LLM não retornou campo 'complete'");
+      if (typeof data?.complete !== "boolean") {
+        throw new Error("LLM não retornou campo 'complete'");
+      }
+
+      // Guard against a weak model that re-asks a covered question (or
+      // returns an empty one): treat it as "needs static fallback".
+      const proposed = data.next_question?.trim();
+      if (!data.complete && (!proposed || asked.has(normalizeQ(proposed)))) {
+        throw new Error("LLM repetiu/omitiu a pergunta");
+      }
+
+      return NextResponse.json({ ...data, provider, model });
+    } catch {
+      // fall through to the static plan below
     }
+  }
 
-    // Guard against a weak model that re-asks a covered question (or
-    // returns an empty one): treat it as "needs static fallback".
-    const proposed = data.next_question?.trim();
-    if (!data.complete && (!proposed || asked.has(normalizeQ(proposed)))) {
-      throw new Error("LLM repetiu/omitiu a pergunta");
-    }
-
-    return NextResponse.json({
-      ...data,
-      provider,
-      model,
-    });
-  } catch {
-    // LLM unavailable or unusable — walk the static plan, always picking
-    // a question that hasn't been asked yet.
+  // Static plan — always pick a question that hasn't been asked yet.
+  {
     const next = nextStaticQuestion(history);
     if (next) {
       return NextResponse.json({
