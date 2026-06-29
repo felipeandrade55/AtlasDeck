@@ -708,7 +708,9 @@ function mergeSessions(sessions: ParsedSession[]): ParsedSession[] {
 
 async function readOpenClawSessions(diagnostics: string[]) {
   try {
-    const data = await runOpenClaw(["sessions", "list"]);
+    // `sessions` (base) lists; `sessions list` errors with "Too many
+    // arguments" on OpenClaw 2026.5.12 (no `list` subcommand).
+    const data = await runOpenClaw(["sessions", "--json"]);
     const sessions = extractSessionsList(data)
       .map((raw) => buildSession(raw, "sessions-list"))
       .filter((session): session is ParsedSession => !!session);

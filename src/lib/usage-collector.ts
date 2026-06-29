@@ -244,12 +244,15 @@ export async function getOpenClawStatus(): Promise<unknown> {
 export async function getOpenClawSessionsList(): Promise<unknown> {
   const { data } = await tryOpenClawFormats(
     [
-      ["sessions", "list", "--json"],
+      // Base command first — `sessions list` errors with "Too many
+      // arguments" on OpenClaw 2026.5.12 (no `list` subcommand). The
+      // `list` variants stay as fallbacks for builds that require them.
       ["sessions", "--json"],
-      ["sessions", "list"],
       ["sessions"],
+      ["sessions", "list", "--json"],
+      ["sessions", "list"],
     ],
-    "openclaw sessions list"
+    "openclaw sessions"
   );
   return data;
 }

@@ -87,10 +87,12 @@ async function checkBin(config: OpenClawConfig): Promise<{ ok: boolean; detail: 
 
 async function checkSessions(config: OpenClawConfig): Promise<Pick<OpenClawStatus, "sessionsReachable" | "sessionsSeen" | "sessionsDetail">> {
   const argSets = [
-    ["sessions", "list", "--json"],
+    // Base command first — `sessions list` errors with "Too many arguments"
+    // on OpenClaw 2026.5.12 (no `list` subcommand). `list` kept as fallback.
     ["sessions", "--json"],
-    ["sessions", "list"],
     ["sessions"],
+    ["sessions", "list", "--json"],
+    ["sessions", "list"],
   ];
 
   for (const args of argSets) {

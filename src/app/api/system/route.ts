@@ -33,9 +33,16 @@ function parseIdentityMd(): { name: string; creature: string; emoji: string } {
 function getLastSessionTime(): string | null {
   try {
     const config = readOpenClawConfig();
-    const raw = execFileSync(config.openclawBin, ['sessions', 'list', '--json'], {
+    // `openclaw sessions --json` is the base command. The old
+    // `sessions list --json` form errors with "Too many arguments" on
+    // OpenClaw 2026.5.12 (no `list` subcommand). `stdio` pipes stderr into
+    // the thrown error instead of inheriting it to our stderr — without
+    // that, execFileSync prints the child's error to the pm2 log on every
+    // /api/system poll.
+    const raw = execFileSync(config.openclawBin, ['sessions', '--json'], {
       timeout: 4000,
       encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env,
         OPENCLAW_DIR: config.openclawDir,
