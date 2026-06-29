@@ -33,6 +33,7 @@ interface DiagPayload {
   config: { dirty: boolean; error?: string };
   pids: Array<{ pid: number }>;
   runtime: string;
+  liveness?: { reachable: boolean };
   health: { ok: boolean; summary: { fail: number; warn: number; headline: string } } | null;
   watchdog: { started: boolean; circuitOpen: boolean; restartInFlight: boolean };
   watcher: { started: boolean };
@@ -47,7 +48,18 @@ interface DiagPayload {
 function evaluate(d: DiagPayload): BannerPayload {
   const details: string[] = [];
 
-  if (d.runtime === "unknown" || d.pids.length === 0) {
+  // Only declare the gateway dead when it ALSO doesn't answer on its HTTP
+  // port. Process/cmdline detection (runtime/pids) false-negatives inside
+  // containers — if `reachable` is true the daemon is serving, so a missing
+  // pid is a detection quirk, not an outage. When `liveness` is absent
+  // (older payload), fall back to the previous process-only heuristic.
+  const reachable = d.liveness?.reachable === true;
+  const processUndetected = d.runtime === "unknown" || d.pids.length === 0;
+  if (!reachable && processUndetected && d.liveness !== undefined) {
+    details.push("Gateway OpenClaw não está rodando — auto-restart vai tentar reanimar.");
+    return { severity: "fail", headline: "Gateway caiu", details };
+  }
+  if (d.liveness === undefined && processUndetected) {
     details.push("Gateway OpenClaw não está rodando — auto-restart vai tentar reanimar.");
     return { severity: "fail", headline: "Gateway caiu", details };
   }

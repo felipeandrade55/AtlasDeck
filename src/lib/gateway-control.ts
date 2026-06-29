@@ -20,6 +20,34 @@ import path from "path";
 
 import { OPENCLAW_DIR } from "./paths";
 import { sweepOpenClawConfig, type SweepResult } from "./openclaw-config-sweep";
+import { getOpenClawGatewayInfo } from "./openclaw-config";
+
+/**
+ * Authoritative liveness probe: does the gateway answer on its HTTP port?
+ *
+ * This is the truth about "is the gateway up" — far more reliable than
+ * grepping /proc for a process whose cmdline happens to contain both
+ * "openclaw" and "gateway" (which silently fails inside containers where
+ * the worker's argv looks different). ANY HTTP response — even 401/404 —
+ * means the daemon is listening and serving, so the process is alive.
+ *
+ * Returns false only when the socket is refused/times out.
+ */
+export async function probeGatewayAlive(timeoutMs = 3000): Promise<boolean> {
+  try {
+    const { url } = getOpenClawGatewayInfo();
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { signal: controller.signal });
+      return res.status > 0;
+    } finally {
+      clearTimeout(t);
+    }
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Where we redirect stdout/stderr of any daemon we spawn detached. Without

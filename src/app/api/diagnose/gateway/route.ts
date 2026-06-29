@@ -25,6 +25,7 @@ import path from "path";
 import {
   detectGatewayRuntime,
   gatewayLogs,
+  probeGatewayAlive,
 } from "@/lib/gateway-control";
 import { resolveOpenClawAgentsConfigPath } from "@/lib/openclaw-config";
 import { migrateTelegramAccountsFromConfig } from "@/lib/telegram-accounts-local";
@@ -211,11 +212,12 @@ async function readRecentIncidents(limit = 5): Promise<Array<{ file: string; mod
 }
 
 export async function GET() {
-  const [runtime, pids, logs, incidents] = await Promise.all([
+  const [runtime, pids, logs, incidents, gatewayReachable] = await Promise.all([
     detectGatewayRuntime(),
     readGatewayPidUptime(),
     gatewayLogs({ lines: 200, errorsOnly: false }).catch(() => null),
     readRecentIncidents(5),
+    probeGatewayAlive(),
   ]);
 
   const dirty = dryRunSweep();
@@ -230,6 +232,10 @@ export async function GET() {
     timestamp: new Date().toISOString(),
     runtime,
     pids,
+    // Authoritative liveness: does the gateway answer on its HTTP port?
+    // Process/cmdline detection (runtime/pids) is a fragile proxy that
+    // false-negatives inside containers — `reachable` is the truth.
+    liveness: { reachable: gatewayReachable },
     config: {
       path: dirty.configPath,
       dirty: dirty.cleanedTelegram || dirty.cleanedWhatsapp,

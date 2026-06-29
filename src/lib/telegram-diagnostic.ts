@@ -9,7 +9,7 @@ import { readFileSync, existsSync } from "fs";
 import { resolveOpenClawAgentsConfigPath } from "./openclaw-config";
 import { getTelegramAccountLocal } from "./telegram-accounts-local";
 import { tgCall, type TgBotInfo, type TgWebhookInfo } from "./telegram-api";
-import { detectGatewayRuntime } from "./gateway-control";
+import { detectGatewayRuntime, probeGatewayAlive } from "./gateway-control";
 // NOTE: getPollerMemory is loaded via dynamic import inside runDiagnose
 // because health-monitor.ts already statically imports this file; loading
 // it back here statically would create a circular dependency.
@@ -342,15 +342,23 @@ export async function runDiagnose(opts: RunDiagnoseOptions): Promise<DiagnoseRes
   }
 
   try {
-    const runtime = await detectGatewayRuntime();
-    const isRunning = runtime !== "unknown";
+    // HTTP liveness is the truth; runtime detection is a best-effort label.
+    // A gateway that answers on its port is up even when process/cmdline
+    // detection (which false-negatives in containers) finds nothing — this
+    // keeps the auto-restart watchdog from "reviving" a healthy gateway.
+    const [runtime, reachable] = await Promise.all([
+      detectGatewayRuntime(),
+      probeGatewayAlive(),
+    ]);
+    const isRunning = reachable || runtime !== "unknown";
+    const via = runtime !== "unknown" ? runtime : reachable ? "porta HTTP" : "n/d";
     checks.push({
       id: "gateway",
       category: "openclaw",
       label: "Gateway OpenClaw",
       status: isRunning ? "pass" : "fail",
       detail: isRunning
-        ? `Rodando via ${runtime}.`
+        ? `Rodando (via ${via}).`
         : "Nenhum processo do gateway encontrado — o bot do Telegram não vai responder mesmo com o token OK.",
       fix: isRunning
         ? { action: "restart-gateway", label: "Reiniciar gateway" }
