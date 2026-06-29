@@ -7,8 +7,9 @@
  *     persists chatId to AtlasDeck-local store, advances setup_step, returns chatId
  */
 import { NextResponse } from "next/server";
-import { readFileSync, writeFileSync } from "fs";
-import { resolveOpenClawAgentsConfigPath } from "@/lib/openclaw-config";
+import { readFileSync, writeFileSync, mkdirSync } from "fs";
+import path from "path";
+import { resolveOpenClawAgentsConfigPath, getOpenClawDir } from "@/lib/openclaw-config";
 import {
   consumePairing,
   getPairing,
@@ -30,6 +31,7 @@ interface TelegramUpdate {
 }
 
 interface ConfigShape {
+  commands?: { ownerAllowFrom?: string[] };
   channels?: {
     telegram?: {
       enabled?: boolean;
@@ -66,7 +68,7 @@ async function getUpdates(
   }
 }
 
-function persistAccount(accountId: string, botToken: string, chatId: string) {
+function persistAccount(accountId: string, botToken: string, chatId: string, userId: string) {
   const { path: configPath } = resolveOpenClawAgentsConfigPath();
   const config = JSON.parse(readFileSync(configPath, "utf-8")) as ConfigShape;
   if (!config.channels) config.channels = {};
@@ -79,8 +81,47 @@ function persistAccount(accountId: string, botToken: string, chatId: string) {
     dmPolicy: existing.dmPolicy ?? "pairing",
   };
   config.channels.telegram.enabled = true;
+
+  // Grant the owner (the person finishing setup) command/owner rights so
+  // their messages aren't treated as a stranger's.
+  const ownerRef = `telegram:${userId}`;
+  if (!config.commands) config.commands = {};
+  if (!Array.isArray(config.commands.ownerAllowFrom)) config.commands.ownerAllowFrom = [];
+  if (!config.commands.ownerAllowFrom.includes(ownerRef)) {
+    config.commands.ownerAllowFrom.push(ownerRef);
+  }
+
   writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
   setTelegramAccountLocal(accountId, { chatId });
+  approveTelegramSender(accountId, userId);
+}
+
+/**
+ * Pre-approve the owner in OpenClaw's DM allowlist so dmPolicy:"pairing"
+ * lets them through immediately — no "access not configured / pairing
+ * code" wall after setup. Mirrors what `openclaw pairing approve` writes
+ * to <openclawDir>/credentials/telegram-<account>-allowFrom.json. The
+ * gateway keeps walling everyone ELSE, so security is preserved.
+ */
+function approveTelegramSender(accountId: string, userId: string) {
+  try {
+    const credDir = path.join(getOpenClawDir(), "credentials");
+    mkdirSync(credDir, { recursive: true });
+    const allowFile = path.join(credDir, `telegram-${accountId}-allowFrom.json`);
+    let store: { version?: number; allowFrom?: string[] } = { version: 1, allowFrom: [] };
+    try {
+      store = JSON.parse(readFileSync(allowFile, "utf-8")) as { version?: number; allowFrom?: string[] };
+    } catch {
+      // file doesn't exist yet — start fresh
+    }
+    if (!Array.isArray(store.allowFrom)) store.allowFrom = [];
+    const idStr = String(userId);
+    if (!store.allowFrom.includes(idStr)) store.allowFrom.push(idStr);
+    store.version = store.version ?? 1;
+    writeFileSync(allowFile, JSON.stringify(store, null, 2), "utf-8");
+  } catch {
+    // best-effort: pairing still succeeds; owner can approve manually if needed
+  }
 }
 
 async function sendConfirmation(token: string, chatId: string) {
@@ -128,8 +169,10 @@ export async function GET(req: Request) {
     const isStart = text === "/start" || text.startsWith("/start ") || text.includes(nonce);
     if (isStart) {
       const chatIdStr = String(chatId);
+      // In a DM, from.id === chat.id; fall back to chat id just in case.
+      const userId = String(update.message?.from?.id ?? chatId);
       try {
-        persistAccount(entry.accountId, entry.botToken, chatIdStr);
+        persistAccount(entry.accountId, entry.botToken, chatIdStr, userId);
       } catch (err) {
         return NextResponse.json(
           {

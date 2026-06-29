@@ -135,6 +135,43 @@ function ensureWhatsappChannelDefaults(raw: Record<string, unknown>): boolean {
  *
  * Returns true if we mutated the value.
  */
+/**
+ * Ensure `gateway.controlUi.dangerouslyDisableDeviceAuth: true` (and
+ * `allowInsecureAuth: true`) so AtlasDeck's own WS client (a backend
+ * client on loopback) can connect without device pairing.
+ *
+ * Since OpenClaw ~2026.3.x the gateway rejects backend WS handshakes with
+ * "device identity required", which breaks the web chat out of the box —
+ * the user would otherwise have to click "Ligar bypass" manually. AtlasDeck
+ * and the gateway are always colocated (same host/container), so this is
+ * the right default. Applying it in the boot sweep makes every install —
+ * fresh or existing — self-heal on the next restart.
+ *
+ * Returns true when the config object was mutated.
+ */
+function ensureBackendAuthBypass(raw: Record<string, unknown>): boolean {
+  const gateway = (raw.gateway && typeof raw.gateway === "object" ? raw.gateway : {}) as Record<
+    string,
+    unknown
+  >;
+  const controlUi = (gateway.controlUi && typeof gateway.controlUi === "object" ? gateway.controlUi : {}) as Record<
+    string,
+    unknown
+  >;
+  let changed = false;
+  if (controlUi.dangerouslyDisableDeviceAuth !== true) {
+    controlUi.dangerouslyDisableDeviceAuth = true;
+    changed = true;
+  }
+  if (controlUi.allowInsecureAuth !== true) {
+    controlUi.allowInsecureAuth = true;
+    changed = true;
+  }
+  if (!changed) return false;
+  raw.gateway = { ...gateway, controlUi };
+  return true;
+}
+
 function ensureGatewayReloadHybrid(raw: Record<string, unknown>): boolean {
   const gateway = (raw.gateway && typeof raw.gateway === "object" ? raw.gateway : {}) as Record<
     string,
@@ -251,6 +288,10 @@ export function sweepOpenClawConfig(): SweepResult {
     // that would kill the Baileys WhatsApp session for 15-20s.
     const changedReloadMode = ensureGatewayReloadHybrid(raw);
 
+    // Device-auth bypass so AtlasDeck's WS (web chat) connects without the
+    // "device identity required" rejection. Self-heals every boot.
+    const changedBackendAuth = ensureBackendAuthBypass(raw);
+
     if (
       changedTelegram ||
       changedWhatsapp ||
@@ -258,6 +299,7 @@ export function sweepOpenClawConfig(): SweepResult {
       changedPluginsEnabled.length > 0 ||
       changedWhatsappChannelDefaults ||
       changedReloadMode ||
+      changedBackendAuth ||
       removedAcpxEntry
     ) {
       writeFileSync(configPath, JSON.stringify(raw, null, 2), "utf-8");

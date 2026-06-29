@@ -92,6 +92,16 @@ export function startUpdateScheduler() {
   if (started) return;
   started = true;
 
+  // Em container (Coolify) não há .git local: checkForUpdates lança
+  // "Could not determine local git version" a cada tick, poluindo o log.
+  // Atualização nesse modo é via rebuild da imagem — nada pra agendar.
+  if (isContainerDeploy()) {
+    console.log(
+      "[update-scheduler] modo container — atualização via rebuild da imagem (Coolify). Scheduler não iniciado.",
+    );
+    return;
+  }
+
   const config = readUpdateConfig();
   if (!config.autoCheck) {
     console.log("[update-scheduler] autoCheck desabilitado — não iniciando agendador");
