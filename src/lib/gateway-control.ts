@@ -173,6 +173,34 @@ async function findPm2Name(): Promise<string | null> {
   return null;
 }
 
+/**
+ * The gateway's PID as PM2 reports it. Used as a fallback when the /proc
+ * cmdline scan finds nothing (the worker's argv inside the container
+ * doesn't contain both "openclaw" and "gateway") but the daemon is in
+ * fact alive — so diagnostics can show a real pid instead of "0 pids",
+ * which legacy clients read as "gateway down".
+ */
+export async function findGatewayPm2Pid(): Promise<number | null> {
+  const r = await safeExec(`pm2 jlist 2>/dev/null`, 5000);
+  if (!r.ok || !r.stdout.trim()) return null;
+  try {
+    const list = JSON.parse(r.stdout) as Array<{
+      pid?: number;
+      name?: string;
+      pm2_env?: { args?: string[]; script?: string; status?: string };
+    }>;
+    for (const p of list) {
+      const hay = `${p.name || ""} ${p.pm2_env?.script || ""} ${(p.pm2_env?.args || []).join(" ")}`.toLowerCase();
+      if (hay.includes("openclaw") && !hay.includes("atlasdeck") && typeof p.pid === "number" && p.pid > 0) {
+        return p.pid;
+      }
+    }
+  } catch {
+    // jlist not JSON / pm2 absent
+  }
+  return null;
+}
+
 async function readCmdline(pid: number): Promise<string | null> {
   try {
     const buf = await readFile(`/proc/${pid}/cmdline`);

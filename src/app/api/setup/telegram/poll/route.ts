@@ -26,7 +26,7 @@ interface TelegramUpdate {
   message?: {
     text?: string;
     chat?: { id: number };
-    from?: { id: number; first_name?: string; username?: string };
+    from?: { id: number; first_name?: string; last_name?: string; username?: string };
   };
 }
 
@@ -182,7 +182,13 @@ export async function GET(req: Request) {
           { status: 500 },
         );
       }
-      setSettings({ setup_step: "done" });
+      // Capture the owner's real name (first+last) so the UI greets them
+      // by name instead of "Usuário". Only set when we actually have one.
+      const ownerName = [update.message?.from?.first_name, update.message?.from?.last_name]
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+      setSettings(ownerName ? { setup_step: "done", owner_name: ownerName } : { setup_step: "done" });
       await sendConfirmation(entry.botToken, chatIdStr);
       consumePairing(nonce);
       try {

@@ -26,6 +26,7 @@ import {
   detectGatewayRuntime,
   gatewayLogs,
   probeGatewayAlive,
+  findGatewayPm2Pid,
 } from "@/lib/gateway-control";
 import { resolveOpenClawAgentsConfigPath } from "@/lib/openclaw-config";
 import { migrateTelegramAccountsFromConfig } from "@/lib/telegram-accounts-local";
@@ -220,6 +221,17 @@ export async function GET() {
     probeGatewayAlive(),
   ]);
 
+  // If the /proc scan found no pids but the gateway answers on its port,
+  // fall back to PM2's pid. Keeps `pids` truthful inside containers so even
+  // legacy clients (which key "is it up?" off pids.length) don't false-alarm.
+  let pidList = pids;
+  if (pidList.length === 0 && gatewayReachable) {
+    const pmPid = await findGatewayPm2Pid().catch(() => null);
+    if (pmPid) {
+      pidList = [{ pid: pmPid, startedAt: new Date().toISOString(), ageSeconds: 0 }];
+    }
+  }
+
   const dirty = dryRunSweep();
   const lastHealth = getLastHealth();
   const watchdog = getWatchdogState();
@@ -231,7 +243,7 @@ export async function GET() {
   return NextResponse.json({
     timestamp: new Date().toISOString(),
     runtime,
-    pids,
+    pids: pidList,
     // Authoritative liveness: does the gateway answer on its HTTP port?
     // Process/cmdline detection (runtime/pids) is a fragile proxy that
     // false-negatives inside containers — `reachable` is the truth.

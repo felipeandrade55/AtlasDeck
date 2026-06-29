@@ -1029,6 +1029,13 @@ export interface MemorySettings {
    * without a cloud key present. Holds the provider id (e.g. "openai").
    */
   ai_oauth_provider: string | null;
+  /**
+   * Owner's display name, shown in the top bar instead of "Usuário".
+   * Captured from the Telegram pairing (first+last name) or derived from
+   * the interview's IDENTITY.md/USER.md. Lets the UI greet the real person
+   * without a build-time env var.
+   */
+  owner_name: string | null;
 }
 
 export type WakeEngine = "webspeech" | "openwakeword" | "porcupine";
@@ -1079,6 +1086,7 @@ const DEFAULT_SETTINGS: MemorySettings = {
   setup_email_skipped: false,
   owner_whatsapp_number: null,
   ai_oauth_provider: null,
+  owner_name: null,
 };
 
 function parseSetupStep(value: string | undefined): SetupStep {
@@ -1189,6 +1197,7 @@ export function getSettings(): MemorySettings {
     setup_email_skipped: (map.get("setup_email_skipped") ?? "false") === "true",
     owner_whatsapp_number: parseNullableString(map.get("owner_whatsapp_number")),
     ai_oauth_provider: parseNullableString(map.get("ai_oauth_provider")),
+    owner_name: parseNullableString(map.get("owner_name")),
   };
 }
 

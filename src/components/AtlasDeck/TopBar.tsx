@@ -7,8 +7,7 @@ import { NotificationDropdown } from "@/components/NotificationDropdown";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
-const OWNER_NAME = process.env.NEXT_PUBLIC_OWNER_NAME ?? "Usuário";
-const OWNER_INITIAL = OWNER_NAME.charAt(0).toUpperCase();
+const OWNER_NAME_FALLBACK = process.env.NEXT_PUBLIC_OWNER_NAME ?? "Usuário";
 
 interface TopBarProps {
   isMobile?: boolean;
@@ -18,8 +17,26 @@ interface TopBarProps {
 export function TopBar({ isMobile = false, onMenuClick }: TopBarProps) {
   const [showSearch, setShowSearch] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [ownerName, setOwnerName] = useState(OWNER_NAME_FALLBACK);
   const userMenuRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
+
+  const OWNER_INITIAL = ownerName.charAt(0).toUpperCase();
+
+  // Greet the real person: pull the owner name (from the interview /
+  // Telegram pairing) at runtime, falling back to the build-time env.
+  useEffect(() => {
+    let aborted = false;
+    fetch("/api/owner", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!aborted && d?.name) setOwnerName(d.name as string);
+      })
+      .catch(() => {});
+    return () => {
+      aborted = true;
+    };
+  }, []);
 
   const handleLogout = async () => {
     await fetch("/api/auth/logout", { method: "POST" });
@@ -256,7 +273,7 @@ export function TopBar({ isMobile = false, onMenuClick }: TopBarProps) {
                       color: "var(--text-secondary)",
                     }}
                   >
-                    {OWNER_NAME}
+                    {ownerName}
                   </span>
                   <ChevronDown
                     style={{
@@ -295,7 +312,7 @@ export function TopBar({ isMobile = false, onMenuClick }: TopBarProps) {
                   }}
                 >
                   <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--text-primary)" }}>
-                    {OWNER_NAME}
+                    {ownerName}
                   </div>
                   <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "2px" }}>
                     Administrador
