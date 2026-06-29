@@ -47,13 +47,17 @@ export async function GET() {
   const installed = !!detected;
 
   // 2. Interview files
+  // IDENTITY/SOUL/USER.md live at the workspace ROOT — that's where the
+  // OpenClaw agent reads them and where the wizard's /save writes them.
+  // They are NOT under memory/ (which holds the extracted memory store),
+  // so checking memory/ left interview.complete stuck false even after a
+  // successful save, blocking the wizard from advancing.
   const workspace = getOpenClawWorkspace();
-  const memoryDir = join(workspace, "memory");
   const interview = {
     done: settings.llm_choice_made,
-    hasIdentity: existsSync(join(memoryDir, "IDENTITY.md")),
-    hasSoul: existsSync(join(memoryDir, "SOUL.md")),
-    hasUser: existsSync(join(memoryDir, "USER.md")),
+    hasIdentity: existsSync(join(workspace, "IDENTITY.md")),
+    hasSoul: existsSync(join(workspace, "SOUL.md")),
+    hasUser: existsSync(join(workspace, "USER.md")),
   };
   const interviewComplete =
     interview.done && interview.hasIdentity && interview.hasSoul && interview.hasUser;
