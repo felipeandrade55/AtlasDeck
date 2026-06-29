@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -39,7 +40,7 @@ const dockItems = [
   { href: "/sessions", label: "Sessões", icon: History },
   { href: "/skills", label: "Habilidades", icon: Puzzle },
   { href: "/pentest", label: "Pentest", icon: ShieldAlert },
-  { href: "/saas", label: "Clientes SaaS", icon: Users },
+  { href: "/saas", label: "Clientes SaaS", icon: Users, ownerOnly: true },
   { href: "/costs", label: "Custos & Análises", icon: DollarSign },
   { href: "/settings", label: "Configurações", icon: Settings },
 
@@ -53,6 +54,25 @@ interface DockProps {
 
 export function Dock({ isMobile = false, open = false, onClose }: DockProps) {
   const pathname = usePathname();
+
+  // Owner-only items (SaaS panel) are hidden on client containers (deploy
+  // mode "coolify"). Default hidden until confirmed native, so a client
+  // install never flashes the "Clientes SaaS" tab.
+  const [showOwnerOnly, setShowOwnerOnly] = useState(false);
+  useEffect(() => {
+    let aborted = false;
+    fetch("/api/saas/visible", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!aborted && d?.visible) setShowOwnerOnly(true);
+      })
+      .catch(() => {});
+    return () => {
+      aborted = true;
+    };
+  }, []);
+
+  const items = dockItems.filter((i) => !("ownerOnly" in i && i.ownerOnly) || showOwnerOnly);
 
   const isItemActive = (href: string) =>
     pathname === href || (href !== "/" && pathname.startsWith(href));
@@ -122,7 +142,7 @@ export function Dock({ isMobile = false, open = false, onClose }: DockProps) {
             </span>
           </div>
 
-          {dockItems.map((item) => {
+          {items.map((item) => {
             const isActive = isItemActive(item.href);
             const Icon = item.icon;
             return (
