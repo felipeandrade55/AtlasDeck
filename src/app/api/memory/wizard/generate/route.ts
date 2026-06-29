@@ -7,7 +7,12 @@
  * Body: { history: [{question, answer}, ...] }
  */
 import { NextRequest, NextResponse } from "next/server";
-import { buildGeneratorPrompt, type GeneratedFiles, type WizardTurn } from "@/lib/wizard-prompts";
+import {
+  buildGeneratorPrompt,
+  buildFallbackFiles,
+  type GeneratedFiles,
+  type WizardTurn,
+} from "@/lib/wizard-prompts";
 import { runWizardLLM } from "@/lib/wizard-llm";
 
 export const runtime = "nodejs";
@@ -31,7 +36,9 @@ export async function POST(request: NextRequest) {
 
   try {
     const prompt = buildGeneratorPrompt(history);
-    const { data, provider, model } = await runWizardLLM<GeneratedFiles>(prompt);
+    const { data, provider, model } = await runWizardLLM<GeneratedFiles>(prompt, {
+      timeoutMs: 45_000,
+    });
 
     const required: Array<keyof GeneratedFiles> = ["IDENTITY.md", "SOUL.md", "USER.md"];
     for (const key of required) {
@@ -46,11 +53,18 @@ export async function POST(request: NextRequest) {
       model,
     });
   } catch (err) {
-    return NextResponse.json(
-      {
-        error: err instanceof Error ? err.message : "Generation failed",
-      },
-      { status: 503 },
-    );
+    // No LLM reachable (or it returned garbage). Instead of a hard 503
+    // that strands the user at the finish line, hand back a deterministic
+    // scaffold built from their answers. They review + edit it next, and
+    // can hit "Regerar" later once a provider is available.
+    if (process.env.MEMORY_DEBUG === "1") {
+      console.warn("[wizard/generate] LLM failed, using template fallback:", err);
+    }
+    return NextResponse.json({
+      files: buildFallbackFiles(history),
+      provider: "template",
+      model: "fallback",
+      fallback: true,
+    });
   }
 }

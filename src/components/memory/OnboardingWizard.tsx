@@ -50,7 +50,26 @@ interface GenerateResponse {
   };
   provider?: string;
   model?: string;
+  fallback?: boolean;
   error?: string;
+}
+
+// Mirror of the server's static question plan. Used as a client-side
+// safety net so a failed/slow /next call advances to a fresh question
+// instead of leaving the previous one on screen (which read as a repeat).
+const STATIC_QUESTIONS = [
+  "Pra começar, qual é o seu nome e o que você faz no dia a dia?",
+  "Qual é a sua stack técnica? Quais linguagens, frameworks e ferramentas você usa no dia a dia?",
+  "Como você prefere se comunicar com o agente? Respostas curtas ou detalhadas? Tom formal ou informal?",
+  "Pensa num nome e numa 'vibe' pro seu agente — como você quer que ele seja: direto, analítico, criativo? Tem algum limite que ele não deve cruzar?",
+  "Qual é o seu projeto principal agora? O que você está construindo e qual é o foco atual?",
+];
+
+const normalizeQ = (q: string) => q.trim().toLowerCase().replace(/\s+/g, " ");
+
+function nextStaticQuestion(history: Turn[]): string | null {
+  const asked = new Set(history.map((h) => normalizeQ(h.question)));
+  return STATIC_QUESTIONS.find((q) => !asked.has(normalizeQ(q))) ?? null;
 }
 
 interface OllamaStatusPayload {
@@ -242,16 +261,41 @@ export function OnboardingWizard({ workspace, onSwitchToFilesTab }: Props) {
         if (data.complete) {
           setCurrentQuestion(null);
           setSummary(data.summary || "Tenho contexto suficiente.");
-        } else {
-          setCurrentQuestion(data.next_question || "(sem pergunta)");
+          return;
         }
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Falha ao buscar próxima pergunta");
+        // Guard: if the server somehow returns an empty or already-asked
+        // question, fall back to the next unused static one so the user
+        // never sees the same question twice.
+        const proposed = data.next_question?.trim();
+        const asked = new Set(workingHistory.map((h) => normalizeQ(h.question)));
+        if (proposed && !asked.has(normalizeQ(proposed))) {
+          setCurrentQuestion(proposed);
+        } else {
+          const fallback = nextStaticQuestion(workingHistory);
+          if (fallback) {
+            setCurrentQuestion(fallback);
+          } else {
+            setCurrentQuestion(null);
+            setSummary("Tenho contexto suficiente.");
+          }
+        }
+      } catch {
+        // Network/route error — don't strand the previous question on
+        // screen (that looked like a repeat). Advance to the next unused
+        // static question, or wrap up if all topics are covered.
+        const fallback = nextStaticQuestion(workingHistory);
+        if (fallback) {
+          setCurrentQuestion(fallback);
+          setProviderInfo({ provider: "bootstrap", model: "static" });
+        } else {
+          setCurrentQuestion(null);
+          setSummary("Tenho contexto suficiente.");
+        }
       } finally {
         setAskingNext(false);
       }
     },
-    [toast],
+    [],
   );
 
   useEffect(() => {
@@ -353,6 +397,11 @@ export function OnboardingWizard({ workspace, onSwitchToFilesTab }: Props) {
       setDrafts(data.files);
       if (data.provider && data.model) {
         setProviderInfo({ provider: data.provider, model: data.model });
+      }
+      if (data.fallback) {
+        toast.info(
+          "Nenhum LLM disponível — geramos um rascunho a partir das suas respostas. Revise, edite e salve (ou clique em Regerar quando tiver Ollama/OpenClaw ativo).",
+        );
       }
       setPhase("review");
     } catch (err) {

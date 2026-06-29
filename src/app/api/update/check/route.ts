@@ -20,9 +20,24 @@ export async function GET(req: Request) {
 
     return NextResponse.json(result);
   } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 500 }
-    );
+    // The check fails when there's no local `.git` (tarball/container
+    // deploys) or the GitHub API is unreachable / rate-limited. None of
+    // that is a server fault — returning 500 just spams the console and
+    // flips the UI into an error state. Degrade to a soft "unknown, no
+    // update" payload (HTTP 200) so the banner simply stays hidden.
+    const message = error instanceof Error ? error.message : "Unknown error";
+    if (process.env.MEMORY_DEBUG === "1") {
+      console.warn("[update/check] degraded to soft response:", message);
+    }
+    return NextResponse.json({
+      hasUpdate: false,
+      unavailable: true,
+      error: message,
+      localSha: "unknown",
+      remoteSha: "",
+      behindBy: 0,
+      commits: [],
+      checkedAt: new Date().toISOString(),
+    });
   }
 }

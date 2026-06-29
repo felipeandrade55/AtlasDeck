@@ -14,14 +14,25 @@ export const dynamic = "force-dynamic";
 
 const FIRST_QUESTION = "Pra começar, qual é o seu nome e o que você faz no dia a dia?";
 
-// Fallback questions used when no LLM provider is available.
-// Index 0 = question asked when history.length === 1 (after FIRST_QUESTION).
-const STATIC_FOLLOWUPS = [
+// Full ordered question plan (opener + follow-ups). The static path
+// walks this list, always picking the first question not yet asked, so
+// it can never repeat a question regardless of how the history grew.
+const STATIC_QUESTIONS = [
+  FIRST_QUESTION,
   "Qual é a sua stack técnica? Quais linguagens, frameworks e ferramentas você usa no dia a dia?",
   "Como você prefere se comunicar com o agente? Respostas curtas ou detalhadas? Tom formal ou informal?",
   "Pensa num nome e numa 'vibe' pro seu agente — como você quer que ele seja: direto, analítico, criativo? Tem algum limite que ele não deve cruzar?",
   "Qual é o seu projeto principal agora? O que você está construindo e qual é o foco atual?",
 ];
+
+const normalizeQ = (q: string) => q.trim().toLowerCase().replace(/\s+/g, " ");
+
+// First question in the plan the user hasn't been asked yet (null when
+// every topic is covered → wizard completes).
+function nextStaticQuestion(history: WizardTurn[]): string | null {
+  const asked = new Set(history.map((h) => normalizeQ(h.question)));
+  return STATIC_QUESTIONS.find((q) => !asked.has(normalizeQ(q))) ?? null;
+}
 
 export async function POST(request: NextRequest) {
   let body: { history?: WizardTurn[] };
@@ -45,12 +56,25 @@ export async function POST(request: NextRequest) {
     });
   }
 
+  const asked = new Set(history.map((h) => normalizeQ(h.question)));
+
   try {
     const prompt = buildInterviewerPrompt(history);
-    const { data, provider, model } = await runWizardLLM<InterviewerOutput>(prompt);
+    // Short budget: the static plan is a perfectly good interview, so we
+    // don't let a slow/wedged CLI stall the "Próxima" button for minutes.
+    const { data, provider, model } = await runWizardLLM<InterviewerOutput>(prompt, {
+      timeoutMs: 12_000,
+    });
 
     if (typeof data?.complete !== "boolean") {
       throw new Error("LLM não retornou campo 'complete'");
+    }
+
+    // Guard against a weak model that re-asks a covered question (or
+    // returns an empty one): treat it as "needs static fallback".
+    const proposed = data.next_question?.trim();
+    if (!data.complete && (!proposed || asked.has(normalizeQ(proposed)))) {
+      throw new Error("LLM repetiu/omitiu a pergunta");
     }
 
     return NextResponse.json({
@@ -59,13 +83,13 @@ export async function POST(request: NextRequest) {
       model,
     });
   } catch {
-    // LLM unavailable — fall back to the static question list so the
-    // wizard never gets stuck showing the same question twice.
-    const fallbackIndex = history.length - 1;
-    if (fallbackIndex < STATIC_FOLLOWUPS.length) {
+    // LLM unavailable or unusable — walk the static plan, always picking
+    // a question that hasn't been asked yet.
+    const next = nextStaticQuestion(history);
+    if (next) {
       return NextResponse.json({
         complete: false,
-        next_question: STATIC_FOLLOWUPS[fallbackIndex],
+        next_question: next,
         covered: [],
         provider: "bootstrap",
         model: "static",

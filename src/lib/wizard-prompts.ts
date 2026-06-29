@@ -69,6 +69,94 @@ Se já tem contexto suficiente:
 {"complete": true, "summary": "Resumo amigável em 2-3 linhas do que você captou sobre o usuário"}`;
 }
 
+const SKIPPED_ANSWER = "(usuário preferiu pular)";
+
+/**
+ * Deterministic, LLM-free generator. Used as a graceful fallback when
+ * no provider (Ollama / OpenClaw) is reachable, so the wizard always
+ * completes — the user reviews + edits the scaffold in the next step.
+ *
+ * Answers are slotted into the right sections by matching keywords in
+ * the question text; anything unmatched lands in "Contexto adicional".
+ */
+export function buildFallbackFiles(history: WizardTurn[]): GeneratedFiles {
+  const usable = history.filter(
+    (h) => h.answer.trim() && h.answer.trim() !== SKIPPED_ANSWER,
+  );
+  const pick = (re: RegExp): string[] =>
+    usable.filter((h) => re.test(h.question.toLowerCase())).map((h) => h.answer.trim());
+
+  const about = pick(/nome|faz no dia|profiss|trabalh|sobre voc/);
+  const stack = pick(/stack|linguagem|framework|ferrament|tecnolog/);
+  const comms = pick(/comunic|formal|informal|curtas|detalhad|\btom\b/);
+  const persona = pick(/vibe|personalidad|agente|limite|cruzar/);
+  const project = pick(/projeto|construindo|\bfoco\b|prazo/);
+
+  const matched = new Set([...about, ...stack, ...comms, ...persona, ...project]);
+  const extra = usable
+    .filter((h) => !matched.has(h.answer.trim()))
+    .map((h) => `- **${h.question.trim()}** ${h.answer.trim()}`);
+
+  const today = new Date().toISOString().slice(0, 10);
+  const para = (arr: string[], fallback = "(não informado)") =>
+    arr.length ? arr.join("\n\n") : fallback;
+  const bullets = (arr: string[], fallback = "(não informado)") =>
+    arr.length ? arr.map((a) => `- ${a}`).join("\n") : `- ${fallback}`;
+  const note = "> Rascunho gerado sem IA a partir das suas respostas — revise e edite antes de salvar.\n\n";
+
+  const identity = `${note}# IDENTITY
+
+- **Name:** (defina o nome do agente)
+- **Emoji:** 🤖
+- **Role:** Assistente pessoal
+- **Created:** ${today}
+
+## Mission
+Apoiar ${about.length ? "o usuário descrito abaixo" : "o usuário"} no dia a dia, conforme o contexto coletado.
+
+## Owner
+${para(about)}
+`;
+
+  const soul = `${note}# SOUL
+
+## Tom
+${para(comms)}
+
+## Valores
+- (defina os valores do agente)
+
+## Linguagem
+Português brasileiro.
+
+## Limites
+${bullets(persona, "(defina os limites do agente)")}
+
+## Vibe
+${para(persona)}
+`;
+
+  const user = `${note}# USER
+
+## Sobre mim
+${para(about)}
+
+## Stack técnica
+${bullets(stack)}
+
+## Preferências de trabalho
+${para(comms)}
+
+## Projeto atual
+${para(project)}
+
+## Contexto adicional
+${extra.length ? extra.join("\n") : "(não informado)"}
+`;
+
+  return { "IDENTITY.md": identity, "SOUL.md": soul, "USER.md": user };
+}
+
 export function buildGeneratorPrompt(history: WizardTurn[]): string {
   const historyText = history
     .map((h, i) => `[${i + 1}] Q: ${h.question}\n    A: ${h.answer}`)
