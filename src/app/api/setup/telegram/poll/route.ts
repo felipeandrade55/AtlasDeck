@@ -39,7 +39,11 @@ interface ConfigShape {
   };
 }
 
-const POLL_TIMEOUT_SEC = 25;
+// Keep each request SHORT. A 25s server-side long-poll gets cut by the
+// reverse proxy (Coolify/Traefik) into a 503 before Telegram replies. The
+// client polls in a loop, so a brief hold is enough — 8s catches the
+// /start fast while staying well under any proxy idle timeout.
+const POLL_TIMEOUT_SEC = Number(process.env.TELEGRAM_POLL_TIMEOUT_SEC || 8);
 
 async function getUpdates(
   token: string,
@@ -114,10 +118,15 @@ export async function GET(req: Request) {
   let highestUpdateId = entry.lastUpdateId;
   for (const update of result.updates) {
     if (update.update_id > highestUpdateId) highestUpdateId = update.update_id;
-    const text = update.message?.text ?? "";
+    const text = (update.message?.text ?? "").trim();
     const chatId = update.message?.chat?.id;
     if (!chatId) continue;
-    if (text === `/start ${nonce}` || text.includes(nonce)) {
+    // Match the deep-link payload (/start <nonce>) OR a bare /start typed
+    // by hand — during the active pairing window only the operator (who
+    // owns the bot token) is interacting, so a plain /start is safe to
+    // accept and far friendlier than failing silently.
+    const isStart = text === "/start" || text.startsWith("/start ") || text.includes(nonce);
+    if (isStart) {
       const chatIdStr = String(chatId);
       try {
         persistAccount(entry.accountId, entry.botToken, chatIdStr);
