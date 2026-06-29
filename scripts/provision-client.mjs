@@ -14,8 +14,13 @@
  *
  * Uso:
  *   COOLIFY_URL=http://IP:8000 COOLIFY_TOKEN=xxxx \
- *     node scripts/provision-client.mjs --name "Cliente XYZ" --slug cliente-xyz \
- *       [--domain app.cliente.com] [--branch main] [--no-deploy]
+ *     node scripts/provision-client.mjs --name "Felipe Andrade" --slug felipeandrade \
+ *       [--base-domain ih01.atlasdeck.ia.br] [--domain app.cliente.com] \
+ *       [--no-base-domain] [--branch main] [--no-deploy]
+ *
+ *   Por padrão o FQDN vira <slug>.<base-domain> (ex.: felipeandrade.ih01.atlasdeck.ia.br).
+ *   Requer um DNS curinga: *.ih01.atlasdeck.ia.br A <IP do VPS>.
+ *   --domain força um FQDN específico; --no-base-domain volta ao sslip.io auto.
  *
  * Requer Node 18+ (fetch global). Veja docs/DEPLOY-COOLIFY.md.
  */
@@ -57,7 +62,18 @@ const SLUG = (args.slug || args.name || "")
   .replace(/[^a-z0-9-]+/g, "-")
   .replace(/^-+|-+$/g, "");
 const BRANCH = args.branch || "main";
-const DOMAIN = args.domain || null; // se ausente, Coolify auto-gera (sslip.io / wildcard)
+// Domínio base do SaaS: cada cliente vira <slug>.<base>. Configurável por
+// env/flag; um registro DNS curinga (*.<base> → IP do VPS) cobre todos.
+const BASE_DOMAIN = (process.env.ATLASDECK_BASE_DOMAIN || args["base-domain"] || "ih01.atlasdeck.ia.br")
+  .toString()
+  .trim()
+  .toLowerCase()
+  .replace(/^\.+|\.+$/g, "");
+// --domain sobrescreve o FQDN; senão monta a partir do slug + base; com
+// --no-base-domain o Coolify auto-gera (sslip.io) como antes.
+const DOMAIN =
+  args.domain ||
+  (args["no-base-domain"] || !BASE_DOMAIN ? null : `${SLUG}.${BASE_DOMAIN}`);
 const SERVER_UUID = process.env.COOLIFY_SERVER_UUID || args.server || null;
 const DO_DEPLOY = !args["no-deploy"];
 
@@ -184,6 +200,11 @@ async function main() {
     { key: "OPENCLAW_GATEWAY_PORT", value: "18789", is_literal: true },
     { key: "NEXT_PUBLIC_AGENT_NAME", value: NAME, is_literal: true },
     { key: "NEXT_PUBLIC_APP_TITLE", value: NAME, is_literal: true },
+    // Identidade do cliente: o app lê ATLASDECK_CLIENT_SLUG direto, sem
+    // depender de parsear o Host. ATLASDECK_BASE_DOMAIN deixa o esquema de
+    // subdomínio configurável.
+    { key: "ATLASDECK_CLIENT_SLUG", value: SLUG, is_literal: true },
+    ...(BASE_DOMAIN ? [{ key: "ATLASDECK_BASE_DOMAIN", value: BASE_DOMAIN, is_literal: true }] : []),
   ];
   try {
     await api("PATCH", `/applications/${appUuid}/envs/bulk`, { data: envs });
