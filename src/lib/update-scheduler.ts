@@ -2,6 +2,7 @@ import { addNotification } from "./notifications";
 import { checkForUpdates, getActiveUpdate, readUpdateConfig, writeUpdateConfig } from "./update";
 import { notifyIfNewUpdate } from "./update-notifier";
 import { triggerUpdate } from "./update-trigger";
+import { isContainerDeploy } from "./deploy-mode";
 
 let started = false;
 let timer: NodeJS.Timeout | null = null;
@@ -30,6 +31,11 @@ async function tick() {
  */
 async function maybeAutoUpdate(result: Awaited<ReturnType<typeof checkForUpdates>>) {
   if (!result.hasUpdate) return;
+
+  // Em container (Coolify), atualização = rebuild da imagem. O check ainda
+  // roda (notifica "versão nova"), mas não tentamos auto-disparar deploy.sh,
+  // que falharia com exit 127. O usuário faz o Redeploy no Coolify.
+  if (isContainerDeploy()) return;
 
   const config = readUpdateConfig();
   if (!config.autoUpdate) return;

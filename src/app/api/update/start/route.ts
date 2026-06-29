@@ -34,6 +34,12 @@ export async function POST() {
         { status: 500 }
       );
     }
+    if (result.reason === "container-mode") {
+      return NextResponse.json(
+        { error: result.error, containerMode: true },
+        { status: 409 }
+      );
+    }
     return NextResponse.json(
       { error: result.error || "Falha ao iniciar update" },
       { status: 500 }

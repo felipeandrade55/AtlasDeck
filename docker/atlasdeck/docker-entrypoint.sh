@@ -22,6 +22,14 @@ rand() { node -e "console.log(require('crypto').randomBytes($1).toString('$2'))"
 # 1. Diretórios persistentes -------------------------------------------------
 mkdir -p "${DATA_DIR}" "${OC_DIR}" "${WORKSPACE}/memory" "${OC_DIR}/logs"
 
+# 1b. Limpa estado de update in-app herdado do volume. Em container a
+# atualização é via rebuild da imagem (Coolify), então qualquer
+# "update em andamento/erro" persistido é obsoleto após um (re)deploy —
+# senão a UI mostra um box de falha antigo (ex.: deploy.sh exit 127).
+rm -f "${DATA_DIR}/update-live-status.json" \
+      "${DATA_DIR}/update-current.log" \
+      "${DATA_DIR}/update-phase-events.log" 2>/dev/null || true
+
 # 2. First-boot seeding de segredos -----------------------------------------
 # Reaproveita segredos já persistidos; só gera o que faltar. Envs vindas do
 # Coolify (se definidas) têm precedência e nunca são sobrescritas.

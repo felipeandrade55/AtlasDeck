@@ -17,12 +17,13 @@ import {
   writeLiveStatus,
 } from "./update";
 import { logActivity } from "./activities-db";
+import { isContainerDeploy } from "./deploy-mode";
 
 export type TriggerOrigin = "manual" | "auto";
 
 export interface TriggerResult {
   ok: boolean;
-  reason?: "already-running" | "no-pid" | "exception";
+  reason?: "already-running" | "no-pid" | "exception" | "container-mode";
   sessionId?: string;
   historyId?: string;
   pid?: number;
@@ -40,6 +41,21 @@ export interface TriggerResult {
  */
 export async function triggerUpdate(origin: TriggerOrigin = "manual"): Promise<TriggerResult> {
   try {
+    // Em modo container (Coolify) não existe git pull in-place: o código vive
+    // dentro da imagem e a atualização é feita REBUILDANDO a imagem (Coolify
+    // clona a main do GitHub). Rodar deploy.sh aqui só resulta em
+    // "git: command not found" (exit 127). Recusa com orientação acionável.
+    if (isContainerDeploy()) {
+      return {
+        ok: false,
+        reason: "container-mode",
+        error:
+          "Este AtlasDeck roda em container (Coolify). A atualização não é via git-pull — " +
+          "faça um Redeploy no Coolify: ele puxa a última versão da main no GitHub e " +
+          "reconstrói a imagem. O update in-app fica desativado nesse modo de propósito.",
+      };
+    }
+
     const active = getActiveUpdate();
     if (active?.status === "running") {
       return { ok: false, reason: "already-running", sessionId: active.sessionId };
