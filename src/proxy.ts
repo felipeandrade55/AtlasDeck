@@ -33,6 +33,9 @@ const PUBLIC_API_PREFIXES = [
   // OpenClaw (sem cookie admin); a rota se auto-protege exigindo service token
   // OU cookie admin no handler Node.
   "/api/landing",
+  // Public landing-page helper APIs. The handlers proxy only narrow, read-only
+  // data needed by public landing pages.
+  "/landing/api/public/as-monitor/",
 ];
 
 // API prefixes that may also be authenticated via service token (OpenClaw → AtlasDeck)
