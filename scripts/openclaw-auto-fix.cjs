@@ -175,6 +175,19 @@ function applyBackendAuthFix() {
     return { changed: false, applied: false, file };
   }
 
+  // OpenClaw >= 2026.9.5 (keyed agents.entries format) retired this bypass:
+  // `allowInsecureAuth` is no longer in the gateway.controlUi schema
+  // (additionalProperties: false) and writing it makes the gateway refuse to
+  // start. Skip — the AtlasDeck boot sweep strips leftovers.
+  const agents = data.agents && typeof data.agents === "object" ? data.agents : {};
+  const entriesFormat =
+    (agents.entries && typeof agents.entries === "object" && !Array.isArray(agents.entries)) ||
+    agents.ownership !== undefined;
+  if (entriesFormat) {
+    console.log("[auto-fix] backend-auth: pulado (OpenClaw 2026.9.5+ aposentou o bypass de device auth)");
+    return { changed: false, applied: false, file };
+  }
+
   if (!data.gateway || typeof data.gateway !== "object" || Array.isArray(data.gateway)) {
     data.gateway = {};
   }

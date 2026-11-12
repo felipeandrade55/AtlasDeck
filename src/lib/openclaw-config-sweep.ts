@@ -106,6 +106,17 @@ function ensureWhatsappChannelDefaults(raw: Record<string, unknown>): boolean {
 
   let changed = false;
   const next: Record<string, unknown> = { ...wa };
+  if (usesAgentEntries(raw)) {
+    // @openclaw/whatsapp >= 2026.9.x dropped `debounceMs` from its channel
+    // schema (additionalProperties: false) — writing it makes the whole
+    // config invalid and the gateway refuses to start. Never backfill it on
+    // the current format, and strip it if a previous sweep left it behind.
+    delete defaults.debounceMs;
+    if ("debounceMs" in next) {
+      delete next.debounceMs;
+      changed = true;
+    }
+  }
   for (const [key, value] of Object.entries(defaults)) {
     if (next[key] === undefined || next[key] === null) {
       next[key] = value;
