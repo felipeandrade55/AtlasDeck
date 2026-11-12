@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { readFileSync, statSync, readdirSync } from "fs";
 import { join } from "path";
 import { DEFAULT_AGENTS_CONFIG, getOpenClawDir, resolveOpenClawAgentsConfigPath } from "@/lib/openclaw-config";
+import { parseOpenClawConfig } from "@/lib/openclaw-agents-compat";
 
 export const dynamic = "force-dynamic";
 
@@ -64,7 +65,7 @@ async function getAgentStatusFromGateway(): Promise<
 > {
   try {
     const configPath = join(getOpenClawDir(), "openclaw.json");
-    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    const config = parseOpenClawConfig(readFileSync(configPath, "utf-8"));
     const gatewayToken = config.gateway?.auth?.token;
 
     if (!gatewayToken) {
@@ -185,7 +186,7 @@ function getAgentStatusFromFiles(
 export async function GET() {
   try {
     const { path: configPath } = resolveOpenClawAgentsConfigPath();
-    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    const config = parseOpenClawConfig(readFileSync(configPath, "utf-8"));
 
     // Try gateway first, fallback to file-based
     const gatewayStatus = await getAgentStatusFromGateway();

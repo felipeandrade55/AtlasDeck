@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { parseOpenClawConfig } from "@/lib/openclaw-agents-compat";
 
 export interface SkillInfo {
   id: string;
@@ -276,7 +277,7 @@ function buildAgentSkillMap(): Map<string, string[]> {
 
   let agentList: Array<{ id: string; workspace: string }> = [];
   try {
-    const openclawConfig = JSON.parse(fs.readFileSync(path.join(openclawDir, 'openclaw.json'), 'utf-8'));
+    const openclawConfig = parseOpenClawConfig(fs.readFileSync(path.join(openclawDir, 'openclaw.json'), 'utf-8'));
     agentList = (openclawConfig?.agents?.list || []).map((a: any) => ({
       id: a.id,
       workspace: a.workspace || path.join(openclawDir, 'workspace'),
@@ -329,7 +330,7 @@ function getAllWorkspaceSkillsDirs(openclawDir: string, configOverride?: string)
   // Primary: read agent workspace paths from openclaw.json
   let agentIds: string[] = [];
   try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(openclawDir, 'openclaw.json'), 'utf-8'));
+    const cfg = parseOpenClawConfig(fs.readFileSync(path.join(openclawDir, 'openclaw.json'), 'utf-8'));
     const agentList: Array<{ id?: string; workspace?: string }> = cfg?.agents?.list || [];
     for (const agent of agentList) {
       if (agent.workspace) addDir(path.join(agent.workspace, 'skills'));

@@ -22,6 +22,7 @@ import {
   getAgentWorkspacePath,
   resolveOpenClawAgentsConfigPath,
 } from "@/lib/openclaw-config";
+import { parseOpenClawConfig } from "@/lib/openclaw-agents-compat";
 
 export const INSTRUCTION_MANAGED_FILES = [
   "AGENTS.md",
@@ -93,7 +94,7 @@ export function detectChannels(): ChannelContext {
 function deriveAgentName(agentId: string): string {
   try {
     const { path: cfgPath } = resolveOpenClawAgentsConfigPath();
-    const parsed = JSON.parse(fsSync.readFileSync(cfgPath, "utf8")) as {
+    const parsed = parseOpenClawConfig(fsSync.readFileSync(cfgPath, "utf8")) as {
       agents?: { list?: Array<{ id?: string; name?: string }> };
     };
     const entry = parsed.agents?.list?.find((a) => a?.id === agentId);

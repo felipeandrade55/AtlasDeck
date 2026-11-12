@@ -13,6 +13,7 @@ import { resolveOpenClawAgentsConfigPath } from "@/lib/openclaw-config";
 import { setProviderKey, type ProviderId } from "@/lib/provider-keys";
 import { setSettings } from "@/lib/memory-db";
 import { logActivity } from "@/lib/activities-db";
+import { parseOpenClawConfig, serializeOpenClawConfig } from "@/lib/openclaw-agents-compat";
 
 export const dynamic = "force-dynamic";
 
@@ -134,7 +135,7 @@ export async function POST(req: Request) {
 
     try {
       const { path: configPath } = resolveOpenClawAgentsConfigPath();
-      const config = JSON.parse(readFileSync(configPath, "utf-8")) as ConfigShape;
+      const config = parseOpenClawConfig(readFileSync(configPath, "utf-8")) as ConfigShape;
       if (!config.agents) config.agents = {};
       if (!Array.isArray(config.agents.list) || config.agents.list.length === 0) {
         return NextResponse.json(
@@ -149,7 +150,7 @@ export async function POST(req: Request) {
       if (!config.agents.defaults) config.agents.defaults = {};
       if (!config.agents.defaults.model) config.agents.defaults.model = {};
       config.agents.defaults.model.primary = modelId.trim();
-      writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+      writeFileSync(configPath, serializeOpenClawConfig(config), "utf-8");
     } catch (err) {
       return NextResponse.json(
         { error: `Falha ao gravar openclaw.json: ${err instanceof Error ? err.message : String(err)}` },

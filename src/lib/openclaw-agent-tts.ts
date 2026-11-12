@@ -15,6 +15,7 @@
  * text-only than ship a config that crashes the gateway on the first audio.
  */
 import { getSettings, type MemorySettings } from "./memory-db";
+import { expandAgentEntries } from "@/lib/openclaw-agents-compat";
 
 const DEFAULT_AGENT_ID = "main";
 
@@ -67,6 +68,7 @@ export function applyAgentTtsBlock(
   block: AgentTtsBlock | null,
   agentId: string = DEFAULT_AGENT_ID,
 ): boolean {
+  expandAgentEntries(raw);
   const agents = (raw.agents && typeof raw.agents === "object" ? raw.agents : {}) as Record<
     string,
     unknown

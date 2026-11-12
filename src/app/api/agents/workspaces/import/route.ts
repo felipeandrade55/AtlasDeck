@@ -18,6 +18,7 @@ import { readFileSync } from "fs";
 import { resolveOpenClawAgentsConfigPath } from "@/lib/openclaw-config";
 import { importWorkspace, resolveWorkspacePath } from "@/lib/workspace-migration";
 import { logActivity } from "@/lib/activities-db";
+import { parseOpenClawConfig } from "@/lib/openclaw-agents-compat";
 
 export const dynamic = "force-dynamic";
 
@@ -40,7 +41,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const { path: configPath } = resolveOpenClawAgentsConfigPath();
-    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    const config = parseOpenClawConfig(readFileSync(configPath, "utf-8"));
     const list = Array.isArray(config?.agents?.list) ? config.agents.list : [];
     const agent = list.find((a: { id?: string }) => a?.id === agentId);
     if (!agent) {

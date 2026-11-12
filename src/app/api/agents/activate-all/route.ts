@@ -8,6 +8,7 @@ import { setAgentUi } from "@/lib/agents-ui-local";
 import { setAgentMeta, getAllAgentMeta } from "@/lib/agents-meta";
 import { refreshAllOrchestrators, injectAgentSystemPrompt } from "@/lib/orchestrator-injector";
 import { normalizeWorkspacePath } from "@/lib/workspace-migration";
+import { parseOpenClawConfig, serializeOpenClawConfig } from "@/lib/openclaw-agents-compat";
 
 export const dynamic = "force-dynamic";
 
@@ -69,7 +70,7 @@ function ensureWorkspaceDir(workspace: string) {
 export async function POST() {
   try {
     const { path: configPath } = resolveOpenClawAgentsConfigPath();
-    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    const config = parseOpenClawConfig(readFileSync(configPath, "utf-8"));
 
     if (!config.agents) config.agents = {};
     if (!Array.isArray(config.agents.list)) config.agents.list = [];
@@ -180,7 +181,7 @@ export async function POST() {
       }
     }
 
-    writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+    writeFileSync(configPath, serializeOpenClawConfig(config), "utf-8");
 
     // Write each agent's system_prompt into its workspace MEMORY.md.
     for (const tgt of promptTargets) {
@@ -236,7 +237,7 @@ export async function POST() {
 export async function DELETE() {
   try {
     const { path: configPath } = resolveOpenClawAgentsConfigPath();
-    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    const config = parseOpenClawConfig(readFileSync(configPath, "utf-8"));
     if (!config.agents) config.agents = {};
     if (!Array.isArray(config.agents.list)) config.agents.list = [];
 
@@ -252,7 +253,7 @@ export async function DELETE() {
       }
     }
 
-    writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+    writeFileSync(configPath, serializeOpenClawConfig(config), "utf-8");
 
     try {
       const peers = config.agents.list.map((a: any) => ({

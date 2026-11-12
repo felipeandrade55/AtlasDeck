@@ -22,6 +22,7 @@ import {
 } from "@/lib/agents-meta";
 import { refreshAllOrchestrators, injectAgentSystemPrompt } from "@/lib/orchestrator-injector";
 import { normalizeWorkspacePath } from "@/lib/workspace-migration";
+import { parseOpenClawConfig, serializeOpenClawConfig } from "@/lib/openclaw-agents-compat";
 
 /**
  * Re-render the managed orchestrator block in every orchestrator's
@@ -321,7 +322,7 @@ function getAgentDisplayInfo(agentId: string, agentConfig: any): { emoji: string
 export async function GET() {
   try {
     const { path: configPath } = resolveOpenClawAgentsConfigPath();
-    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    const config = parseOpenClawConfig(readFileSync(configPath, "utf-8"));
 
     // One-shot migration: if any agent in the file has a `ui` key, move it
     // to AtlasDeck-local storage and remove from openclaw.json. Older code
@@ -391,7 +392,7 @@ export async function GET() {
       fixedModels.length > 0
     ) {
       try {
-        writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+        writeFileSync(configPath, serializeOpenClawConfig(config), "utf-8");
         const modelSummary =
           fixedModels.length > 0
             ? `prefixed model ids (${fixedModels.map((f) => `${f.id}.${f.field}: ${f.from}→${f.to}`).join("; ")})`
@@ -513,7 +514,7 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const { path: configPath } = resolveOpenClawAgentsConfigPath();
-    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    const config = parseOpenClawConfig(readFileSync(configPath, "utf-8"));
     const body = await request.json();
 
     if (!body.id || !body.name) {
@@ -682,7 +683,7 @@ export async function POST(request: Request) {
       setAgentMeta(body.id, { shares_bot_with: "" });
     }
 
-    writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+    writeFileSync(configPath, serializeOpenClawConfig(config), "utf-8");
     try {
       logActivity("agent", `Agente criado: ${newAgent.name} (${newAgent.id})`, "success", {
         agent: newAgent.id,
@@ -706,7 +707,7 @@ export async function POST(request: Request) {
 export async function PUT(request: Request) {
   try {
     const { path: configPath } = resolveOpenClawAgentsConfigPath();
-    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    const config = parseOpenClawConfig(readFileSync(configPath, "utf-8"));
     const body = await request.json();
 
     if (!body.id) {
@@ -874,7 +875,7 @@ export async function PUT(request: Request) {
       existingAccount.dmPolicy = body.dmPolicy;
     }
 
-    writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+    writeFileSync(configPath, serializeOpenClawConfig(config), "utf-8");
     try {
       const changed = Object.keys(body).filter((k) => k !== "id");
       logActivity("agent", `Agente atualizado: ${agent.name} (${body.id})`, "success", {
@@ -896,7 +897,7 @@ export async function PUT(request: Request) {
 export async function DELETE(request: Request) {
   try {
     const { path: configPath } = resolveOpenClawAgentsConfigPath();
-    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    const config = parseOpenClawConfig(readFileSync(configPath, "utf-8"));
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
 
@@ -927,7 +928,7 @@ export async function DELETE(request: Request) {
       }
     });
 
-    writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+    writeFileSync(configPath, serializeOpenClawConfig(config), "utf-8");
     try {
       logActivity("agent", `Agente removido: ${existingAgent?.name ?? id}`, "success", {
         agent: id,

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { readFileSync, readdirSync, statSync } from "fs";
 import { join } from "path";
+import { parseOpenClawConfig } from "@/lib/openclaw-agents-compat";
 
 export const dynamic = "force-dynamic";
 
@@ -13,7 +14,7 @@ export async function GET(
 
     // Read openclaw config
     const configPath = (process.env.OPENCLAW_DIR || "/root/.openclaw") + "/openclaw.json";
-    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    const config = parseOpenClawConfig(readFileSync(configPath, "utf-8"));
 
     // Find agent
     const agent = config.agents.list.find((a: any) => a.id === id);

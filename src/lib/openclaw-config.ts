@@ -1,6 +1,7 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { parseOpenClawConfig } from "./openclaw-agents-compat";
 
 const FALLBACK_AGENTS_CONFIG_PATH = path.join(process.cwd(), "data", "openclaw-fallback.json");
 
@@ -249,7 +250,7 @@ export function getAgentWorkspacePath(agentId: string): string | null {
     const openclawDir = getOpenClawDir();
     const cfgPath = path.join(openclawDir, "openclaw.json");
     const raw = fs.readFileSync(cfgPath, "utf8");
-    const parsed = JSON.parse(raw) as {
+    const parsed = parseOpenClawConfig(raw) as {
       agents?: { list?: Array<{ id?: string; workspace?: string }> };
     };
     const list = parsed.agents?.list;

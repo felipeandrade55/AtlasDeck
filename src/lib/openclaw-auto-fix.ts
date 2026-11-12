@@ -40,6 +40,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { getOpenClawDir, getOpenClawWorkspace } from "@/lib/openclaw-config";
 import { restartGateway as robustRestart } from "./gateway-control";
+import { usesAgentEntries } from "./openclaw-agents-compat";
 
 const execFileAsync = promisify(execFile);
 
@@ -268,6 +269,23 @@ export function ensureBackendAuthBypass(): BackendAuthFixReport {
       file,
       backup: null,
       error: `openclaw.json inválido: ${(err as Error).message}`,
+    };
+  }
+
+  // OpenClaw >= 2026.9.5 (keyed agents.entries format) retired this bypass:
+  // `dangerouslyDisableDeviceAuth` is ignored and `allowInsecureAuth` is no
+  // longer in the schema — writing it makes the config invalid and the
+  // gateway refuses to start. Refuse instead of breaking the daemon.
+  if (usesAgentEntries(data)) {
+    return {
+      ok: false,
+      alreadyCorrect: false,
+      changed: [],
+      file,
+      backup: null,
+      error:
+        "OpenClaw 2026.9.5+ aposentou o bypass de device auth (dangerouslyDisableDeviceAuth/allowInsecureAuth). " +
+        "Gravar essas chaves invalida o openclaw.json. Pareie o cliente pelo fluxo de dispositivos (openclaw devices).",
     };
   }
 

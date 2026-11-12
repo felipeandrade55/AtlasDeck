@@ -16,6 +16,7 @@ import {
 } from "@/lib/whatsapp-accounts-local";
 import { applyAgentTtsBlock, buildAgentTtsBlock } from "@/lib/openclaw-agent-tts";
 import { waCall, hasWhatsappSessionLocal } from "@/lib/whatsapp-api";
+import { parseOpenClawConfig, serializeOpenClawConfig } from "@/lib/openclaw-agents-compat";
 
 export const dynamic = "force-dynamic";
 
@@ -57,7 +58,7 @@ function readConfig(): { path: string; isFallback: boolean; raw: OpenClawJson } 
   let raw: OpenClawJson = {};
   if (existsSync(configPath)) {
     try {
-      raw = JSON.parse(readFileSync(configPath, "utf-8"));
+      raw = parseOpenClawConfig(readFileSync(configPath, "utf-8"));
     } catch (e) {
       throw new Error(`openclaw.json inválido (${configPath}): ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -66,7 +67,7 @@ function readConfig(): { path: string; isFallback: boolean; raw: OpenClawJson } 
 }
 
 function writeConfig(raw: OpenClawJson, path: string) {
-  writeFileSync(path, JSON.stringify(raw, null, 2), "utf-8");
+  writeFileSync(path, serializeOpenClawConfig(raw), "utf-8");
 }
 
 // ─── GET ─────────────────────────────────────────────────────────────────

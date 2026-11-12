@@ -23,6 +23,7 @@ import {
   getOpenClawWorkspace,
   getAgentWorkspacePath,
 } from "@/lib/openclaw-config";
+import { getAgentList } from "@/lib/openclaw-agents-compat";
 
 // Substring used by the memory-injector to mark its TOOL_GUIDANCE
 // block. If this string isn't present in the agent's MEMORY.md, the
@@ -373,7 +374,7 @@ async function inspectOpenClawJson(): Promise<{
   // Per-agent inline: agents.list[].mcp_servers[]
   let inlineFound: McpServerLike | null = null;
   const agents = (root.agents as Record<string, unknown> | undefined) ?? {};
-  const list = (agents.list as Array<Record<string, unknown>> | undefined) ?? [];
+  const list = getAgentList(root) as Array<Record<string, unknown>>;
   for (const a of list) {
     if (a?.id !== "main") continue;
     const inlineArr = a.mcp_servers as Array<McpServerLike & { name?: string }> | undefined;

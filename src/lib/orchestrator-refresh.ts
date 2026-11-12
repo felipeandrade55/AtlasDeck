@@ -14,10 +14,11 @@ import { readFileSync } from "fs";
 import { resolveOpenClawAgentsConfigPath } from "@/lib/openclaw-config";
 import { getAllAgentMeta } from "@/lib/agents-meta";
 import { refreshAllOrchestrators } from "@/lib/orchestrator-injector";
+import { parseOpenClawConfig } from "@/lib/openclaw-agents-compat";
 
 export async function refreshOrchestratorMemory(): Promise<void> {
   const { path: configPath } = resolveOpenClawAgentsConfigPath();
-  const config = JSON.parse(readFileSync(configPath, "utf-8")) as {
+  const config = parseOpenClawConfig(readFileSync(configPath, "utf-8")) as {
     agents?: { list?: Array<{ id: string; name?: string; workspace?: string }> };
   };
   const list = config.agents?.list ?? [];

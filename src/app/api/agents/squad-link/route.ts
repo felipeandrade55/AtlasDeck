@@ -4,6 +4,7 @@ import { resolveOpenClawAgentsConfigPath } from "@/lib/openclaw-config";
 import { logActivity } from "@/lib/activities-db";
 import { getAllAgentMeta } from "@/lib/agents-meta";
 import { refreshAllOrchestrators } from "@/lib/orchestrator-injector";
+import { parseOpenClawConfig, serializeOpenClawConfig } from "@/lib/openclaw-agents-compat";
 
 export const dynamic = "force-dynamic";
 
@@ -30,7 +31,7 @@ export async function POST(request: Request) {
     }
 
     const { path: configPath } = resolveOpenClawAgentsConfigPath();
-    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    const config = parseOpenClawConfig(readFileSync(configPath, "utf-8"));
     if (!config.agents) config.agents = {};
     if (!Array.isArray(config.agents.list)) config.agents.list = [];
 
@@ -64,7 +65,7 @@ export async function POST(request: Request) {
       }
     }
 
-    writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+    writeFileSync(configPath, serializeOpenClawConfig(config), "utf-8");
 
     try {
       const peers = config.agents.list.map((a: any) => ({

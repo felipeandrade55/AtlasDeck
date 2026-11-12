@@ -4,6 +4,7 @@ import { executeTool, type OrchestratorToolName } from "@/lib/orchestrator-tools
 import { hasValidServiceToken } from "@/lib/openclaw-auth";
 import { resolveOpenClawAgentsConfigPath } from "@/lib/openclaw-config";
 import { getAllAgentMeta } from "@/lib/agents-meta";
+import { parseOpenClawConfig } from "@/lib/openclaw-agents-compat";
 
 export const dynamic = "force-dynamic";
 
@@ -45,7 +46,7 @@ export async function GET(request: NextRequest) {
   }
   try {
     const { path: configPath } = resolveOpenClawAgentsConfigPath();
-    const config = JSON.parse(readFileSync(configPath, "utf-8")) as {
+    const config = parseOpenClawConfig(readFileSync(configPath, "utf-8")) as {
       agents?: { list?: Array<{ id: string; name?: string }> };
     };
     const meta = getAllAgentMeta();

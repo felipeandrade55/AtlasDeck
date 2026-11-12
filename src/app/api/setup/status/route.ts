@@ -16,6 +16,7 @@ import { getTelegramAccountLocal } from "@/lib/telegram-accounts-local";
 import { getOllamaStatus } from "@/lib/ollama-client";
 import { countAccounts as countEmailAccounts } from "@/lib/email-store";
 import { getDeployMode } from "@/lib/deploy-mode";
+import { parseOpenClawConfig } from "@/lib/openclaw-agents-compat";
 
 export const dynamic = "force-dynamic";
 
@@ -66,7 +67,7 @@ export async function GET() {
   let config: ConfigShape = {};
   try {
     const { path: configPath } = resolveOpenClawAgentsConfigPath();
-    config = JSON.parse(readFileSync(configPath, "utf-8")) as ConfigShape;
+    config = parseOpenClawConfig(readFileSync(configPath, "utf-8")) as ConfigShape;
   } catch {
     // fallback path may not exist yet — leave config empty
   }

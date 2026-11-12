@@ -30,6 +30,7 @@ import {
 } from "@/lib/whatsapp-accounts-local";
 import { applyAgentTtsBlock, buildAgentTtsBlock } from "@/lib/openclaw-agent-tts";
 import { logActivity } from "@/lib/activities-db";
+import { parseOpenClawConfig, serializeOpenClawConfig } from "@/lib/openclaw-agents-compat";
 
 export const dynamic = "force-dynamic";
 
@@ -65,7 +66,7 @@ export async function POST(req: NextRequest) {
   try {
     const { path: configPath } = resolveOpenClawAgentsConfigPath();
     const raw = existsSync(configPath)
-      ? JSON.parse(readFileSync(configPath, "utf-8"))
+      ? parseOpenClawConfig(readFileSync(configPath, "utf-8"))
       : {};
 
     if (!raw.channels || typeof raw.channels !== "object") raw.channels = {};
@@ -107,7 +108,7 @@ export async function POST(req: NextRequest) {
     const ttsBlock = applied.wantsClonedVoiceReply ? buildAgentTtsBlock() : null;
     applyAgentTtsBlock(raw as Record<string, unknown>, ttsBlock);
 
-    writeFileSync(configPath, JSON.stringify(raw, null, 2), "utf-8");
+    writeFileSync(configPath, serializeOpenClawConfig(raw), "utf-8");
     setWhatsappAccountLocal(accountId, { operationMode: mode });
 
     try {

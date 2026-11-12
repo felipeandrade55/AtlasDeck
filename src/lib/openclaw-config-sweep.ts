@@ -15,6 +15,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { resolveOpenClawAgentsConfigPath } from "./openclaw-config";
+import { usesAgentEntries } from "./openclaw-agents-compat";
 import { migrateTelegramAccountsFromConfig } from "./telegram-accounts-local";
 import { migrateWhatsappAccountsFromConfig } from "./whatsapp-accounts-local";
 
@@ -159,6 +160,27 @@ function ensureBackendAuthBypass(raw: Record<string, unknown>): boolean {
     unknown
   >;
   let changed = false;
+  if (usesAgentEntries(raw)) {
+    // OpenClaw >= 2026.9.5 (detected by the keyed agents.entries format):
+    // `allowInsecureAuth` is no longer in the schema (additionalProperties:
+    // false → config invalid, gateway refuses to start) and
+    // `dangerouslyDisableDeviceAuth` is retired/ignored (doctor removes it).
+    // Strip both instead of re-adding them.
+    for (const key of ["allowInsecureAuth", "dangerouslyDisableDeviceAuth"]) {
+      if (key in controlUi) {
+        delete controlUi[key];
+        changed = true;
+      }
+    }
+    if (!changed) return false;
+    if (Object.keys(controlUi).length === 0) {
+      const { controlUi: _drop, ...rest } = gateway;
+      raw.gateway = rest;
+    } else {
+      raw.gateway = { ...gateway, controlUi };
+    }
+    return true;
+  }
   if (controlUi.dangerouslyDisableDeviceAuth !== true) {
     controlUi.dangerouslyDisableDeviceAuth = true;
     changed = true;
