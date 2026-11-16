@@ -31,6 +31,19 @@ export async function POST(request: NextRequest, context: RouteContext) {
       return NextResponse.json({ error: "approved (boolean) is required" }, { status: 400 });
     }
 
+    // Approving only makes sense for a deliverable waiting in review. A failed
+    // or still-running task must not jump to "done" (rejecting/retrying is
+    // still allowed from any state).
+    if (body.approved && task.status !== "review") {
+      return NextResponse.json(
+        {
+          error: `Task está em "${task.status}", não em "review" — não há entrega para aprovar.`,
+          status: task.status,
+        },
+        { status: 409 },
+      );
+    }
+
     const feedback = typeof body.feedback === "string" ? body.feedback : null;
 
     const updated = updateTask(id, {

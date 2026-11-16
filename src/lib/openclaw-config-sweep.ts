@@ -252,6 +252,13 @@ function removeOrphanPluginEntry(raw: Record<string, unknown>, id: string): bool
   return true;
 }
 
+/** True when plugins.entries.acpx.config.pluginToolsMcpBridge is set (MCP install owns it). */
+function hasAcpxBridgeConfig(raw: Record<string, unknown>): boolean {
+  const plugins = raw.plugins as { entries?: Record<string, unknown> } | undefined;
+  const acpx = plugins?.entries?.acpx as { config?: Record<string, unknown> } | undefined;
+  return !!acpx?.config && acpx.config.pluginToolsMcpBridge === true;
+}
+
 function ensurePluginsEnabled(raw: Record<string, unknown>, ids: string[]): string[] {
   const plugins = (raw.plugins && typeof raw.plugins === "object" ? raw.plugins : {}) as Record<string, unknown>;
   const entries = (plugins.entries && typeof plugins.entries === "object" ? plugins.entries : {}) as Record<string, unknown>;
@@ -307,7 +314,12 @@ export function sweepOpenClawConfig(): SweepResult {
     // Belt-and-suspenders: if a previous sweep left `plugins.entries.acpx`
     // around, strip it so the warning goes away. Pure cleanup — has no
     // effect when the entry isn't there.
-    const removedAcpxEntry = removeOrphanPluginEntry(raw, "acpx");
+    // BUT: keep it when it carries the MCP bridge flag that
+    // installMcpServer() (openclaw-mcp-config.ts) writes on every boot —
+    // deleting it there made the two fight forever (sweep deletes → MCP
+    // install re-adds → watcher re-runs sweep 3s later → …), making the
+    // gateway hot-reload its config in a loop and the bridge flap.
+    const removedAcpxEntry = hasAcpxBridgeConfig(raw) ? false : removeOrphanPluginEntry(raw, "acpx");
 
     // Backfill required channels.whatsapp fields so the plugin's own
     // channel-config validator passes at load time (it runs INSIDE the

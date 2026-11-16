@@ -92,6 +92,28 @@ const TASK_TIMEOUT_MS = 6 * 60 * 1000;
 // Pattern for the WS client's "gateway returned no text" diagnostic — must be
 // treated as a failure, never stored as a real deliverable.
 const NO_TEXT_RE = /não entregou texto|Gateway respondeu, mas/i;
+// The specialist answered, but only to say it couldn't do the job (no web
+// search, no filesystem/exec, sandbox missing…). That is NOT a deliverable:
+// sending it to "review" made the user approve an empty task and it landed as
+// "done". Matched only near the top of the reply, where these reports lead.
+const BLOCKED_RE = new RegExp(
+  [
+    "No usable execution environment",
+    "(pesquisa|implementa[cç][aã]o|tarefa|execu[cç][aã]o|entrega)\\s+bloquead[ao]",
+    "n[aã]o h[aá] (navegador|ferramenta de (pesquisa|busca)|acesso [àa] (web|internet))",
+    "sem (pesquisa web|acesso [àa] (web|internet)|acesso aos arquivos|ferramentas de (pesquisa|navega[cç][aã]o))",
+    "Nenhum arquivo criado",
+    "n[aã]o (consegui|posso) (acessar|executar|ler) (arquivos|comandos|a web|a internet)",
+  ].join("|"),
+  "i",
+);
+const BLOCKED_SCAN_CHARS = 800;
+
+export function blockedReason(output: string): string | null {
+  const head = output.trim().slice(0, BLOCKED_SCAN_CHARS);
+  const m = head.match(BLOCKED_RE);
+  return m ? m[0] : null;
+}
 // Don't auto-run tasks that have been sitting `assigned` for longer than this.
 // Protects against a first-boot stampede on stale/test tasks left in the DB —
 // a freshly delegated task gets picked up within one tick, so anything this
@@ -282,7 +304,8 @@ async function executeTask(task: Task): Promise<void> {
     const settings = getOrchestrationSettings();
     const meta = getAgentMeta(agentId);
     const autonomous = isAutonomousFor(meta.override_autonomous);
-    const ok = usable;
+    const blocked = usable ? blockedReason(output) : null;
+    const ok = usable && !blocked;
 
     // Pipeline flow (Felipe's review model): INTERMEDIATE stages — tasks that
     // another task depends_on — auto-advance to `done` so the chain flows
@@ -305,7 +328,9 @@ async function executeTask(task: Task): Promise<void> {
 
     updateTask(task.id, {
       status: nextStatus,
-      result: usable
+      result: blocked
+        ? `⛔ Bloqueado (sem ferramenta necessária: "${blocked}"). Nada foi entregue.\n\n${output.slice(0, 3800)}`
+        : usable
         ? output.slice(0, 4000)
         : "⚠ O especialista não retornou texto (o gateway respondeu vazio / buffered, " +
           "duas tentativas). Tente reenviar a tarefa, ou rode 'Corrigir automaticamente' " +
@@ -348,8 +373,11 @@ async function executeTask(task: Task): Promise<void> {
         `<b>⚠️ Etapa do pipeline falhou — ${escapeHtml(agentId)}</b>\n\n` +
           `<b>${escapeHtml(task.title || task.prompt.slice(0, 80))}</b>\n` +
           `<code>${task.id.slice(0, 8)}</code>\n\n` +
-          `O especialista não entregou resultado (gateway vazio/timeout, 2 tentativas). ` +
-          `O pipeline pausou nesta etapa — veja o painel Live Mission para re-delegar ou cancelar.`,
+          (blocked
+            ? `O especialista ficou BLOQUEADO por falta de ferramenta (“${escapeHtml(blocked)}”) e não entregou nada. ` +
+              `Não há o que aprovar — verifique as ferramentas do agente (web/exec/cron) no OpenClaw.`
+            : `O especialista não entregou resultado (gateway vazio/timeout, 2 tentativas). ` +
+              `O pipeline pausou nesta etapa — veja o painel Live Mission para re-delegar ou cancelar.`),
       ).catch((e) => console.warn("[task-worker] telegram failure notify failed:", e));
     }
 

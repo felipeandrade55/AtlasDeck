@@ -32,6 +32,15 @@ import { recordHeartbeat } from "@/lib/agent-health";
 import { snapshotAgent, runDispatcher } from "@/lib/task-dispatcher";
 import { logActivity } from "@/lib/activities-db";
 import { publishEvent } from "@/lib/live-events";
+import { canDelegateTo, delegationBlockedMessage, getDelegationPool } from "@/lib/delegation-pool";
+
+/** Tools that only make sense when the orchestrator has a squad to delegate to. */
+export const DELEGATION_TOOL_NAMES: ReadonlySet<OrchestratorToolName> = new Set<OrchestratorToolName>([
+  "delegate_to",
+  "decompose",
+  "send_note",
+  "review",
+]);
 
 export type OrchestratorToolName =
   | "delegate_to"
@@ -370,6 +379,16 @@ export async function executeTool(
         // Who is delegating. The orchestrator is the entry point (Jarvis =
         // "main") unless the caller explicitly names a different parent.
         const delegatedBy = args.parent_agent_id ?? "main";
+        // Respect the UI toggle (Modo Supremo / squad-link): the target must
+        // be in the delegating agent's subagents.allowAgents.
+        const pool = getDelegationPool(delegatedBy);
+        if (!canDelegateTo(pool, args.agent_id)) {
+          logActivity("task", `delegate_to bloqueado (${pool.solo ? "modo solo" : "fora do squad"}): ${args.agent_id}`, "pending", {
+            agent: delegatedBy,
+            metadata: { target: args.agent_id },
+          });
+          return { ok: false, tool: name, error: delegationBlockedMessage(pool, args.agent_id) };
+        }
         const task = createTask({
           parent_task_id: args.parent_task_id ?? null,
           delegated_by: delegatedBy,
@@ -419,6 +438,15 @@ export async function executeTool(
       case "decompose": {
         const args = parseDecompose(rawArgs);
         const decomposedBy = args.parent_agent_id ?? "main";
+        const pool = getDelegationPool(decomposedBy);
+        const blocked = args.subtasks.find((s) => !canDelegateTo(pool, s.agent_id));
+        if (blocked) {
+          logActivity("task", `decompose bloqueado (${pool.solo ? "modo solo" : "fora do squad"}): ${blocked.agent_id}`, "pending", {
+            agent: decomposedBy,
+            metadata: { target: blocked.agent_id },
+          });
+          return { ok: false, tool: name, error: delegationBlockedMessage(pool, blocked.agent_id) };
+        }
         const parent = createTask({
           delegated_by: decomposedBy,
           assigned_to: null,
@@ -568,6 +596,20 @@ export async function executeTool(
         const taskRef = requireString(args, "task_id");
         const task = resolveTaskRef(taskRef);
         if (!task) return { ok: false, tool: name, error: `Task não encontrada: ${taskRef}` };
+        // Only a real deliverable waiting in `review` can be approved. A task
+        // that failed/blocked (or is still running) must NOT become "done" just
+        // because the user said "aprovar" — tell the user the truth instead.
+        if (task.status !== "review") {
+          return {
+            ok: false,
+            tool: name,
+            error:
+              `A task ${task.id.slice(0, 8)} está em "${task.status}", não em "review" — não há entrega para aprovar. ` +
+              (task.status === "failed"
+                ? "Ela falhou/ficou bloqueada; informe o usuário do motivo e execute o trabalho você mesmo."
+                : "Aguarde a entrega antes de aprovar."),
+          };
+        }
         const updated = updateTask(task.id, {
           user_approved: true,
           status: "done",
@@ -624,8 +666,8 @@ export async function executeTool(
  * Pretty-formatted markdown describing each tool — used by
  * orchestrator-injector to seed the orchestrator's MEMORY.md.
  */
-export function renderToolDocs(): string {
-  return TOOL_DEFINITIONS.map((t) => {
+export function renderToolDocs(defs: ToolDefinition[] = TOOL_DEFINITIONS): string {
+  return defs.map((t) => {
     return [
       `### \`${t.name}\``,
       t.description,

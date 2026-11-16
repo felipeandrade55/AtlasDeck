@@ -603,6 +603,14 @@ export async function POST(request: Request) {
         if (existing.id === body.id) continue;
         const existingRole = allMeta[existing.id]?.role ?? (existing.id === "main" || existing.id === "jarvis" ? "orchestrator" : "specialist");
         if (existingRole === "orchestrator") {
+          // Respect solo mode: if the orchestrator's pool is empty (Modo
+          // Supremo off), creating a specialist must NOT silently turn
+          // delegation back on. It joins the squad when Modo Supremo is
+          // re-enabled (activate-all links every specialist).
+          const allow: string[] = Array.isArray(existing.subagents?.allowAgents)
+            ? existing.subagents.allowAgents
+            : [];
+          if (allow.length === 0) continue;
           if (!existing.subagents) existing.subagents = { allowAgents: [] };
           if (!existing.subagents.allowAgents.includes(body.id)) {
             existing.subagents.allowAgents.push(body.id);

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { canDelegateTo, delegationPoolFromList } from "@/lib/delegation-pool";
 import { readFileSync } from "fs";
 import { executeTool, type OrchestratorToolName } from "@/lib/orchestrator-tools";
 import { hasValidServiceToken } from "@/lib/openclaw-auth";
@@ -50,8 +51,21 @@ export async function GET(request: NextRequest) {
       agents?: { list?: Array<{ id: string; name?: string }> };
     };
     const meta = getAllAgentMeta();
-    const squad = (config.agents?.list ?? [])
-      .filter((a) => a.id !== "main" && a.id !== "jarvis")
+    // Only the agents the orchestrator may delegate to (Modo Supremo /
+    // squad-link). Empty pool = solo mode → empty squad + explicit hint.
+    const list = (config.agents?.list ?? []) as Array<{ id: string; name?: string } & Record<string, unknown>>;
+    const pool = delegationPoolFromList(list, "main");
+    if (pool.solo) {
+      return NextResponse.json({
+        ok: true,
+        count: 0,
+        squad: [],
+        solo: true,
+        note: "Modo solo ativo (Modo Supremo desligado): não delegue — execute a tarefa você mesmo.",
+      });
+    }
+    const squad = list
+      .filter((a) => a.id !== "main" && a.id !== "jarvis" && canDelegateTo(pool, a.id))
       .map((a) => ({
         id: a.id,
         name: a.name ?? a.id,

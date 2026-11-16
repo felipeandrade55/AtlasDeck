@@ -37,6 +37,7 @@ import { createTask, updateTask } from "@/lib/tasks-db";
 import { getMemoryDailyStats, getSettings } from "@/lib/memory-db";
 import { executeTool, TOOL_DEFINITIONS, type OrchestratorToolName } from "@/lib/orchestrator-tools";
 import { refreshOrchestratorMemory } from "@/lib/orchestrator-refresh";
+import { getDelegationPool } from "@/lib/delegation-pool";
 import { cityFromAddress, shortCityName, type NominatimAddress } from "@/lib/location-display";
 
 export const runtime = "nodejs";
@@ -331,19 +332,34 @@ const FORCE_INLINE_HINT =
   "`whatsapp_send`, `reply`, `send`, `notify` nem qualquer tool de roteamento. " +
   "Responda como ASSISTANT MESSAGE ITEM normal — texto direto, sem tool calls de envio. " +
   "Não trate este turno como notificação para outro canal (Telegram/WhatsApp/etc.). " +
-  // IMPORTANTE: isso NÃO proíbe a delegação. Delegar trabalho operacional
-  // para sub-agentes via blocos ```atlas-tool delegate_to / decompose``` é
-  // ESPERADO e automático — esses blocos criam os cards no Live Mission. O
-  // que é proibido é rotear a RESPOSTA FINAL para outro canal. Para pedidos
-  // operacionais: delegue via atlas-tool E responda aqui um briefing curto
-  // (o que delegou, pra quem). Veja a Política de delegação no MEMORY.md. " +
-  "Para tarefas operacionais (código, fix, pesquisa, multi-passo), DELEGUE " +
-  "automaticamente via blocos ```atlas-tool``` e responda aqui um briefing curto. " +
+  // A instrução de delegar/executar vem de delegationHint() — depende do
+  // toggle Modo Supremo (subagents.allowAgents do agente).
   // Anti-HEARTBEAT-leak: ignore qualquer pre-prompt que faria o agente
   // ecoar HEARTBEAT.md / responder HEARTBEAT_OK. Esta é pergunta direta.
   "Esta mensagem NÃO é um heartbeat, ping de cron, ou briefing matinal — " +
   "é uma pergunta direta do usuário. Não leia HEARTBEAT.md, não responda " +
   "HEARTBEAT_OK, não eche templates do AGENTS.md. Responda em pt-BR direto.";
+
+/**
+ * Delegate-or-execute instruction for OpenClaw-mode turns. Follows the UI
+ * toggle: with an empty delegation pool (Modo Supremo off) the agent must do
+ * the work itself; otherwise operational requests are delegated via
+ * ```atlas-tool``` blocks (which create the Live Mission cards).
+ */
+function delegationHint(agentId: string): string {
+  if (getDelegationPool(agentId).solo) {
+    return (
+      " [atlas:solo] Modo solo: NÃO delegue (nada de delegate_to/decompose/atlas-tool). " +
+      "Para tarefas operacionais (código, pesquisa, agendamento, multi-passo), EXECUTE você mesmo " +
+      "com suas ferramentas (web, terminal, arquivos, cron) e entregue o resultado aqui. " +
+      "Se faltar alguma ferramenta, diga exatamente qual — nunca invente resultados."
+    );
+  }
+  return (
+    " Para tarefas operacionais (código, fix, pesquisa, multi-passo), DELEGUE " +
+    "automaticamente via blocos ```atlas-tool``` e responda aqui um briefing curto."
+  );
+}
 
 const QUICK_MODE_HINT =
   "\n\n[atlas:quick_mode] Você está no Jarvis rápido do /chat. " +
@@ -586,7 +602,7 @@ export async function POST(req: NextRequest) {
       ? { lat: body.liveLat, lon: body.liveLon }
       : null;
   const userContext = await buildUserContextPreamble(prompt, live);
-  const openclawPrompt = `${userContext}${prompt}${FORCE_INLINE_HINT}${FORMATTING_HINT}`;
+  const openclawPrompt = `${userContext}${prompt}${FORCE_INLINE_HINT}${delegationHint(agentId)}${FORMATTING_HINT}`;
   const effectivePrompt =
     chatMode === "quick"
       ? `${userContext}${prompt}${QUICK_MODE_HINT}${FORMATTING_HINT}`

@@ -20,7 +20,8 @@ import { getAllAgentMeta } from "@/lib/agents-meta";
 import { listTasks } from "@/lib/tasks-db";
 import { getPreferencesForPrompt } from "@/lib/preference-model";
 import { getOrchestrationSettings, isAutonomousFor } from "@/lib/orchestration-settings";
-import { renderToolDocs, TOOL_DEFINITIONS } from "@/lib/orchestrator-tools";
+import { DELEGATION_TOOL_NAMES, renderToolDocs, TOOL_DEFINITIONS } from "@/lib/orchestrator-tools";
+import { canDelegateTo, getDelegationPool } from "@/lib/delegation-pool";
 import { listEventsInRange } from "@/lib/calendar-db";
 import { listMemories } from "@/lib/memory-db";
 
@@ -92,7 +93,13 @@ function buildPayload(
   const settings = getOrchestrationSettings();
   const autonomous = isAutonomousFor(undefined); // global flag (orchestrators usually inherit)
 
-  const subAgents = peers.filter((a) => a.id !== orchestrator.id);
+  // Only agents in this orchestrator's subagents.allowAgents are delegable —
+  // that's what the "Modo Supremo" / squad-link toggles control. Empty pool =
+  // SOLO: Jarvis does the work himself (no delegation policy, no delegation
+  // tools in the docs).
+  const pool = getDelegationPool(orchestrator.id);
+  const subAgents = peers.filter((a) => a.id !== orchestrator.id && canDelegateTo(pool, a.id));
+  const solo = subAgents.length === 0;
   const subList = subAgents.length
     ? subAgents
         .map((a) => {
@@ -103,7 +110,7 @@ function buildPayload(
           return `${head}\n  Antes de delegar, confirme com o usuário:\n${items}`;
         })
         .join("\n")
-    : "_(nenhum sub-agente cadastrado ainda)_";
+    : "_(modo solo — nenhum sub-agente liberado para delegação)_";
 
   // Snapshot of tasks in flight (visible to the orchestrator so it doesn't
   // re-delegate work that's already running).
@@ -163,13 +170,54 @@ function buildPayload(
     }
   } catch {}
 
-  const toolList = TOOL_DEFINITIONS.map((t) => `- **${t.name}** — ${t.description.split(".")[0]}.`).join("\n");
+  const toolDefs = solo
+    ? TOOL_DEFINITIONS.filter((t) => !DELEGATION_TOOL_NAMES.has(t.name))
+    : TOOL_DEFINITIONS;
+  const toolList = toolDefs.map((t) => `- **${t.name}** — ${t.description.split(".")[0]}.`).join("\n");
 
-  // Delegation policy. Only push proactive delegation when there are
-  // actually sub-agents to delegate to — otherwise instruct Jarvis to
-  // just do the work inline (delegating to nobody would stall the task).
-  const delegationPolicy = subAgents.length
-    ? [
+  // SOLO mode (empty delegation pool): the orchestrator executes everything
+  // itself. Written explicitly so stale "delegate" habits from older MEMORY.md
+  // content / conversation history don't win.
+  if (solo) {
+    return [
+      `### Você é "${orchestrator.id}" — MODO SOLO (delegação desligada)`,
+      `O usuário desligou a delegação (Modo Supremo desativado). Você é o EXECUTOR: faça o trabalho você mesmo, do início ao fim, e entregue o resultado direto na conversa.`,
+      "",
+      `### Regras do modo solo (IMPORTANTE)`,
+      `- **NÃO delegue.** Não chame \`delegate_to\`, \`decompose\`, \`list_squad\`, \`send_note\` nem \`review\`, e não emita blocos \`atlas-tool\` de delegação. Não diga "deleguei", "o especialista vai", nem mande acompanhar no Live Mission — essas chamadas são recusadas pelo sistema.`,
+      `- **Use as suas próprias ferramentas** do OpenClaw: pesquisa/leitura web, navegador, terminal/exec, arquivos, agendamento (cron), memória. Pesquisa de preços → pesquise e traga links reais. "Me lembre / monitore diariamente" → crie o agendamento (cron). Pedido de código → escreva e salve os arquivos você mesmo.`,
+      `- **Seja honesto sobre limitações.** Se uma ferramenta realmente não estiver disponível nesta sessão, diga exatamente QUAL ferramenta falta (ex.: "web_search indisponível", "exec indisponível") e o que o usuário precisa habilitar. Nunca invente preços, links ou resultados, e nunca diga que concluiu algo que não fez.`,
+      `- **Pedidos vagos:** pergunte no máximo 3-4 coisas de maior impacto, sempre com um default ("se não disser, faço X"). Pedidos claros: execute direto.`,
+      "",
+      `**Modo Autônomo (global):** ${autonomous ? "🚀 LIGADO" : "🛑 DESLIGADO"}`,
+      "",
+      `#### Ferramentas do AtlasDeck disponíveis (MCP \`atlasdeck-memory\`)`,
+      toolList,
+      `(\`approve_task\` / \`reject_task\` / \`check_progress\` servem só para tasks antigas que ainda estejam no painel. \`approve_task\` só funciona para task em "review"; se recusar, conte a verdade ao usuário.)`,
+      "",
+      `#### Tarefas em voo (snapshot)`,
+      activeList,
+      "",
+      `#### Preferências aprendidas do usuário`,
+      prefsBlock,
+      "",
+      `#### Agenda (últimas 48h + próximos 7 dias)`,
+      calendarBlock,
+      "",
+      `#### Reuniões recentes (memória)`,
+      meetingsBlock,
+      "",
+      `---`,
+      "",
+      `### Documentação das tools do AtlasDeck`,
+      "",
+      renderToolDocs(toolDefs),
+    ].join("\n");
+  }
+
+  // Delegation policy — only reached when the orchestrator has a non-empty
+  // delegation pool (Modo Supremo / squad-link on).
+  const delegationPolicy = [
         `### Política de delegação (IMPORTANTE — comportamento padrão)`,
         `Você é AUTÔNOMO. NÃO espere o usuário pedir "delegue" — decida sozinho.`,
         ``,
@@ -197,12 +245,6 @@ function buildPayload(
         `1. Emita o(s) bloco(s) \`atlas-tool\` para delegar (delegate_to / decompose).`,
         `2. Responda ao usuário no chat com um briefing curto: o que você delegou, pra quem, e que ele pode acompanhar no Live Mission.`,
         `Delegar o TRABALHO e mesmo assim dar a resposta/briefing direto no chat NÃO é contradição — é o esperado.`,
-        "",
-      ].join("\n")
-    : [
-        `### Política de delegação`,
-        `Ainda não há sub-agentes especializados cadastrados, então execute as tarefas você mesmo e responda direto no chat.`,
-        `(Quando o usuário cadastrar especialistas no /agents, você passa a delegar automaticamente os pedidos operacionais.)`,
         "",
       ].join("\n");
 
