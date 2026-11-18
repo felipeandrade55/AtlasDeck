@@ -229,6 +229,24 @@ export default define({
         }
       });
 
+      // On Telegram the reply is delivered through the `message` tool and is
+      // absent from agent_end's snapshot; message_sent carries the text that
+      // actually reached the user. Fires before agent_end — AtlasDeck pairs them.
+      api.on("message_sent", async (event, ctx) => {
+        try {
+          if (event?.success === false || event?.error) return;
+          const content = typeof event?.content === "string" ? event.content : textOf(event?.content ?? event?.text);
+          const info = sessionInfo(ctx);
+          if (!content || !info.sessionKey || skipAgents.has(info.agentId)) return;
+          const channel = String(info.channel || (/:telegram:/.test(info.sessionKey) ? "telegram" : "")).toLowerCase();
+          if (!channels.has(channel)) return;
+          if (!allowGroups && isGroupChat(ctx)) return;
+          void post("/api/memory/turn-reply", { sessionKey: info.sessionKey, content: content.slice(0, 20000) }, Math.max(timeoutMs, 5000));
+        } catch (err) {
+          log(`message_sent error: ${err && err.message ? err.message : err}`);
+        }
+      });
+
       api.on("session_end", async (event, ctx) => {
         try {
           const info = sessionInfo({ ...(ctx || {}), ...(event || {}) });

@@ -35,6 +35,7 @@ const PUBLIC_API_PREFIXES = [
   // atlasdeck-bridge gateway plugin (per-turn context + turn capture).
   "/api/memory/turn-context",
   "/api/memory/turn-capture",
+  "/api/memory/turn-reply",
   "/api/memory/session-event",
   // Landing pages listing (comando /paginas). Público no edge para o bot do
   // OpenClaw (sem cookie admin); a rota se auto-protege exigindo service token
