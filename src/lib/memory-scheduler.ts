@@ -33,8 +33,9 @@ import {
 import { injectAllWorkspaces } from "@/lib/memory-injector";
 import { reembedPending } from "@/lib/memory-service";
 import { isEmbeddingReady } from "@/lib/embeddings";
-import { maybeRunReflection } from "@/lib/reflection-job";
-import { getOneShotStatus } from "@/lib/llm-oneshot";
+import { maybeRunReflection, curateLegacyMemories } from "@/lib/reflection-job";
+import { isAgentBusy } from "@/lib/agent-activity";
+import { getOneShotStatus, isOneShotAvailable } from "@/lib/llm-oneshot";
 import { addNotification } from "@/lib/notifications";
 import { getOllamaStatus } from "@/lib/ollama-client";
 
@@ -114,6 +115,21 @@ async function runExtraction(): Promise<ExtractionRoundResult | null> {
     if (result.stoppedReason === "done") {
       const slice = await runBackfillSlice(Math.max(1, EXTRACTION_MAX_BATCHES - result.batches));
       if (slice.batches > 0) console.log(`[memory-scheduler] backfill: +${slice.batches} lote(s)${slice.done ? " — concluído" : ""}`);
+      // Then, one curation batch of legacy memories per idle round.
+      if (slice.done && !(await isAgentBusy()) && isOneShotAvailable()) {
+        const jobId = startJob("curate");
+        try {
+          const cur = await curateLegacyMemories();
+          if (cur) {
+            finishJob(jobId, "ok", { detail: `revisadas=${cur.reviewed} arquivadas=${cur.archived}` });
+            console.log(`[memory-scheduler] curadoria: ${cur.reviewed} revisadas, ${cur.archived} arquivadas`);
+          } else {
+            finishJob(jobId, "skipped", { detail: "nada a revisar" });
+          }
+        } catch (err) {
+          finishJob(jobId, "failed", { error: err instanceof Error ? err.message : String(err) });
+        }
+      }
     }
     if (process.env.MEMORY_DEBUG === "1" || result.batches > 0) {
       console.log(

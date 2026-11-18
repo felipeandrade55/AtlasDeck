@@ -67,10 +67,13 @@ function envFloat(name: string): number | null {
  *   paraphrase in a small store ("como formatar respostas")          ~0.849
  * e5 compresses scores, so an absolute floor alone lets noise in; a
  * relative margin against the query's best hit does the real filtering.
+ * Margin 0.045: a near-verbatim memory (0.915) must not push out the
+ * relevant brand memory (0.874). Missing a relevant fact costs more than
+ * one extra line the model ignores; legacy junk is removed by curation.
  */
 export function similarityThresholds(modelTag = currentEmbeddingModelTag()): SimilarityThresholds {
   const base: SimilarityThresholds = usesE5Prefixes(modelTag)
-    ? { relevant: 0.845, margin: 0.02, related: 0.86, duplicate: 0.93 }
+    ? { relevant: 0.845, margin: 0.045, related: 0.86, duplicate: 0.93 }
     : { relevant: 0.35, margin: 0.15, related: 0.5, duplicate: 0.9 };
   return {
     relevant: envFloat("ATLAS_SIM_RELEVANT") ?? base.relevant,

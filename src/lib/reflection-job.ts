@@ -245,6 +245,69 @@ export function exportProcedureSkills(): number {
   return n;
 }
 
+// ─── legacy curation ───────────────────────────────────────────────────
+// The pre-v2 extractor (and Ollama) left hundreds of trivial memories
+// ("Usuário saudou com 'opa'", "enviou /start", "pediu o link do painel").
+// Short generic texts sit close to every query in embedding space and
+// pollute recall. One LLM pass over them, 40 at a time, archives the junk
+// (reversible: archived + tag "curated-out") and tags the rest "curated".
+
+interface CurationOutput {
+  archive: string[];
+}
+
+function isCurationOutput(v: unknown): v is CurationOutput {
+  return Boolean(v) && typeof v === "object" && Array.isArray((v as { archive?: unknown }).archive);
+}
+
+export function countLegacyToCurate(): number {
+  return listLegacyBatch(10_000).length;
+}
+
+function listLegacyBatch(limit: number): MemoryRow[] {
+  const engineStart = getSettingValue("memory_engine_v2_started_at") ?? new Date().toISOString();
+  const all: MemoryRow[] = [];
+  for (let offset = 0; offset < 5_000 && all.length < limit; offset += 200) {
+    const page = listMemories({ workspace: WORKSPACE, archived: false, limit: 200, offset, sort: "created" }).memories;
+    if (!page.length) break;
+    for (const m of page) {
+      if (all.length >= limit) break;
+      if ((m.source === "extraction" || m.source === "import") && !m.pinned && m.created_at < engineStart && !m.tags.includes("curated")) {
+        all.push(m);
+      }
+    }
+  }
+  return all;
+}
+
+export async function curateLegacyMemories(): Promise<{ reviewed: number; archived: number } | null> {
+  const batch = listLegacyBatch(40);
+  if (!batch.length) return null;
+  const owner = ownerDisplayName();
+  const list = batch.map((m) => `- id=${m.id} | ${m.type} | ${clip(m.title, 80)} | ${clip(m.content, 220)}`).join("\n");
+  const prompt = `Você faz a faxina da memória de longo prazo de um assistente pessoal de ${owner}.
+Abaixo, memórias antigas geradas automaticamente. Decida quais ARQUIVAR.
+
+ARQUIVE: cumprimentos e conversa trivial; comandos/eventos sem valor futuro ("enviou /start", "pediu o link"); status momentâneo já superado; perguntas pontuais; erros técnicos passageiros; textos vagos sem informação concreta; duplicatas óbvias dentro da lista.
+MANTENHA: quem ${owner} é, preferências e jeito de trabalhar, clientes/projetos/pessoas e fatos sobre eles, identidade visual, decisões, prazos, procedimentos úteis, dados técnicos duráveis.
+Na dúvida, MANTENHA.
+
+${list}
+
+Responda SOMENTE com JSON: {"archive":["id1","id2"]}`;
+  const { data } = await runOneShotJson<CurationOutput>(prompt, { purpose: "curate", validate: isCurationOutput });
+  const ids = new Set(batch.map((m) => m.id));
+  const toArchive = new Set(data.archive.map(String).filter((id) => ids.has(id)));
+  for (const m of batch) {
+    if (toArchive.has(m.id)) {
+      updateMemory(m.id, { archived: true, tags: [...new Set([...m.tags, "curated-out"])].slice(0, 12) });
+    } else {
+      updateMemory(m.id, { tags: [...new Set([...m.tags, "curated"])].slice(0, 12) });
+    }
+  }
+  return { reviewed: batch.length, archived: toArchive.size };
+}
+
 // ─── orchestration ─────────────────────────────────────────────────────
 
 export interface ReflectionResult {
