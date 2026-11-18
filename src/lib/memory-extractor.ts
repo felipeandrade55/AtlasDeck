@@ -671,7 +671,10 @@ function setBackfillState(state: BackfillState): void {
 
 function backfillCandidates(days: number): ExtractionThreadRow[] {
   const since = toSqliteTime(Date.now() - days * 86_400_000);
-  return listThreadsForExtraction({ sources: extractSources(), activeSince: since, limit: 2000 })
+  // Always include imported sessions here: the history (Telegram up to the
+  // OpenClaw SQLite migration) lives there, and it predates the bridge, so
+  // there is no live copy to double-learn from.
+  return listThreadsForExtraction({ sources: ["web", "telegram", "openclaw_import"], activeSince: since, limit: 2000 })
     .filter((t) => (getChatCursor(t.id)?.last_rowid ?? 0) < t.last_rowid)
     .sort((a, b) => sqliteTimeToMs(a.last_message_at) - sqliteTimeToMs(b.last_message_at));
 }
