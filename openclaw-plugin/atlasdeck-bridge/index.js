@@ -21,12 +21,10 @@
  * Docs: docs.openclaw.ai/plugins/hooks, /plugins/hooks/prompt-and-session
  */
 
-let define = (entry) => entry;
-try {
-  ({ definePluginEntry: define } = await import("openclaw/plugin-sdk/plugin-entry"));
-} catch {
-  /* SDK helper not resolvable from a linked plugin dir — a plain entry object works the same */
-}
+// No top-level await here: OpenClaw loads plugins through require(), which
+// rejects ESM graphs with TLA (ERR_REQUIRE_ASYNC_MODULE — seen on 2026.11.3).
+// `definePluginEntry` is an identity helper; a plain entry object is equivalent.
+const define = (entry) => entry;
 
 // AtlasDeck's own prompts (specialist tasks, memory one-shots) and web
 // turns (the web route injects/captures those itself).
