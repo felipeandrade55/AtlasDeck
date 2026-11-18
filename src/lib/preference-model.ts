@@ -85,19 +85,9 @@ export function ingestTaskFeedback(task: Task): IngestResult {
   const written: Learning[] = [];
 
   if (task.user_approved === true) {
-    // Approval is a weak positive signal on its own — the real value comes
-    // from feedback text. Still, register a generic "what this specialist
-    // produced today was OK" so we can detect agents that consistently
-    // satisfy the user without further input.
-    written.push(
-      recordLearning({
-        agent_id: task.assigned_to,
-        pattern: `entregas no estilo recente foram aprovadas`,
-        evidence,
-        source: "approval",
-        confidence: 0.15,
-      }),
-    );
+    // A bare approval carries no reusable rule (the old generic "entregas
+    // no estilo recente foram aprovadas" only added noise to prompts); the
+    // value is in the feedback text, if any.
     if (task.user_feedback) {
       for (const p of distillPatterns(task.user_feedback)) {
         written.push(
@@ -174,10 +164,58 @@ export function ingestTaskFeedbackById(taskId: string): IngestResult | null {
  * around it ("based on past feedback, you should…").
  */
 export function getPreferencesForPrompt(agentId: string, limit = 8): string {
-  const own = listLearnings({ agent_id: agentId, min_confidence: 0.25, limit });
-  if (own.length === 0) return "";
-  return own
+  const list = getPreferenceList(agentId, limit, true);
+  return list.map((p) => `- ${p}`).join("\n");
+}
+
+/** Generic, rule-less signals that only add noise to prompts. */
+const NOISE_SOURCES = new Set(["approval", "implicit_sentiment"]);
+const NOISE_PATTERNS = /^entregas (no estilo recente|recentes) foram|frustração forte/i;
+
+/**
+ * Actionable preferences for an agent: its own + global (agent_id NULL —
+ * where conversation-learned preferences live), confident enough, newest
+ * evidence first among equals.
+ */
+export function getPreferenceList(agentId: string, limit = 8, withConfidence = false): string[] {
+  return listLearnings({ agent_id: agentId, min_confidence: 0.25, limit: limit * 3 })
+    .filter((l) => !NOISE_SOURCES.has(l.source) && !NOISE_PATTERNS.test(l.pattern))
     .slice(0, limit)
-    .map((l) => `- ${l.pattern} (conf ${l.confidence.toFixed(2)})`)
-    .join("\n");
+    .map((l) => (withConfidence ? `${l.pattern} (conf ${l.confidence.toFixed(2)})` : l.pattern));
+}
+
+/** Confidence a new learning starts with, by how it was expressed. */
+export function initialConfidence(kind: string | undefined): number {
+  if (kind === "explicit") return 0.6;
+  if (kind === "correction") return 0.45;
+  return 0.2; // implicit — needs reinforcement before it reaches prompts
+}
+
+/**
+ * Preferences the memory extractor found in ordinary conversation.
+ * Global by default; "entity:<nome>" scope is kept in the pattern text.
+ */
+export function ingestConversationPreferences(
+  prefs: Array<Record<string, unknown>>,
+  evidenceRef: string,
+): number {
+  let n = 0;
+  for (const p of prefs.slice(0, 10)) {
+    const raw = typeof p.pattern === "string" ? p.pattern.trim() : "";
+    if (raw.length < 6) continue;
+    const kind = typeof p.kind === "string" ? p.kind : "implicit";
+    const scope = typeof p.scope === "string" ? p.scope.trim() : "global";
+    const entity = scope.toLowerCase().startsWith("entity:") ? scope.slice(7).trim() : "";
+    const pattern = (entity ? `[${entity}] ${raw}` : raw).slice(0, 240);
+    const quote = typeof p.evidence === "string" ? p.evidence.slice(0, 200) : "";
+    recordLearning({
+      agent_id: null,
+      pattern,
+      evidence: quote ? `${evidenceRef} — “${quote}”` : evidenceRef,
+      source: kind === "correction" ? "correction" : "conversation",
+      confidence: initialConfidence(kind),
+    });
+    n++;
+  }
+  return n;
 }

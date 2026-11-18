@@ -20,7 +20,16 @@ import { randomUUID } from "crypto";
 
 const DB_PATH = path.join(process.cwd(), "data", "tasks.db");
 
-export type LearningSource = "approval" | "rejection" | "feedback_text" | "implicit_sentiment" | "manual";
+export type LearningSource =
+  | "approval"
+  | "rejection"
+  | "feedback_text"
+  | "implicit_sentiment"
+  | "manual"
+  /** Stated in ordinary conversation ("prefiro…", "sempre…", "nunca…"). */
+  | "conversation"
+  /** The user corrected the assistant ("não, faz assim…"). */
+  | "correction";
 
 export interface Learning {
   id: string;
@@ -97,12 +106,15 @@ export function recordLearning(input: RecordLearningInput): Learning {
   const now = new Date().toISOString();
   const agentId = input.agent_id ?? null;
 
-  // Look for an existing learning with the same (agent_id, pattern).
-  const existing = db
+  // Look for an existing learning with the same (agent_id, pattern) — or a
+  // near-identical wording, so "prefere respostas curtas" and "prefere
+  // respostas mais curtas" reinforce one learning instead of splitting.
+  const exact = db
     .prepare(
       "SELECT * FROM learnings WHERE pattern = ? AND ((agent_id IS NULL AND ? IS NULL) OR agent_id = ?)",
     )
     .get(input.pattern, agentId, agentId) as Record<string, unknown> | undefined;
+  const existing = exact ?? findSimilarLearningRow(db, input.pattern, agentId);
 
   if (existing) {
     const current = parseRow(existing);
@@ -132,6 +144,46 @@ export function recordLearning(input: RecordLearningInput): Learning {
   return parseRow(
     db.prepare("SELECT * FROM learnings WHERE id = ?").get(id) as Record<string, unknown>,
   );
+}
+
+const STOP = new Set(["o", "a", "os", "as", "de", "do", "da", "e", "que", "em", "um", "uma", "para", "pra", "com", "usuario", "usuário", "dono", "mais", "sempre"]);
+
+function tokens(text: string): Set<string> {
+  return new Set(
+    text
+      .normalize("NFD")
+      .replace(/\p{M}/gu, "")
+      .toLowerCase()
+      .split(/[^a-z0-9#]+/)
+      .filter((t) => t.length >= 3 && !STOP.has(t)),
+  );
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (!a.size || !b.size) return 0;
+  let inter = 0;
+  for (const t of a) if (b.has(t)) inter++;
+  return inter / (a.size + b.size - inter);
+}
+
+function findSimilarLearningRow(
+  db: Database.Database,
+  pattern: string,
+  agentId: string | null,
+): Record<string, unknown> | undefined {
+  const target = tokens(pattern);
+  if (target.size < 2) return undefined;
+  const rows = db
+    .prepare(
+      "SELECT * FROM learnings WHERE refuted = 0 AND ((agent_id IS NULL AND ? IS NULL) OR agent_id = ?) ORDER BY last_seen_at DESC LIMIT 300",
+    )
+    .all(agentId, agentId) as Record<string, unknown>[];
+  let best: { row: Record<string, unknown>; score: number } | null = null;
+  for (const row of rows) {
+    const score = jaccard(target, tokens(String(row.pattern)));
+    if (score >= 0.6 && (!best || score > best.score)) best = { row, score };
+  }
+  return best?.row;
 }
 
 export interface ListLearningsOptions {

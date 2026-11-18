@@ -11,7 +11,9 @@ import {
   Settings as SettingsIcon,
   Sparkles,
   Network,
+  GraduationCap,
 } from "lucide-react";
+import { LearningPanel } from "@/components/memory/LearningPanel";
 import { FileTree, FileNode } from "@/components/FileTree";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { MarkdownPreview } from "@/components/MarkdownPreview";
@@ -25,7 +27,7 @@ import { useIsMobile } from "@/hooks/useMediaQuery";
 import { PROTECTED_FILES, MEMORY_DIR } from "@/lib/memory-files";
 
 type ViewMode = "edit" | "preview";
-type Tab = "files" | "memories" | "graph" | "setup" | "settings";
+type Tab = "files" | "memories" | "learning" | "graph" | "setup" | "settings";
 
 interface Workspace {
   id: string;
@@ -402,6 +404,12 @@ export default function MemoryPage() {
             onClick={() => setActiveTab("memories")}
           />
           <TabButton
+            label="Aprendizado"
+            icon={<GraduationCap size={14} />}
+            active={activeTab === "learning"}
+            onClick={() => setActiveTab("learning")}
+          />
+          <TabButton
             label="Grafo"
             icon={<Network size={14} />}
             active={activeTab === "graph"}
@@ -431,7 +439,7 @@ export default function MemoryPage() {
         }}
       >
         {/* Workspace sidebar (hidden on Settings tab — settings are global) */}
-        {activeTab !== "settings" && (
+        {activeTab !== "settings" && activeTab !== "learning" && (
           <aside
             aria-label="Workspaces"
             style={{
@@ -653,6 +661,8 @@ export default function MemoryPage() {
                 Selecione um workspace
               </div>
             ))}
+
+          {activeTab === "learning" && <LearningPanel />}
 
           {activeTab === "settings" && <MemorySettings />}
         </main>

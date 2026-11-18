@@ -1,53 +1,78 @@
 # Roadmap: Memória estilo Hermes Agent
 
-**Objetivo:** levar o sistema de memória do AtlasDeck ao patamar do
-[Hermes Agent](https://hermes-ai.net/) (Nous Research) — um assistente que
-**aprende sozinho e evolui**, sem o usuário precisar pedir ou mandar `/new`.
-A base já existe (extração + FTS + embeddings + injection + learner); falta
-torná-la proativa e dar a ela a capacidade de virar experiência em skill.
+**Objetivo:** um assistente que **lembra** do que foi dito e **aprende com o uso**
+(preferências, clientes, identidade visual, procedimentos) — e pergunta antes de
+reaproveitar trabalho de um cliente em outro.
 
-> Contexto de como chegamos aqui: a memória do Jarvis estava quebrada em 3
-> camadas (codex-home/config.toml, alias `@/` sob tsx, app-server de vida
-> longa) — corrigido. E o motor de extração automática estava DESLIGADO por
-> duas `instrumentation.ts` divergentes — corrigido (commit 0323b2f).
-> Detalhes nas memórias do projeto.
+Motor v2 implementado na branch `feat/memory-engine` (nov/2026). Antes dele, a
+extração chamava `openclaw ask|chat|complete` (inexistentes) e caía numa
+heurística que salvava "Usuário pediu: …"; o recall era uma lista fixa de
+títulos no MEMORY.md; preferências só vinham de aprovação de tasks e nunca
+chegavam aos especialistas; não havia modelo de clientes/marcas.
 
 ---
 
-## Itens
+## Arquitetura v2
 
-### 1. Guidance proativa de memória  🚧 EM ANDAMENTO
-Fazer o Jarvis salvar memória **proativamente** (sem esperar "lembre disso")
-e **nunca alucinar** que salvou sem chamar a tool.
+```
+Telegram/WhatsApp ─► Gateway OpenClaw ─► plugin atlasdeck-bridge (opt-in)
+                                           before_prompt_build → /api/memory/turn-context
+                                           agent_end           → /api/memory/turn-capture
+                                           session_end         → /api/memory/session-event
+Chat web ─────────► /api/chat/stream (injeta turn-context direto)
 
-- [x] Reforçar `TOOL_GUIDANCE` (memory-injector.ts) com: regra inviolável
-      (nunca dizer "salvei" sem chamar `memory_add`), captura proativa de
-      fatos duráveis, e reflexo de fim de turno estilo Hermes. _(commit
-      pendente nesta leva)_
-- [ ] Deploy via auto-update + re-injetar guidance no MEMORY.md (botão
-      "Atualizar AUTO-RECALL nos MEMORY.md" ou esperar o injection scheduler
-      ~30min, agora que ele voltou a rodar).
-- [ ] Validar no Telegram: conversa normal (sem pedir) gera `memory_add`.
+chats.db (transcrição canônica) ─► extrator (fila, idle ≥90s, 1 chamada por vez)
+   └─ llm-oneshot: `openclaw infer model run` → fallback `openclaw agent`
+   └─ ops ADD/UPDATE/SUPERSEDE/NOOP contra memórias existentes
+   └─ entities / deliverables / preferences / session_summary
+memories.db: memories (+FTS5, e5 multilíngue), entities, deliverables,
+             recall_log, turn_sessions, extraction_runs, memory_jobs
+reflexão noturna: dedupe + perfil no USER.md + procedimentos em teste
+```
 
-### 2. Skills-from-experience  ⬜ PENDENTE
-O diferencial do Hermes: quando algo funciona, virar **skill reutilizável**
-que é carregada da próxima vez que um problema parecido aparece.
+Arquivos principais: `src/lib/memory-extractor.ts`, `memory-service.ts`,
+`turn-context.ts`, `reuse-context.ts`, `entity-db.ts`, `llm-oneshot.ts`,
+`reflection-job.ts`, `delegation-context.ts`, `openclaw-plugin/atlasdeck-bridge/`.
+UI: Memória → **Aprendizado**.
 
-- [ ] Definir formato de "skill aprendida" (arquivo/registro + quando carregar).
-- [ ] Job periódico que revisa sessões/sucessos e propõe skills (LLM).
-- [ ] Carregamento das skills no contexto do agente (via MEMORY.md ou MCP).
-- [ ] UI pra revisar/aprovar skills aprendidas.
+## Status
 
-### 3. Round-2 do MCP (blindagem)  ⬜ PENDENTE
-Remover a dependência da edição manual e fechar o ponto cego do diagnose.
+| Fase | Item | Status |
+|---|---|---|
+| 0 | Diagnóstico no VPS (versão OpenClaw, JSONL vs SQLite, hooks, `infer`) | ⬜ pendente — precisa de acesso SSH |
+| 1 | Extração via OpenClaw real, sem heurística, cursores corrigidos, falhas visíveis | ✅ |
+| 1 | Busca híbrida FTS5 + e5 multilíngue, dedupe semântico, MCP via HTTP | ✅ |
+| 1 | Instrução única de memória, trava no MEMORY.md, sem nome fixo | ✅ |
+| 2 | Contexto por turno no chat web | ✅ |
+| 2 | Plugin bridge (Telegram) + rotas + instalador com validação/rollback | ✅ código · ⬜ validar no VPS |
+| 2 | Continuidade ao trocar de sessão (resumos recentes + preferências) | ✅ |
+| 2 | Rotação do watchdog via compactação em vez de rename | ⬜ depende da Fase 0 |
+| 3 | `conversation_search` / `conversation_get` | ✅ |
+| 4 | Clientes, brand kit, entregas, pergunta de reaproveitamento | ✅ |
+| 5 | Preferências da conversa, reforço por similaridade, perfil no USER.md | ✅ |
+| 6 | Contexto para especialistas na delegação | ✅ |
+| 7 | Procedimentos em período de teste; export SKILL.md | ✅ (export opt-in `ATLAS_AUTO_SKILLS=1`) |
+| 8 | Reprocessar últimos 90 dias (botão com estimativa) | ✅ |
 
-- [ ] "Ativar memória avançada" projeta o bloco `[mcp_servers]` direto no
-      `codex-home/config.toml` do agente (hoje depende da projeção do
-      OpenClaw a partir do openclaw.json, ou da edição manual).
-- [ ] Diagnose checar `ListTools` **não-vazio** (não só "boot ok") — pra
-      "registra 0 tools mas diz pronto" nunca mais passar batido.
-- [ ] Botão de respawn real do Codex app-server (não só `systemctl restart`).
+## Para validar no VPS (Fase 0 — somente leitura)
 
----
+```
+openclaw --version
+ls -lat ~/.openclaw/agents/main/sessions | head; ls -la ~/.openclaw/agents/main/agent/
+openclaw infer model run --help
+openclaw plugins list; openclaw hooks list
+openclaw infer model run --prompt "Responda exatamente: pong" --json   # gasta poucos tokens
+```
 
-_Atualizado conforme avançamos. Itens concluídos viram ✅._
+Depois: Memória → Aprendizado → **Instalar plugin**, mandar uma mensagem no
+Telegram e conferir "Plugin ativo".
+
+## Variáveis de ajuste
+
+- `MEMORY_LLM_MODEL` — modelo para extração/reflexão (padrão: o do gateway)
+- `MEMORY_LLM_AGENT` — agente usado no fallback `openclaw agent` (padrão `main`)
+- `MEMORY_EXTRACTION_INTERVAL_MS` (3 min), `MEMORY_EXTRACTION_MAX_BATCHES` (6)
+- `ATLAS_EMBEDDING_MODEL` (padrão `Xenova/multilingual-e5-small`)
+- `ATLAS_SIM_RELEVANT` / `ATLAS_SIM_RELATED` / `ATLAS_SIM_DUPLICATE`
+- `ATLAS_AUTO_SKILLS=1` — exporta procedimentos promovidos como SKILL.md
+- `ATLAS_MEMORY_WHATSAPP=1` — libera memória no WhatsApp (padrão: bloqueado, modo assessor fala com terceiros)

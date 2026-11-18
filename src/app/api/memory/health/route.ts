@@ -11,9 +11,18 @@
 import { NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
-import { getStats, type MemorySettings, getSettings, searchSimilar } from "@/lib/memory-db";
+import {
+  getStats,
+  type MemorySettings,
+  getSettings,
+  searchSimilar,
+  listRecentJobs,
+  countMemoriesNeedingEmbedding,
+} from "@/lib/memory-db";
 import { getIndexStats, searchMemoryFiles, syncWorkspace } from "@/lib/memory-fts";
-import { isEmbeddingReady, embedTexts } from "@/lib/embeddings";
+import { isEmbeddingReady, embedTexts, embedQuery } from "@/lib/embeddings";
+import { DEFAULT_EMBEDDING_MODEL } from "@/lib/embedding-config";
+import { getOneShotStatus } from "@/lib/llm-oneshot";
 import { resolveWorkspacePath } from "@/lib/workspace-resolver";
 import { getOllamaStatus } from "@/lib/ollama-client";
 
@@ -143,11 +152,15 @@ async function checkEmbeddings(): Promise<CheckResult> {
     }
     // Quick functional test
     await embedTexts(["teste de embedding"]);
+    const pending = countMemoriesNeedingEmbedding();
     return {
       id: "embeddings",
       label: "Modelo de embedding pronto",
-      status: "ok",
-      detail: "Xenova MiniLM-L6 respondeu em embedding-test",
+      status: pending > 0 ? "warn" : "ok",
+      detail:
+        pending > 0
+          ? `${DEFAULT_EMBEDDING_MODEL} ok — ${pending} memória(s) aguardando (re)vetorização em segundo plano`
+          : `${DEFAULT_EMBEDDING_MODEL} respondeu; todas as memórias vetorizadas`,
       durationMs: Date.now() - start,
     };
   } catch (err) {
@@ -174,8 +187,8 @@ async function checkSemanticSearch(): Promise<CheckResult> {
         durationMs: Date.now() - start,
       };
     }
-    const { vectors } = await embedTexts(["teste de busca"]);
-    const hits = searchSimilar(vectors[0], { k: 3 });
+    const q = await embedQuery("teste de busca");
+    const hits = searchSimilar(q.vector, { k: 3, model: q.model });
     return {
       id: "semantic-search",
       label: "Busca semântica respondendo",
@@ -262,12 +275,38 @@ async function checkExtractor(settings: MemorySettings): Promise<CheckResult> {
       durationMs: Date.now() - start,
     };
   }
-  // OpenClaw
+  // OpenClaw (default): judge by what actually happened, not by config.
+  const llm = getOneShotStatus();
+  const jobs = listRecentJobs({ kind: "extract", limit: 10 });
+  const ok = jobs.filter((j) => j.status === "ok").length;
+  const failed = jobs.filter((j) => j.status === "failed");
+  const last = jobs[0];
+  if (llm.breakerOpen) {
+    return {
+      id: "extractor",
+      label: "Extrator de memórias",
+      status: "fail",
+      detail: `Sem acesso ao modelo via OpenClaw até ${llm.breakerOpenUntil}. Último erro: ${(llm.lastError ?? "?").slice(0, 300)}`,
+      durationMs: Date.now() - start,
+    };
+  }
+  if (jobs.length === 0) {
+    return {
+      id: "extractor",
+      label: "Extrator de memórias",
+      status: "warn",
+      detail: "Nenhuma extração ainda — roda sozinha depois de conversas (≥90s sem mensagens) ou pelo botão 'Extrair agora'",
+      durationMs: Date.now() - start,
+    };
+  }
   return {
     id: "extractor",
     label: "Extrator de memórias",
-    status: "ok",
-    detail: "Provider = OpenClaw CLI (modelo configurado no seu OpenClaw)",
+    status: failed.length > ok ? "fail" : failed.length > 0 ? "warn" : "ok",
+    detail:
+      `Últimos ${jobs.length} lotes: ${ok} ok, ${failed.length} com erro (via ${llm.preferred ?? "?"}). ` +
+      `Último: ${last.status} em ${last.started_at}${last.detail ? ` — ${last.detail}` : ""}` +
+      (failed[0]?.error ? ` | erro recente: ${failed[0].error.slice(0, 200)}` : ""),
     durationMs: Date.now() - start,
   };
 }

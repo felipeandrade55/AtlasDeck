@@ -110,7 +110,8 @@ let McpServer: typeof import("@modelcontextprotocol/sdk/server/mcp.js").McpServe
 let StdioServerTransport: typeof import("@modelcontextprotocol/sdk/server/stdio.js").StdioServerTransport;
 let z: typeof import("zod").z;
 let memoryDb: typeof import("../src/lib/memory-db");
-let embeddings: typeof import("../src/lib/embeddings");
+let chatDb: typeof import("../src/lib/chat-db");
+let entityDb: typeof import("../src/lib/entity-db");
 let remindersDb: typeof import("../src/lib/reminders-db");
 let briefingDb: typeof import("../src/lib/whatsapp-briefing-db");
 let transcriptionsDb: typeof import("../src/lib/transcriptions-db");
@@ -122,7 +123,8 @@ try {
   ));
   ({ z } = await import("zod"));
   memoryDb = await import("../src/lib/memory-db");
-  embeddings = await import("../src/lib/embeddings");
+  chatDb = await import("../src/lib/chat-db");
+  entityDb = await import("../src/lib/entity-db");
   remindersDb = await import("../src/lib/reminders-db");
   briefingDb = await import("../src/lib/whatsapp-briefing-db");
   transcriptionsDb = await import("../src/lib/transcriptions-db");
@@ -133,8 +135,8 @@ try {
 
 const {
   upsertMemory,
-  setMemoryEmbedding,
-  searchSimilar,
+  searchMemoriesFts,
+  getMemoriesByIds,
   listMemories,
   updateMemory,
   deleteMemory,
@@ -143,7 +145,6 @@ const {
   recordAccess,
 } = memoryDb;
 type MemoryRow = import("../src/lib/memory-db").MemoryRow;
-const { embedTexts } = embeddings;
 
 const MemoryTypeSchema = z.enum([
   "episodic",
@@ -181,84 +182,49 @@ function asError(message: string) {
   };
 }
 
-// Embedding lifecycle is the riskiest part of cold start: the first
-// call to embedTexts() downloads ~30MB of Xenova model and unpacks
-// the inference pipeline. That can take 30-90 seconds on a fresh
-// install, and during that window the MCP tool handler would block
-// — long enough for OpenClaw to time out and kill the child, which
-// makes the agent unresponsive on Telegram. So we:
-//   1. Kick off a single warmup in the BACKGROUND right after boot
-//      so the first user-facing tool call sees a hot pipeline.
-//   2. Cap any individual embed at 8s. Past that, fall back to
-//      saving without a vector — search degrades to LIKE matching
-//      but the memory is still persisted and surfaced in the UI.
-//   3. Surface progress to stderr so the diagnose view shows it.
-let embeddingsReady = false;
-let embeddingsError: string | null = null;
-let embeddingsPromise: Promise<void> | null = null;
+// Memory writes/searches go through AtlasDeck's /api/memory/agent so the
+// embedding model lives in ONE process (the Next server) and every write
+// gets the same dedupe + hybrid search. If AtlasDeck is unreachable we
+// still serve the agent from the shared SQLite file directly (keyword
+// search, save without vector — the reembed job fills vectors later).
+const MEMORY_HTTP_TIMEOUT_MS = 12_000;
 
-function startEmbeddingsWarmup(): void {
-  if (embeddingsPromise) return;
-  log("warming up embeddings in background (first run downloads ~30MB)");
-  const warmupStart = Date.now();
-  embeddingsPromise = (async () => {
-    try {
-      await embedTexts(["warmup"]);
-      embeddingsReady = true;
-      log(`embeddings ready (${Date.now() - warmupStart}ms)`);
-    } catch (err) {
-      embeddingsError = err instanceof Error ? err.message : String(err);
-      log(`embeddings warmup failed — falling back to LIKE search: ${embeddingsError}`);
-    }
-  })();
+async function memoryApi(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), MEMORY_HTTP_TIMEOUT_MS);
+  try {
+    return (await atlasdeckFetch("/api/memory/agent", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      signal: ctrl.signal,
+    })) as Record<string, unknown>;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-const EMBED_TIMEOUT_MS = 8000;
+function localKeywordSearch(query: string, k: number, type?: string): MemoryRow[] {
+  const hits = searchMemoriesFts(query, {
+    workspace: WORKSPACE,
+    limit: k,
+    type: type as import("../src/lib/memory-db").MemoryType | undefined,
+  });
+  if (hits.length > 0) return getMemoriesByIds(hits.map((h) => h.id));
+  return listMemories({
+    workspace: WORKSPACE,
+    search: query,
+    type: type as import("../src/lib/memory-db").MemoryType | undefined,
+    limit: k,
+    archived: false,
+    sort: "importance",
+  }).memories;
+}
 
-async function tryEmbed(text: string): Promise<{
-  vector: Float32Array;
-  model: string;
-  dim: number;
-} | null> {
-  // If warmup is still in flight, give it a brief chance — but never
-  // longer than the tool-level timeout. Idle queues don't help us
-  // here; OpenClaw is waiting on this Promise.
-  if (!embeddingsReady && embeddingsPromise) {
-    try {
-      await Promise.race([
-        embeddingsPromise,
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("warmup-timeout")), EMBED_TIMEOUT_MS),
-        ),
-      ]);
-    } catch {
-      return null;
-    }
-  }
-  if (embeddingsError) return null;
-
-  try {
-    const result = await Promise.race([
-      embedTexts([text]),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("embed-timeout")), EMBED_TIMEOUT_MS),
-      ),
-    ]);
-    if (result.vectors.length === 0) return null;
-    return {
-      vector: result.vectors[0],
-      model: `${result.provider.id}:${result.provider.modelId}`,
-      dim: result.provider.dim,
-    };
-  } catch (err) {
-    // Embeddings are best-effort. The memory is still saved without
-    // a vector — search will degrade to LIKE-style lookups for it.
-    log(
-      "embedding failed (saving without vector)",
-      err instanceof Error ? err.message : String(err),
-    );
-    return null;
-  }
+function rowView(row: MemoryRow): Record<string, unknown> {
+  return {
+    ...summarizeRow(row),
+    content: row.content.length > 400 ? `${row.content.slice(0, 399)}…` : row.content,
+  };
 }
 
 const server = new McpServer({
@@ -306,33 +272,29 @@ server.registerTool(
     },
   },
   async (args) => {
+    const input = {
+      workspace: WORKSPACE,
+      agent_id: AGENT_ID,
+      type: args.type,
+      title: args.title.trim(),
+      content: args.content.trim(),
+      summary: args.summary?.trim() || null,
+      tags: args.tags,
+      importance: args.importance ?? 0.7,
+      pinned: args.pinned ?? false,
+      language: args.language ?? null,
+    };
     try {
-      const embed = await tryEmbed(`${args.title}\n${args.content}`);
-      const row = upsertMemory({
-        workspace: WORKSPACE,
-        agent_id: AGENT_ID,
-        type: args.type,
-        title: args.title.trim(),
-        content: args.content.trim(),
-        summary: args.summary?.trim() || null,
-        source: "agent",
-        tags: args.tags,
-        importance: args.importance ?? 0.7,
-        pinned: args.pinned ?? false,
-        language: args.language ?? null,
-        embedding_model: embed?.model ?? null,
-        embedding_dim: embed?.dim ?? null,
-        embedding: embed?.vector ?? null,
-      });
-      if (embed && !row.embedding_model) {
-        // upsertMemory ON CONFLICT does write the embedding, but be
-        // defensive in case a future caller passes embedding=null on
-        // update — make sure it gets attached.
-        setMemoryEmbedding(row.id, embed.vector, embed.model, embed.dim);
+      const res = await memoryApi({ action: "add", ...input });
+      return asJson({ ok: true, action: res.action, memory: res.memory });
+    } catch (httpErr) {
+      log("memory_add via API failed, saving locally", httpErr instanceof Error ? httpErr.message : String(httpErr));
+      try {
+        const row = upsertMemory({ ...input, source: "agent" });
+        return asJson({ ok: true, action: "created", memory: summarizeRow(row), note: "saved without embedding (AtlasDeck offline)" });
+      } catch (err) {
+        return asError(err instanceof Error ? err.message : String(err));
       }
-      return asJson({ ok: true, memory: summarizeRow(row) });
-    } catch (err) {
-      return asError(err instanceof Error ? err.message : String(err));
     }
   },
 );
@@ -342,7 +304,7 @@ server.registerTool(
   {
     title: "Search memories",
     description:
-      "Semantic search over all stored memories using embeddings. Call this BEFORE answering questions where past context might be relevant ('what did I say about X', 'lembre-se', 'você sabe meu...'). Returns top-k hits with similarity scores.",
+      "Hybrid (keyword + semantic) search over stored memories about the user, their clients, projects and preferences. Call BEFORE answering when past context might matter ('você lembra…', 'o que sabe sobre…', a client/project name, 'como fizemos da última vez'). Returns the best hits with a content excerpt; use memory_get for the full text.",
     inputSchema: {
       query: z.string().min(1).max(500),
       k: z.number().int().min(1).max(20).optional(),
@@ -351,40 +313,23 @@ server.registerTool(
   },
   async (args) => {
     try {
-      const embed = await tryEmbed(args.query);
-      if (!embed) {
-        // Fallback: LIKE search via listMemories
-        const result = listMemories({
-          workspace: WORKSPACE,
-          search: args.query,
-          type: args.type,
-          limit: args.k ?? 10,
-          sort: "importance",
-        });
-        return asJson({
-          mode: "fallback-text",
-          hits: result.memories.map((m) => ({
-            score: null,
-            memory: summarizeRow(m),
-          })),
-        });
-      }
-      const hits = searchSimilar(embed.vector, {
+      const res = await memoryApi({
+        action: "search",
         workspace: WORKSPACE,
-        type: args.type,
+        query: args.query,
         k: args.k ?? 8,
-        minScore: 0.25,
+        type: args.type,
       });
-      for (const h of hits) recordAccess(h.memory.id);
-      return asJson({
-        mode: "semantic",
-        hits: hits.map((h) => ({
-          score: Number(h.score.toFixed(4)),
-          memory: summarizeRow(h.memory),
-        })),
-      });
-    } catch (err) {
-      return asError(err instanceof Error ? err.message : String(err));
+      return asJson(res);
+    } catch (httpErr) {
+      log("memory_search via API failed, keyword fallback", httpErr instanceof Error ? httpErr.message : String(httpErr));
+      try {
+        const rows = localKeywordSearch(args.query, args.k ?? 8, args.type);
+        for (const r of rows) recordAccess(r.id);
+        return asJson({ mode: "fallback-keyword", hits: rows.map((m) => ({ score: null, memory: rowView(m) })) });
+      } catch (err) {
+        return asError(err instanceof Error ? err.message : String(err));
+      }
     }
   },
 );
@@ -454,17 +399,16 @@ server.registerTool(
   },
   async (args) => {
     const { id, ...patch } = args;
-    const row = updateMemory(id, patch);
-    if (!row) return asError(`memory ${id} not found`);
-    // If content/title changed, regenerate the embedding so future
-    // searches reflect the new wording.
-    if (patch.title || patch.content) {
-      const embed = await tryEmbed(`${row.title}\n${row.content}`);
-      if (embed) {
-        setMemoryEmbedding(row.id, embed.vector, embed.model, embed.dim);
-      }
+    try {
+      // Via API so the vector is refreshed when the wording changes.
+      const res = await memoryApi({ action: "update", id, ...patch });
+      return asJson(res);
+    } catch (httpErr) {
+      log("memory_update via API failed, updating locally", httpErr instanceof Error ? httpErr.message : String(httpErr));
+      const row = updateMemory(id, patch);
+      if (!row) return asError(`memory ${id} not found`);
+      return asJson({ ok: true, memory: summarizeRow(row) });
     }
-    return asJson({ ok: true, memory: summarizeRow(row) });
   },
 );
 
@@ -493,6 +437,256 @@ server.registerTool(
   },
   async () => {
     return asJson(getStats());
+  },
+);
+
+// ─── Past conversations (chats.db full-text) ───────────────────────────
+// Memories hold distilled facts; these tools reach the raw conversations
+// ("o que combinamos sobre X semana passada?", "qual foi aquele texto que
+// você escreveu pro cliente Y?").
+
+function stripScaffolding(text: string): string {
+  return text
+    .replace(/<atlas-memory>[\s\S]*?<\/atlas-memory>/gi, "")
+    .replace(/\[atlas:[a-z_]+\][^\n]*(?:\n(?!\n)[^\n]*)*/gi, "")
+    .trim();
+}
+
+server.registerTool(
+  "conversation_search",
+  {
+    title: "Search past conversations",
+    description:
+      "Full-text search over past conversations with the user (web chat, Telegram). Use when the user refers to something discussed before that isn't in your memory context ('o que falamos sobre…', 'aquele texto que você fez pro cliente X', 'semana passada'). Returns matching messages with date and thread id; use conversation_get to read the surrounding exchange.",
+    inputSchema: {
+      query: z.string().min(2).max(300).describe("Keywords (names, terms). All words must match."),
+      days: z.number().int().min(1).max(365).optional().describe("Only the last N days (default 90)."),
+      limit: z.number().int().min(1).max(30).optional(),
+    },
+  },
+  async (args) => {
+    try {
+      const sinceMs = Date.now() - (args.days ?? 90) * 86_400_000;
+      const limit = args.limit ?? 10;
+      const hits = chatDb
+        .searchMessages(args.query, limit * 4)
+        .filter((h) => h.thread.source !== "worker")
+        .filter((h) => h.message.role === "user" || h.message.role === "assistant")
+        .filter((h) => chatDb.sqliteTimeToMs(h.message.created_at) >= sinceMs)
+        .filter((h) => !/\[atlas:(worker|memory-oneshot)\]/.test(h.message.content))
+        .slice(0, limit);
+      return asJson({
+        total: hits.length,
+        hits: hits.map((h) => ({
+          thread_id: h.thread.id,
+          thread_title: h.thread.title,
+          channel: h.thread.source === "web" ? "web" : "telegram/gateway",
+          message_id: h.message.id,
+          role: h.message.role,
+          at_utc: h.message.created_at,
+          snippet: stripScaffolding(h.snippet.replace(/<\/?mark>/g, "**")).slice(0, 400),
+        })),
+      });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
+server.registerTool(
+  "conversation_get",
+  {
+    title: "Read a past conversation",
+    description:
+      "Read messages from a past conversation thread (from conversation_search). Pass message_id to center the window on a hit.",
+    inputSchema: {
+      thread_id: z.string().min(1),
+      message_id: z.string().optional(),
+      window: z.number().int().min(1).max(20).optional().describe("Messages before/after the hit (default 4)."),
+    },
+  },
+  async (args) => {
+    try {
+      const thread = chatDb.getThread(args.thread_id);
+      if (!thread || thread.source === "worker") return asError(`thread ${args.thread_id} not found`);
+      const all = chatDb
+        .listMessages({ threadId: thread.id, limit: 2000 })
+        .filter((m) => m.role === "user" || m.role === "assistant");
+      const w = args.window ?? 4;
+      let slice = all.slice(-w * 2);
+      if (args.message_id) {
+        const idx = all.findIndex((m) => m.id === args.message_id);
+        if (idx !== -1) slice = all.slice(Math.max(0, idx - w), idx + w + 1);
+      }
+      return asJson({
+        thread_id: thread.id,
+        title: thread.title,
+        messages: slice.map((m) => ({
+          id: m.id,
+          role: m.role,
+          at_utc: m.created_at,
+          content: stripScaffolding(m.content).slice(0, 3000),
+        })),
+      });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
+// ─── Clients, brand kits, deliverables ─────────────────────────────────
+// Structured knowledge about who the owner works for and what was made
+// for them. The per-turn context already surfaces this automatically when
+// a client is named; these tools let the agent read/record explicitly.
+
+const OWNER_WS = "workspace";
+
+function entityView(e: import("../src/lib/entity-db").EntityRow) {
+  const kit = entityDb.getBrandKit(e);
+  return {
+    id: e.id,
+    type: e.type,
+    name: e.name,
+    aliases: e.aliases,
+    summary: e.summary,
+    brand: kit,
+    brand_text: kit ? entityDb.describeBrandKit(kit) : null,
+    last_seen_at: e.last_seen_at,
+  };
+}
+
+server.registerTool(
+  "entity_get",
+  {
+    title: "Get a client/brand/project",
+    description:
+      "Look up a client, brand, project or person by name: summary, brand kit (colors, fonts, tone, logo) and recent deliverables made for them. Use before producing anything for a client.",
+    inputSchema: { name: z.string().min(2).max(120) },
+  },
+  async (args) => {
+    try {
+      const e = entityDb.findEntityByName(OWNER_WS, args.name);
+      if (!e) {
+        const similar = entityDb.listEntities({ workspace: OWNER_WS, search: args.name, limit: 5 });
+        return asJson({ found: false, suggestions: similar.map((s) => s.name) });
+      }
+      const deliverables = entityDb.listDeliverables({ workspace: OWNER_WS, clientEntityId: e.id, limit: 5 });
+      return asJson({ found: true, entity: entityView(e), deliverables });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
+server.registerTool(
+  "entity_list",
+  {
+    title: "List known clients/brands/projects",
+    description: "List the clients, brands and projects AtlasDeck knows about (most recently mentioned first).",
+    inputSchema: {
+      type: z.enum(["client", "brand", "project", "person", "organization"]).optional(),
+      limit: z.number().int().min(1).max(50).optional(),
+    },
+  },
+  async (args) => {
+    try {
+      const list = entityDb.listEntities({ workspace: OWNER_WS, type: args.type, limit: args.limit ?? 20 });
+      return asJson({ total: list.length, entities: list.map(entityView) });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
+server.registerTool(
+  "brand_kit_save",
+  {
+    title: "Save a client's brand kit",
+    description:
+      "Record (or correct) the visual identity of a client/brand: colors (hex), fonts, tone of voice, logo location, references. Creates the client if new. Call when the user gives or corrects branding.",
+    inputSchema: {
+      client: z.string().min(2).max(120),
+      colors: z.array(z.string()).max(10).optional(),
+      fonts: z.array(z.string()).max(6).optional(),
+      tone: z.string().max(300).optional(),
+      logo: z.string().max(500).optional(),
+      references: z.array(z.string()).max(8).optional(),
+      notes: z.string().max(500).optional(),
+    },
+  },
+  async (args) => {
+    try {
+      const { client, ...kit } = args;
+      const e = entityDb.upsertEntity({ workspace: OWNER_WS, type: "client", name: client, brand: kit, mention: true });
+      entityDb.invalidateMentionCache();
+      return asJson({ ok: true, entity: entityView(e) });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
+server.registerTool(
+  "deliverable_log",
+  {
+    title: "Record a deliverable",
+    description:
+      "Record something produced for a client (landing page, site, proposal, post, deck, logo, email, document): what, for whom, the approach/structure used and the branding applied. Lets future requests reuse it.",
+    inputSchema: {
+      kind: z.enum(["landing_page", "site", "proposta", "post", "apresentacao", "logo", "email", "documento", "outro"]),
+      title: z.string().min(2).max(200),
+      client: z.string().max(120).optional(),
+      approach: z.string().max(800).optional(),
+      branding: z.string().max(800).optional(),
+      artifact: z.string().max(500).optional().describe("File path or URL of the result"),
+    },
+  },
+  async (args) => {
+    try {
+      const artifact = args.artifact?.trim() || "";
+      const d = entityDb.logDeliverable({
+        workspace: OWNER_WS,
+        kind: args.kind,
+        title: args.title,
+        clientName: args.client ?? null,
+        approach: args.approach ?? null,
+        branding: args.branding ?? null,
+        artifactUrl: /^https?:\/\//i.test(artifact) ? artifact : null,
+        artifactPath: artifact && !/^https?:\/\//i.test(artifact) ? artifact : null,
+      });
+      return asJson({ ok: true, deliverable: d });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
+  },
+);
+
+server.registerTool(
+  "deliverable_search",
+  {
+    title: "Find past deliverables",
+    description:
+      "Find work done before, by client and/or kind — e.g. to reuse the structure of the last landing page. Returns approach, branding and artifact location.",
+    inputSchema: {
+      client: z.string().max(120).optional(),
+      kind: z.enum(["landing_page", "site", "proposta", "post", "apresentacao", "logo", "email", "documento", "outro"]).optional(),
+      limit: z.number().int().min(1).max(20).optional(),
+    },
+  },
+  async (args) => {
+    try {
+      const e = args.client ? entityDb.findEntityByName(OWNER_WS, args.client) : null;
+      if (args.client && !e) return asJson({ total: 0, deliverables: [], note: `cliente "${args.client}" não encontrado` });
+      const list = entityDb.listDeliverables({
+        workspace: OWNER_WS,
+        clientEntityId: e?.id,
+        kind: args.kind,
+        limit: args.limit ?? 10,
+      });
+      return asJson({ total: list.length, deliverables: list });
+    } catch (err) {
+      return asError(err instanceof Error ? err.message : String(err));
+    }
   },
 );
 
@@ -1578,13 +1772,9 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   log("ready (stdio transport)");
-
-  // Kick off embedding warmup AFTER signaling ready so OpenClaw sees
-  // the MCP child healthy immediately. The download/inference setup
-  // happens in the background — first user-facing tool call will be
-  // hot if it lands after warmup completes, or fall back gracefully
-  // (LIKE search, no-vector save) if it arrives during the download.
-  startEmbeddingsWarmup();
+  // No embedding warmup here anymore: vectors are computed by the
+  // AtlasDeck server (/api/memory/agent), which keeps the only copy of
+  // the model in memory.
 }
 
 main().catch((err) => {

@@ -29,7 +29,8 @@ import { getAgentList } from "@/lib/openclaw-agents-compat";
 // block. If this string isn't present in the agent's MEMORY.md, the
 // LLM has no instruction to call the memory tools — the most common
 // reason the SQLite counter stays at 0.
-const GUIDANCE_MARKER = "Ferramentas de memória persistente — USE ATIVAMENTE";
+import { GUIDANCE_MARKER as CURRENT_GUIDANCE_MARKER } from "@/lib/memory-guidance";
+const GUIDANCE_MARKER = CURRENT_GUIDANCE_MARKER;
 
 export interface McpEntrySnapshot {
   command: string;

@@ -35,6 +35,8 @@ import { logActivity, updateActivity } from "@/lib/activities-db";
 import { publishEvent } from "@/lib/live-events";
 import { createTask, updateTask } from "@/lib/tasks-db";
 import { getMemoryDailyStats, getSettings } from "@/lib/memory-db";
+import { buildTurnContextSafe } from "@/lib/turn-context";
+import { markWebChatActivity } from "@/lib/agent-activity";
 import { executeTool, TOOL_DEFINITIONS, type OrchestratorToolName } from "@/lib/orchestrator-tools";
 import { refreshOrchestratorMemory } from "@/lib/orchestrator-refresh";
 import { getDelegationPool } from "@/lib/delegation-pool";
@@ -601,11 +603,28 @@ export async function POST(req: NextRequest) {
     body.liveLon <= 180
       ? { lat: body.liveLat, lon: body.liveLon }
       : null;
+  markWebChatActivity();
+  // Per-turn memory: what AtlasDeck already knows that is relevant to this
+  // message (+ recent-conversation summaries on a fresh thread). Bounded
+  // at 1.5s and fail-open — a slow/broken memory layer never blocks chat.
+  const isFirstTurn =
+    !body.threadId ||
+    listMessages({ threadId: thread.id, limit: 4 }).filter((m) => m.role === "user").length <= 1;
+  const memoryContext = await buildTurnContextSafe({
+    message: prompt,
+    agentId,
+    sessionKey: `web:${thread.id}`,
+    sessionId: thread.source_session_id,
+    channel: "web",
+    threadId: thread.id,
+    isNewSession: isFirstTurn,
+  });
+  const memoryBlock = memoryContext?.block ? `${memoryContext.block}\n\n` : "";
   const userContext = await buildUserContextPreamble(prompt, live);
-  const openclawPrompt = `${userContext}${prompt}${FORCE_INLINE_HINT}${delegationHint(agentId)}${FORMATTING_HINT}`;
+  const openclawPrompt = `${memoryBlock}${userContext}${prompt}${FORCE_INLINE_HINT}${delegationHint(agentId)}${FORMATTING_HINT}`;
   const effectivePrompt =
     chatMode === "quick"
-      ? `${userContext}${prompt}${QUICK_MODE_HINT}${FORMATTING_HINT}`
+      ? `${memoryBlock}${userContext}${prompt}${QUICK_MODE_HINT}${FORMATTING_HINT}`
       : openclawPrompt;
 
   // Pre-create assistant message in streaming state so the UI gets an ID up front.
@@ -770,6 +789,7 @@ export async function POST(req: NextRequest) {
         });
       } finally {
         clearInterval(heartbeat);
+        markWebChatActivity();
         // Final persistence: mark assistant as complete with whatever we got
         const current = updateMessage(assistantMsg.id, {
           content: assembled,

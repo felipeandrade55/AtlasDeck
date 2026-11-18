@@ -1,14 +1,16 @@
 /**
- * Memory injection: writes a managed "Auto-Recall" section directly
- * into each workspace's MEMORY.md so that the OpenClaw agent reads it
- * on session boot (OpenClaw already loads MEMORY.md as part of its
- * standard workspace context).
+ * Memory injection: writes a managed "Auto-Recall" section into each
+ * workspace's MEMORY.md so the agent has the memory guidance plus a
+ * snapshot of its most important memories at session boot.
  *
- * The managed section is delimited by HTML comments. Anything outside
- * the markers is preserved verbatim — the user's hand-written content
- * is never overwritten.
+ * This is the static baseline. Per-turn relevance (memories related to
+ * the message being answered) is delivered separately by the turn-context
+ * path, so this block stays small: guidance + top memories with a short
+ * excerpt of their content.
+ *
+ * Writes go through managed-markdown (per-file lock + atomic rename) —
+ * the orchestrator injector writes another block in the same file.
  */
-import { promises as fs } from "fs";
 import path from "path";
 import {
   listMemories,
@@ -22,66 +24,11 @@ import {
 } from "@/lib/openclaw-config";
 import { indexFile } from "@/lib/memory-fts";
 import { buildPromptBlock } from "@/lib/memory-extractor";
+import { renderMemoryGuidance } from "@/lib/memory-guidance";
+import { updateManagedBlock } from "@/lib/managed-markdown";
 
-const BEGIN_MARK = "<!-- BEGIN ATLASDECK AUTO-RECALL — do not edit; this section regenerates -->";
-const END_MARK = "<!-- END ATLASDECK AUTO-RECALL -->";
-
-/**
- * Tool-usage guidance for the agent. Without this, the LLM tends to
- * "remember" things from session context and skip the tool entirely
- * — which means nothing ever lands in the SQLite store and the UI
- * counter stays at 0 even though the user feels remembered.
- *
- * Injected ABOVE the auto-recall list because reading order matters
- * for some models — the directive comes before the data it operates on.
- */
-const TOOL_GUIDANCE = `### Ferramentas de memória persistente — USE ATIVAMENTE
-
-Você tem ferramentas do servidor MCP \`atlasdeck-memory\` que persistem
-informação entre sessões. O conteúdo da sessão atual NÃO é memória — é
-contexto temporário. Para algo durar, **chame as tools**.
-
-⚠️ **REGRA INVIOLÁVEL:** NUNCA diga "salvei", "registrei", "anotei",
-"guardei" ou "vou lembrar" sem ter chamado \`memory_add\` de verdade nesta
-mesma resposta. Afirmar que salvou sem chamar a tool é **mentir** para o
-usuário. A sequência é sempre: chama a tool PRIMEIRO → só então confirma.
-
-- **\`memory_add\`** — chame **PROATIVAMENTE** (sem esperar o usuário pedir)
-  sempre que:
-  - O usuário pedir "lembre", "salve", "anote", "guarde", "memorize"
-  - Você aprender uma **preferência durável** (idioma, formato de resposta,
-    estilo de comunicação, restrição operacional)
-  - O usuário compartilhar algo **identitário** (nome, papel, localização,
-    horários, projetos em andamento, clientes)
-  - Uma **decisão de configuração/projeto** for fechada na conversa
-  - O usuário disser "sempre" ou "nunca" sobre algo
-  - Você perceber, **no fim de uma troca com conteúdo real**, que aprendeu
-    um fato durável sobre o Felipe ou o trabalho — salve antes de encerrar.
-
-- **\`memory_search\`** — SEMPRE chame ANTES de responder quando:
-  - A pergunta é "você lembra X?", "o que você sabe sobre Y?",
-    "qual minha preferência de Z?"
-  - O contexto pode ter sido falado em uma sessão passada
-  - Você precisa de uma preferência armazenada pra formatar a resposta
-
-- **\`memory_update\`** — quando o usuário **corrigir** algo já salvo
-  ("na verdade não é X, é Y") — não duplique, atualize.
-
-- **\`memory_remove\`** — apenas quando o usuário pedir explicitamente
-  pra esquecer.
-
-**Importance** (parâmetro de \`memory_add\`):
-\`0.85+\` → quando o usuário falou "sempre/nunca/lembre" ou é identidade.
-\`0.70\` → preferência forte mas casual.
-\`0.50\` → informação relevante mas não crítica.
-
-**Reflexo de fim de turno:** antes de encerrar uma conversa com conteúdo
-real, pergunte-se "aprendi algo que vale lembrar amanhã?". Se sim, chame
-\`memory_add\` agora. Memória boa se constrói por **hábito**, não por pedido.
-
-**Não pergunte permissão** pra salvar — só salve. Se quiser confirmar,
-responda naturalmente e a tool já será chamada em paralelo.
-`;
+export const AUTO_RECALL_BEGIN = "<!-- BEGIN ATLASDECK AUTO-RECALL — do not edit; this section regenerates -->";
+export const AUTO_RECALL_END = "<!-- END ATLASDECK AUTO-RECALL -->";
 
 export interface InjectionOptions {
   maxMemories?: number;
@@ -106,7 +53,9 @@ function score(memory: MemoryRow): number {
     : Date.parse(memory.created_at);
   const ageDays = Math.max(0, (Date.now() - recency) / (1000 * 60 * 60 * 24));
   const recencyBonus = Math.exp(-ageDays / 30) * 0.1;
-  return importance + accessBonus + recencyBonus;
+  // Episodic memories age out of the boot snapshot fast; durable facts don't.
+  const typePenalty = memory.type === "episodic" ? 0.15 : 0;
+  return importance + accessBonus + recencyBonus - typePenalty;
 }
 
 export async function buildRecallBlock(
@@ -126,7 +75,7 @@ export async function buildRecallBlock(
   const { memories: top } = listMemories({
     workspace,
     archived: false,
-    limit: max * 2,
+    limit: max * 3,
     sort: "importance",
   });
 
@@ -148,47 +97,10 @@ export async function buildRecallBlock(
   return { block, memories: merged };
 }
 
-function spliceManagedSection(existing: string, payload: string): string {
-  const beginIdx = existing.indexOf(BEGIN_MARK);
-  const endIdx = existing.indexOf(END_MARK);
-
-  const managedBlock = `${BEGIN_MARK}\n## Auto-Recall (managed by AtlasDeck)\n_Atualizado em ${new Date().toISOString()}_\n\n${payload}\n${END_MARK}`;
-
-  if (beginIdx !== -1 && endIdx !== -1 && endIdx > beginIdx) {
-    const before = existing.slice(0, beginIdx).trimEnd();
-    const after = existing.slice(endIdx + END_MARK.length).trimStart();
-    return [before, managedBlock, after].filter(Boolean).join("\n\n").trim() + "\n";
-  }
-
-  const base = existing.trimEnd();
-  if (!base) return `${managedBlock}\n`;
-  return `${base}\n\n${managedBlock}\n`;
-}
-
-export async function injectIntoWorkspace(
-  workspace: string,
-  opts: InjectionOptions = {},
-): Promise<InjectionResult> {
-  const settings = getSettings();
-  if (!settings.inject_into_memory_md) {
-    return {
-      workspace,
-      memoryFile: "",
-      memoriesInjected: 0,
-      bytesWritten: 0,
-      changed: false,
-    };
-  }
-
-  // Resolve the on-disk workspace path. "workspace" is the convention
-  // memory-extractor uses for the main agent, but the real on-disk
-  // path comes from openclaw.json (`agents.list[id=main].workspace`),
-  // NOT from AtlasDeck's data/openclaw-config.json — those two can
-  // drift apart (auto-fix occasionally rewrites the latter to
-  // <OPENCLAW_DIR>/workspace without /mission-control, which is
-  // wrong and leaves MEMORY.md in a folder no agent reads).
-  // Reading openclaw.json directly guarantees we write where the
-  // daemon will actually look on next session boot.
+function resolveMemoryFile(workspace: string): string | null {
+  // "workspace" is the convention for the main agent; the real on-disk
+  // path comes from openclaw.json resolved the way the gateway does
+  // (HOME-relative), not from AtlasDeck's own config.
   let wsPath: string | null = null;
   if (workspace === "workspace") {
     wsPath = getAgentWorkspacePath("main") ?? getOpenClawWorkspace();
@@ -198,65 +110,53 @@ export async function injectIntoWorkspace(
   } else {
     wsPath = resolveWorkspacePath(workspace);
   }
-  if (!wsPath) {
-    return {
-      workspace,
-      memoryFile: "",
-      memoriesInjected: 0,
-      bytesWritten: 0,
-      changed: false,
-    };
-  }
+  return wsPath ? path.join(wsPath, "MEMORY.md") : null;
+}
 
-  const memoryFile = path.join(wsPath, "MEMORY.md");
-
-  let existing = "";
-  try {
-    existing = await fs.readFile(memoryFile, "utf-8");
-  } catch {
-    // MEMORY.md may not exist yet — that's fine, we'll create it
-    existing = "# MEMORY\n";
+export async function injectIntoWorkspace(
+  workspace: string,
+  opts: InjectionOptions = {},
+): Promise<InjectionResult> {
+  const settings = getSettings();
+  const memoryFile = settings.inject_into_memory_md ? resolveMemoryFile(workspace) : null;
+  if (!memoryFile) {
+    return { workspace, memoryFile: "", memoriesInjected: 0, bytesWritten: 0, changed: false };
   }
 
   const { block, memories } = await buildRecallBlock(workspace, opts);
-  const recallPayload = block.trim() ? block : "_(sem memórias relevantes ainda)_";
-  // Tool guidance comes first so the LLM reads "USE the tools" before
-  // it reads the data those tools operate on.
-  const payload = `${TOOL_GUIDANCE}\n${recallPayload}`;
-  const next = spliceManagedSection(existing, payload);
+  const recallPayload = block.trim()
+    ? `## O que você já sabe (snapshot das memórias mais importantes)\n\n${block}`
+    : "_(sem memórias ainda)_";
+  // Guidance first: the directive comes before the data it operates on.
+  const payload = `${renderMemoryGuidance()}\n${recallPayload}`;
 
-  if (next === existing) {
-    return {
-      workspace,
-      memoryFile,
-      memoriesInjected: memories.length,
-      bytesWritten: 0,
-      changed: false,
-    };
+  const result = await updateManagedBlock(
+    memoryFile,
+    AUTO_RECALL_BEGIN,
+    AUTO_RECALL_END,
+    () =>
+      `${AUTO_RECALL_BEGIN}\n## Auto-Recall (managed by AtlasDeck)\n_Atualizado em ${new Date().toISOString()}_\n\n${payload}\n${AUTO_RECALL_END}`,
+    { initialContent: "# MEMORY\n" },
+  );
+
+  if (result.changed) {
+    // Keep FTS index in sync
+    await indexFile(workspace, "MEMORY.md", memoryFile).catch(() => undefined);
   }
-
-  await fs.mkdir(path.dirname(memoryFile), { recursive: true });
-  await fs.writeFile(memoryFile, next, "utf-8");
-
-  // Keep FTS index in sync
-  await indexFile(workspace, "MEMORY.md", memoryFile);
 
   return {
     workspace,
     memoryFile,
     memoriesInjected: memories.length,
-    bytesWritten: Buffer.byteLength(next, "utf-8"),
-    changed: true,
+    bytesWritten: result.bytes,
+    changed: result.changed,
   };
 }
 
 /**
  * Inject across every workspace that has at least one memory PLUS
  * the canonical "workspace" (main agent). We always touch "workspace"
- * because the injected block also carries the tool-usage guidance —
- * the agent needs that on first boot even before any memory exists,
- * otherwise the LLM never calls the MCP tools and the store stays
- * empty forever.
+ * because the injected block also carries the memory guidance.
  */
 export async function injectAllWorkspaces(
   opts: InjectionOptions = {},
@@ -269,9 +169,7 @@ export async function injectAllWorkspaces(
     try {
       results.push(await injectIntoWorkspace(workspace, opts));
     } catch (err) {
-      if (process.env.MEMORY_DEBUG === "1") {
-        console.warn("[memory-injector] failed for", workspace, err);
-      }
+      console.warn("[memory-injector] failed for", workspace, err instanceof Error ? err.message : err);
     }
   }
   return results;

@@ -9,10 +9,10 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   listMemories,
   recordAccess,
-  searchSimilar,
+  type MemoryRow,
   type MemoryType,
 } from "@/lib/memory-db";
-import { embedTexts } from "@/lib/embeddings";
+import { searchHybrid } from "@/lib/memory-service";
 import { buildPromptBlock } from "@/lib/memory-extractor";
 
 export const runtime = "nodejs";
@@ -44,16 +44,10 @@ export async function POST(request: NextRequest) {
       .filter((t): t is MemoryType => VALID_TYPES.has(t as MemoryType));
   }
 
-  let semantic: ReturnType<typeof searchSimilar> = [];
+  let semantic: Array<{ memory: MemoryRow; score: number }> = [];
   if (query.length >= 2) {
     try {
-      const { vectors } = await embedTexts([query]);
-      semantic = searchSimilar(vectors[0], {
-        workspace,
-        type: types,
-        k: k * 2,
-        minScore: 0.25,
-      });
+      semantic = await searchHybrid(query, { workspace, type: types, k: k * 2 });
     } catch (err) {
       if (process.env.MEMORY_DEBUG === "1") {
         console.warn("[memory/recall] semantic search failed:", err);

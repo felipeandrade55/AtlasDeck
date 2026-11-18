@@ -14,6 +14,10 @@ import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
 import { randomUUID } from "crypto";
+import {
+  currentEmbeddingModelTag,
+  similarityThresholds,
+} from "@/lib/embedding-config";
 
 const DB_PATH = path.join(process.cwd(), "data", "memories.db");
 
@@ -109,6 +113,12 @@ export interface MemoryLinkRow {
 
 let _db: Database.Database | null = null;
 
+/** Shared handle for sibling modules that keep tables in memories.db
+ *  (entities, deliverables). Schema owned by each module. */
+export function getMemoriesDatabase(): Database.Database {
+  return getDb();
+}
+
 function getDb(): Database.Database {
   if (_db) return _db;
 
@@ -192,7 +202,116 @@ function getDb(): Database.Database {
       value TEXT NOT NULL,
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    -- Keyword half of the hybrid search. External-content FTS5 over the
+    -- memories table; diacritics folded so "configuração" matches
+    -- "configuracao". Update trigger only fires on text columns so the
+    -- hot access_count/last_accessed_at writes don't churn the index.
+    CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+      title, content, summary, tags,
+      content='memories',
+      content_rowid='rowid',
+      tokenize='unicode61 remove_diacritics 2'
+    );
+    CREATE TRIGGER IF NOT EXISTS memories_fts_insert AFTER INSERT ON memories
+    BEGIN
+      INSERT INTO memories_fts(rowid, title, content, summary, tags)
+        VALUES (new.rowid, new.title, new.content, COALESCE(new.summary, ''), COALESCE(new.tags, ''));
+    END;
+    CREATE TRIGGER IF NOT EXISTS memories_fts_delete AFTER DELETE ON memories
+    BEGIN
+      INSERT INTO memories_fts(memories_fts, rowid, title, content, summary, tags)
+        VALUES ('delete', old.rowid, old.title, old.content, COALESCE(old.summary, ''), COALESCE(old.tags, ''));
+    END;
+    CREATE TRIGGER IF NOT EXISTS memories_fts_update AFTER UPDATE OF title, content, summary, tags ON memories
+    BEGIN
+      INSERT INTO memories_fts(memories_fts, rowid, title, content, summary, tags)
+        VALUES ('delete', old.rowid, old.title, old.content, COALESCE(old.summary, ''), COALESCE(old.tags, ''));
+      INSERT INTO memories_fts(rowid, title, content, summary, tags)
+        VALUES (new.rowid, new.title, new.content, COALESCE(new.summary, ''), COALESCE(new.tags, ''));
+    END;
+
+    -- Every background job (extraction batch, re-embed, migration,
+    -- reflection) leaves a row here, so failures are visible in
+    -- /api/memory/health instead of vanishing behind MEMORY_DEBUG.
+    CREATE TABLE IF NOT EXISTS memory_jobs (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      status TEXT NOT NULL,
+      provider TEXT,
+      input_ref TEXT,
+      detail TEXT,
+      error TEXT,
+      started_at TEXT NOT NULL DEFAULT (datetime('now')),
+      finished_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_jobs_kind_started ON memory_jobs(kind, started_at DESC);
+
+    -- Raw LLM output of each extraction call. Later phases (entities,
+    -- preferences, deliverables) re-read this instead of paying the LLM
+    -- again for the same conversation.
+    CREATE TABLE IF NOT EXISTS extraction_runs (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT,
+      agent_id TEXT,
+      workspace TEXT,
+      from_rowid INTEGER,
+      to_rowid INTEGER,
+      provider TEXT,
+      output_json TEXT,
+      applied_ops INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_runs_thread ON extraction_runs(thread_id, created_at DESC);
+
+    -- What was injected into which conversation turn. Lets the recall
+    -- path avoid repeating the same nudge in one session and lets the
+    -- preference model reinforce what was actually used.
+    CREATE TABLE IF NOT EXISTS recall_log (
+      id TEXT PRIMARY KEY,
+      session_key TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      ref_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_recall_session ON recall_log(session_key, kind, ref_id);
+
+    -- Last transcript/session id seen per conversation key, to detect
+    -- "new session" (gateway reset, /new, watchdog rotation) and hand the
+    -- agent a continuity summary instead of an empty context.
+    CREATE TABLE IF NOT EXISTS turn_sessions (
+      session_key TEXT PRIMARY KEY,
+      session_id TEXT,
+      agent_id TEXT,
+      channel TEXT,
+      turns INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- Extraction cursor per chats.db thread (the canonical transcript
+    -- store: web chat, imported gateway sessions, plugin-captured turns).
+    CREATE TABLE IF NOT EXISTS chat_extraction_cursors (
+      thread_id TEXT PRIMARY KEY,
+      last_rowid INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'ok',
+      error TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
+
+  // One-time backfill of the FTS index for rows that predate it.
+  const ftsBuilt = _db
+    .prepare("SELECT value FROM memory_settings WHERE key = 'memories_fts_built_v1'")
+    .get() as { value: string } | undefined;
+  if (!ftsBuilt) {
+    _db.exec("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')");
+    _db
+      .prepare(
+        "INSERT OR REPLACE INTO memory_settings (key, value, updated_at) VALUES ('memories_fts_built_v1', 'true', datetime('now'))",
+      )
+      .run();
+  }
 
   // Forward-compat migration: add columns if upgrading from a previous schema
   const cols = _db
@@ -531,6 +650,12 @@ export interface SearchSimilarOptions {
   excludeIds?: string[];
   k?: number;
   minScore?: number;
+  /**
+   * Only compare against vectors produced by this model tag. Defaults to
+   * the current model; pass null to disable (debug only — vectors from
+   * different models share a dimension but not a space).
+   */
+  model?: string | null;
 }
 
 interface VectorScanRow {
@@ -557,6 +682,11 @@ export function searchSimilar(
   ];
   const params: unknown[] = [query.length];
 
+  const model = opts.model === undefined ? currentEmbeddingModelTag() : opts.model;
+  if (model) {
+    conditions.push("embedding_model = ?");
+    params.push(model);
+  }
   if (opts.workspace) {
     conditions.push("workspace = ?");
     params.push(opts.workspace);
@@ -690,7 +820,8 @@ export function getAllLinks(): MemoryLinkRow[] {
  * and left the graph as disconnected dust. We link the "related" band and
  * complement it with shared-tag edges so the graph reads like an Obsidian vault.
  */
-export const AUTO_LINK_MIN_SCORE = 0.5;
+/** Model-aware: 0.5 for MiniLM, ~0.85 for e5 (see embedding-config). */
+export const AUTO_LINK_MIN_SCORE = similarityThresholds().related;
 export const AUTO_LINK_K = 8;
 /** Tags shared by more than this many memories are too generic to link pairwise. */
 export const AUTO_LINK_MAX_TAG_FANOUT = 24;
@@ -1401,6 +1532,388 @@ export function archiveLowImportance(
     )
     .run(thresholdImportance, cutoff);
   return info.changes;
+}
+
+// ─── Keyword search (FTS5) ─────────────────────────────────────────────
+
+export interface FtsHit {
+  id: string;
+  /** bm25 rank: lower (more negative) = better. */
+  rank: number;
+}
+
+const FTS_STOPWORDS = new Set([
+  "a", "o", "as", "os", "um", "uma", "de", "da", "do", "das", "dos", "e", "é",
+  "em", "no", "na", "nos", "nas", "por", "pra", "para", "com", "que", "se",
+  "eu", "me", "meu", "minha", "você", "voce", "ele", "ela", "isso", "esse",
+  "essa", "este", "esta", "the", "and", "or", "to", "of", "in", "is", "it",
+  "qual", "quais", "como", "quando", "onde", "sobre", "mais", "muito",
+  "lembra", "sabe", "foi", "ser", "tem", "ter", "vai", "já", "ja", "não", "nao",
+]);
+
+/** Turn free text into a safe FTS5 OR-query of quoted prefix terms. */
+export function buildFtsQuery(text: string, maxTerms = 12): string | null {
+  const terms = (text.toLowerCase().match(/[\p{L}\p{N}#][\p{L}\p{N}#._-]*/gu) ?? [])
+    .map((t) => t.replace(/[._-]+$/g, ""))
+    .filter((t) => t.length >= 3 && !FTS_STOPWORDS.has(t));
+  const uniq = [...new Set(terms)].slice(0, maxTerms);
+  if (uniq.length === 0) return null;
+  return uniq.map((t) => `"${t.replace(/"/g, '""')}"*`).join(" OR ");
+}
+
+export function searchMemoriesFts(
+  text: string,
+  opts: { workspace?: string; archived?: boolean; limit?: number; type?: MemoryType | MemoryType[] } = {},
+): FtsHit[] {
+  const query = buildFtsQuery(text);
+  if (!query) return [];
+  const db = getDb();
+  const conditions = ["memories_fts MATCH ?"];
+  const params: unknown[] = [query];
+  if (opts.workspace) {
+    conditions.push("m.workspace = ?");
+    params.push(opts.workspace);
+  }
+  if (!opts.archived) conditions.push("m.archived = 0");
+  if (opts.type) {
+    const types = Array.isArray(opts.type) ? opts.type : [opts.type];
+    conditions.push(`m.type IN (${types.map(() => "?").join(",")})`);
+    params.push(...types);
+  }
+  try {
+    return db
+      .prepare(
+        `SELECT m.id AS id, bm25(memories_fts, 4.0, 1.0, 2.0, 1.5) AS rank
+         FROM memories_fts JOIN memories m ON m.rowid = memories_fts.rowid
+         WHERE ${conditions.join(" AND ")}
+         ORDER BY rank LIMIT ?`,
+      )
+      .all(...params, Math.min(Math.max(opts.limit ?? 30, 1), 200)) as FtsHit[];
+  } catch (err) {
+    if (process.env.MEMORY_DEBUG === "1") console.warn("[memory-db] fts query failed:", err);
+    return [];
+  }
+}
+
+export function getMemoriesByIds(ids: string[]): MemoryRow[] {
+  if (ids.length === 0) return [];
+  const db = getDb();
+  const rows = db
+    .prepare(`SELECT * FROM memories WHERE id IN (${ids.map(() => "?").join(",")})`)
+    .all(...ids) as Record<string, unknown>[];
+  const byId = new Map(rows.map((r) => [r.id as string, parseRow(r)]));
+  return ids.map((id) => byId.get(id)).filter((m): m is MemoryRow => Boolean(m));
+}
+
+/** Non-archived memories whose vector is missing or from another model. */
+export function listMemoriesNeedingEmbedding(limit = 50): MemoryRow[] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT * FROM memories
+       WHERE archived = 0 AND (embedding IS NULL OR embedding_model IS NULL OR embedding_model != ?)
+       ORDER BY pinned DESC, importance DESC
+       LIMIT ?`,
+    )
+    .all(currentEmbeddingModelTag(), limit) as Record<string, unknown>[];
+  return rows.map(parseRow);
+}
+
+export function countMemoriesNeedingEmbedding(): number {
+  const db = getDb();
+  return (db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM memories
+       WHERE archived = 0 AND (embedding IS NULL OR embedding_model IS NULL OR embedding_model != ?)`,
+    )
+    .get(currentEmbeddingModelTag()) as { n: number }).n;
+}
+
+/**
+ * Archive (never delete) the "Usuário pediu: …" rows the old heuristic
+ * fallback produced. They are paraphrases of requests, not facts, and
+ * they crowded real memories out of every recall block.
+ */
+export function archiveHeuristicExtractions(): number {
+  const db = getDb();
+  return db
+    .prepare(
+      `UPDATE memories SET archived = 1, updated_at = datetime('now')
+       WHERE archived = 0 AND pinned = 0 AND source = 'extraction'
+         AND (tags LIKE '%"heuristic"%' OR content LIKE 'Usuário pediu: %')`,
+    )
+    .run().changes;
+}
+
+// ─── Job log ───────────────────────────────────────────────────────────
+
+export type MemoryJobStatus = "running" | "ok" | "failed" | "skipped";
+
+export interface MemoryJobRow {
+  id: string;
+  kind: string;
+  status: MemoryJobStatus;
+  provider: string | null;
+  input_ref: string | null;
+  detail: string | null;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
+export function startJob(kind: string, inputRef?: string | null): string {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    `INSERT INTO memory_jobs (id, kind, status, input_ref, started_at) VALUES (?, ?, 'running', ?, ?)`,
+  ).run(id, kind, inputRef ?? null, new Date().toISOString());
+  return id;
+}
+
+export function finishJob(
+  id: string,
+  status: Exclude<MemoryJobStatus, "running">,
+  fields: { provider?: string | null; detail?: string | null; error?: string | null } = {},
+): void {
+  const db = getDb();
+  db.prepare(
+    `UPDATE memory_jobs SET status = ?, provider = ?, detail = ?, error = ?, finished_at = ? WHERE id = ?`,
+  ).run(
+    status,
+    fields.provider ?? null,
+    fields.detail ? fields.detail.slice(0, 2000) : null,
+    fields.error ? fields.error.slice(0, 2000) : null,
+    new Date().toISOString(),
+    id,
+  );
+  // Keep the log bounded.
+  db.prepare(
+    `DELETE FROM memory_jobs WHERE id IN (
+       SELECT id FROM memory_jobs ORDER BY started_at DESC LIMIT -1 OFFSET 2000
+     )`,
+  ).run();
+}
+
+export function listRecentJobs(opts: { kind?: string; limit?: number } = {}): MemoryJobRow[] {
+  const db = getDb();
+  const limit = Math.min(Math.max(opts.limit ?? 20, 1), 200);
+  const rows = opts.kind
+    ? db.prepare(`SELECT * FROM memory_jobs WHERE kind = ? ORDER BY started_at DESC LIMIT ?`).all(opts.kind, limit)
+    : db.prepare(`SELECT * FROM memory_jobs ORDER BY started_at DESC LIMIT ?`).all(limit);
+  return rows as MemoryJobRow[];
+}
+
+// ─── Extraction runs + chat cursors ────────────────────────────────────
+
+export function recordExtractionRun(run: {
+  thread_id: string;
+  agent_id: string;
+  workspace: string;
+  from_rowid: number;
+  to_rowid: number;
+  provider: string;
+  output: unknown;
+  applied_ops: number;
+}): string {
+  const db = getDb();
+  const id = randomUUID();
+  db.prepare(
+    `INSERT INTO extraction_runs (id, thread_id, agent_id, workspace, from_rowid, to_rowid, provider, output_json, applied_ops)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    run.thread_id,
+    run.agent_id,
+    run.workspace,
+    run.from_rowid,
+    run.to_rowid,
+    run.provider,
+    JSON.stringify(run.output ?? null),
+    run.applied_ops,
+  );
+  return id;
+}
+
+export interface ChatExtractionCursor {
+  thread_id: string;
+  last_rowid: number;
+  status: "ok" | "failed";
+  error: string | null;
+  attempts: number;
+  updated_at: string;
+}
+
+export function getChatCursor(threadId: string): ChatExtractionCursor | null {
+  const db = getDb();
+  const row = db
+    .prepare(`SELECT * FROM chat_extraction_cursors WHERE thread_id = ?`)
+    .get(threadId) as ChatExtractionCursor | undefined;
+  return row ?? null;
+}
+
+export function listChatCursors(): ChatExtractionCursor[] {
+  const db = getDb();
+  return db.prepare(`SELECT * FROM chat_extraction_cursors`).all() as ChatExtractionCursor[];
+}
+
+export function setChatCursor(
+  threadId: string,
+  lastRowid: number,
+  status: "ok" | "failed" = "ok",
+  error: string | null = null,
+): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO chat_extraction_cursors (thread_id, last_rowid, status, error, attempts, updated_at)
+     VALUES (?, ?, ?, ?, ?, datetime('now'))
+     ON CONFLICT(thread_id) DO UPDATE SET
+       last_rowid = excluded.last_rowid,
+       status = excluded.status,
+       error = excluded.error,
+       attempts = CASE WHEN excluded.status = 'failed' THEN chat_extraction_cursors.attempts + 1 ELSE 0 END,
+       updated_at = datetime('now')`,
+  ).run(threadId, lastRowid, status, error, status === "failed" ? 1 : 0);
+}
+
+// ─── Recall log + session tracking ─────────────────────────────────────
+
+export function logRecall(sessionKey: string, kind: string, refIds: string[]): void {
+  if (refIds.length === 0) return;
+  const db = getDb();
+  const stmt = db.prepare(`INSERT INTO recall_log (id, session_key, kind, ref_id) VALUES (?, ?, ?, ?)`);
+  const tx = db.transaction(() => {
+    for (const ref of refIds) stmt.run(randomUUID(), sessionKey, kind, ref);
+  });
+  tx();
+  // Bounded: keep ~30 days.
+  db.prepare(`DELETE FROM recall_log WHERE created_at < datetime('now', '-30 days')`).run();
+}
+
+export function wasRecalled(sessionKey: string, kind: string, refId: string, withinHours = 24): boolean {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT 1 FROM recall_log WHERE session_key = ? AND kind = ? AND ref_id = ?
+         AND created_at >= datetime('now', ?) LIMIT 1`,
+    )
+    .get(sessionKey, kind, refId, `-${Math.max(1, Math.round(withinHours))} hours`);
+  return Boolean(row);
+}
+
+/** Memory ids injected into a session (most recent first). */
+export function recalledIds(sessionKey: string, kind = "memory", limit = 50): string[] {
+  const db = getDb();
+  return (
+    db
+      .prepare(
+        `SELECT ref_id, MAX(created_at) AS at FROM recall_log WHERE session_key = ? AND kind = ?
+         GROUP BY ref_id ORDER BY at DESC LIMIT ?`,
+      )
+      .all(sessionKey, kind, limit) as Array<{ ref_id: string }>
+  ).map((r) => r.ref_id);
+}
+
+/**
+ * Record a turn for `sessionKey`. Returns true when this is the first
+ * turn of a new session (unseen key, or the transcript id changed).
+ */
+export function touchTurnSession(input: {
+  sessionKey: string;
+  sessionId?: string | null;
+  agentId?: string | null;
+  channel?: string | null;
+}): { isNewSession: boolean; turns: number } {
+  const db = getDb();
+  const row = db
+    .prepare(`SELECT session_id, turns FROM turn_sessions WHERE session_key = ?`)
+    .get(input.sessionKey) as { session_id: string | null; turns: number } | undefined;
+  const sessionId = input.sessionId ?? null;
+  const isNew = !row || (sessionId !== null && row.session_id !== null && row.session_id !== sessionId);
+  const turns = isNew ? 1 : (row?.turns ?? 0) + 1;
+  db.prepare(
+    `INSERT INTO turn_sessions (session_key, session_id, agent_id, channel, turns, updated_at)
+     VALUES (?, ?, ?, ?, ?, datetime('now'))
+     ON CONFLICT(session_key) DO UPDATE SET
+       session_id = COALESCE(excluded.session_id, turn_sessions.session_id),
+       agent_id = COALESCE(excluded.agent_id, turn_sessions.agent_id),
+       channel = COALESCE(excluded.channel, turn_sessions.channel),
+       turns = excluded.turns,
+       updated_at = datetime('now')`,
+  ).run(input.sessionKey, sessionId, input.agentId ?? null, input.channel ?? null, turns);
+  return { isNewSession: isNew, turns };
+}
+
+export interface SessionSummaryRow {
+  thread_id: string;
+  summary: string;
+  created_at: string;
+}
+
+/** Latest session summaries the extractor produced for an agent's conversations. */
+export function listRecentSessionSummaries(opts: {
+  agentId: string;
+  excludeThreadId?: string | null;
+  sinceDays?: number;
+  limit?: number;
+}): SessionSummaryRow[] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT thread_id, json_extract(output_json, '$.session_summary') AS summary, created_at
+       FROM extraction_runs
+       WHERE agent_id = ? AND COALESCE(thread_id, '') != COALESCE(?, '')
+         AND created_at >= datetime('now', ?)
+         AND json_valid(output_json)
+         AND COALESCE(json_extract(output_json, '$.session_summary'), '') != ''
+       ORDER BY created_at DESC
+       LIMIT ?`,
+    )
+    .all(
+      opts.agentId,
+      opts.excludeThreadId ?? null,
+      `-${Math.max(1, opts.sinceDays ?? 7)} days`,
+      Math.min(Math.max((opts.limit ?? 4) * 3, 1), 60),
+    ) as SessionSummaryRow[];
+  // One (latest) summary per thread.
+  const seen = new Set<string>();
+  const out: SessionSummaryRow[] = [];
+  for (const r of rows) {
+    if (seen.has(r.thread_id)) continue;
+    seen.add(r.thread_id);
+    out.push(r);
+    if (out.length >= (opts.limit ?? 4)) break;
+  }
+  return out;
+}
+
+export function getSettingValue(key: string): string | null {
+  const db = getDb();
+  const row = db.prepare("SELECT value FROM memory_settings WHERE key = ?").get(key) as
+    | { value: string }
+    | undefined;
+  return row?.value ?? null;
+}
+
+export function setSettingValue(key: string, value: string): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO memory_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
+  ).run(key, value);
+}
+
+/**
+ * Online backup of memories.db (better-sqlite3 backup API — safe while
+ * the DB is in use). Returns the backup path.
+ */
+export async function backupMemoriesDb(label: string): Promise<string> {
+  const db = getDb();
+  const dir = path.join(path.dirname(DB_PATH), "backups");
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const target = path.join(dir, `memories-${label}-${stamp}.db`);
+  await db.backup(target);
+  return target;
 }
 
 /**

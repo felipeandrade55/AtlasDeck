@@ -1,0 +1,22 @@
+{
+  "id": "atlasdeck-bridge",
+  "name": "AtlasDeck Memory Bridge",
+  "description": "Injects what AtlasDeck remembers into each turn and hands finished turns back to AtlasDeck so it can learn from every channel (Telegram, WhatsApp, web).",
+  "version": "0.1.0",
+  "activation": { "onStartup": true },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "baseUrl": { "type": "string", "description": "AtlasDeck base URL, e.g. http://127.0.0.1:3000" },
+      "token": { "type": "string", "description": "Service token (gateway.auth.token)" },
+      "timeoutMs": { "type": "number", "minimum": 300, "maximum": 10000 },
+      "ownerSenderIds": { "type": "array", "items": { "type": "string" }, "description": "If set, only these channel sender ids get memory context and capture." },
+      "allowGroups": { "type": "boolean" },
+      "channels": { "type": "array", "items": { "type": "string" }, "description": "Channels where the bridge is active (default: telegram). Third-party channels like WhatsApp assessor mode must stay out." },
+      "capture": { "type": "boolean" },
+      "inject": { "type": "boolean" },
+      "skipAgents": { "type": "array", "items": { "type": "string" } }
+    }
+  }
+}

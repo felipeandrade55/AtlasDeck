@@ -1,0 +1,11 @@
+{
+  "name": "atlasdeck-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AtlasDeck memory bridge for OpenClaw: per-turn memory context + turn capture on every channel.",
+  "type": "module",
+  "main": "./index.js",
+  "openclaw": {
+    "extensions": ["./index.js"]
+  }
+}

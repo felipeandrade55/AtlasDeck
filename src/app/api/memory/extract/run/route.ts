@@ -1,10 +1,14 @@
 /**
  * Manual extraction trigger.
  * POST /api/memory/extract/run
- * Body (optional): { maxSessions?, useLLM?, batchExchanges? }
+ * Body (optional): { maxBatches?, threadIds?: string[] }
+ *
+ * Runs immediately (ignores the idle/busy guards the scheduler uses).
  */
 import { NextRequest, NextResponse } from "next/server";
-import { extractRecentSessions } from "@/lib/memory-extractor";
+import { extractRecentConversations } from "@/lib/memory-extractor";
+import { runEngineV2Migration } from "@/lib/memory-scheduler";
+import { getOneShotStatus } from "@/lib/llm-oneshot";
 import { logActivity } from "@/lib/activities-db";
 
 export const runtime = "nodejs";
@@ -18,39 +22,27 @@ export async function POST(request: NextRequest) {
     // optional body
   }
 
-  const maxSessions = Math.min(
-    Math.max(Number(body.maxSessions) || 20, 1),
-    100,
-  );
-  const batchExchanges = Math.min(
-    Math.max(Number(body.batchExchanges) || 6, 1),
-    50,
-  );
-  const useLLM = body.useLLM === undefined ? true : Boolean(body.useLLM);
+  const maxBatches = Math.min(Math.max(Number(body.maxBatches) || 10, 1), 50);
+  const threadIds = Array.isArray(body.threadIds) ? body.threadIds.map(String) : undefined;
 
   const startedAt = Date.now();
   try {
-    const result = await extractRecentSessions({
-      maxSessions,
-      batchExchanges,
-      useLLM,
-    });
+    await runEngineV2Migration();
+    const result = await extractRecentConversations({ maxBatches, threadIds, force: true });
+    const changed = result.created + result.updated + result.superseded;
     try {
-      const r = result as { extracted?: number; linked?: number; sessionsProcessed?: number; errors?: number };
-      const extracted = r.extracted ?? 0;
       logActivity(
         "memory",
-        extracted > 0
-          ? `Extração de memória: ${extracted} nova(s) memória(s) de ${r.sessionsProcessed ?? 0} sessão(ões) (${useLLM ? "LLM" : "regras"})`
-          : `Extração de memória: nada novo a extrair`,
-        r.errors && r.errors > 0 ? "error" : "success",
-        {
-          duration_ms: Date.now() - startedAt,
-          metadata: { maxSessions, batchExchanges, useLLM, extracted, linked: r.linked, errors: r.errors },
-        }
+        changed > 0
+          ? `Extração de memória: +${result.created} nova(s), ${result.updated} atualizada(s), ${result.superseded} substituída(s)`
+          : result.failed > 0
+            ? `Extração de memória falhou em ${result.failed} lote(s)`
+            : `Extração de memória: nada novo a aprender`,
+        result.failed > 0 ? "error" : "success",
+        { duration_ms: Date.now() - startedAt, metadata: { ...result } },
       );
     } catch {}
-    return NextResponse.json({ success: true, ...result });
+    return NextResponse.json({ success: true, ...result, llm: getOneShotStatus() });
   } catch (err) {
     try {
       logActivity("memory", `Extração de memória falhou`, "error", {
@@ -60,7 +52,7 @@ export async function POST(request: NextRequest) {
     } catch {}
     console.error("[memory/extract/run] failed:", err);
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Extraction failed" },
+      { error: err instanceof Error ? err.message : "Extraction failed", llm: getOneShotStatus() },
       { status: 500 },
     );
   }

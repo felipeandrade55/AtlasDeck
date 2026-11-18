@@ -32,6 +32,32 @@ import { getOrchestrationSettings, isAutonomousFor } from "@/lib/orchestration-s
 import { getAgentMeta } from "@/lib/agents-meta";
 import { logActivity } from "@/lib/activities-db";
 import { sendTelegramAlert } from "@/lib/telegram";
+import { buildDelegationContextSafe } from "@/lib/delegation-context";
+import { findMentionedEntities, logDeliverable } from "@/lib/entity-db";
+import { detectCreationRequest } from "@/lib/reuse-context";
+
+/**
+ * Log a finished task as a deliverable when it looks like produced work
+ * (página, proposta, post…) — linked to the client named in the task.
+ */
+function recordTaskDeliverable(task: Task, output: string): void {
+  const text = `${task.title ?? ""}\n${task.prompt}`;
+  const creation = detectCreationRequest(text);
+  const clients = findMentionedEntities("workspace", text, ["client", "organization", "brand"]);
+  if (!creation?.kind && clients.length === 0) return;
+  if (!creation?.kind && !creation) return; // mentions a client but isn't producing anything
+  const url = output.match(/https?:\/\/[^\s)>\]]+/)?.[0] ?? null;
+  logDeliverable({
+    workspace: "workspace",
+    kind: creation?.kind ?? "outro",
+    title: (task.title || task.prompt).replace(/\s+/g, " ").trim().slice(0, 160),
+    clientEntityId: clients[0]?.id ?? null,
+    approach: output.replace(/\s+/g, " ").trim().slice(0, 600),
+    artifactUrl: url,
+    sourceTaskId: task.id,
+    outcome: "entregue",
+  });
+}
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -205,8 +231,12 @@ async function executeTask(task: Task): Promise<void> {
     // never re-delegate. The sub-agent has the same delegate_to/decompose MCP
     // tools as the orchestrator, so without this it can spawn a second task
     // (the confusing "two cards at once") and, worse, an unbounded chain.
+    // What AtlasDeck knows about the owner/clients named in the task
+    // (preferences, brand kits, relevant memories). Fail-open, bounded.
+    const knowledgeContext = await buildDelegationContextSafe({ agentId, prompt: task.prompt });
+
     const workerPrompt =
-      `${task.prompt}${depsContext}${feedbackContext}\n\n[atlas:worker] Você é um sub-agente especialista executando uma ` +
+      `${task.prompt}${knowledgeContext}${depsContext}${feedbackContext}\n\n[atlas:worker] Você é um sub-agente especialista executando uma ` +
       `tarefa que JÁ foi delegada a você. FAÇA o trabalho você mesmo e entregue o resultado ` +
       `aqui. NÃO chame delegate_to, decompose nem nenhuma ferramenta de delegação — você é o ` +
       `executor final, não o orquestrador. ` +
@@ -345,6 +375,16 @@ async function executeTask(task: Task): Promise<void> {
       agent_id: agentId,
       payload: { status: nextStatus, tokensIn, tokensOut },
     });
+
+    // Final deliverable → remember what was made, for whom and how, so a
+    // later request for another client can be offered this as a precedent.
+    if (ok && !isIntermediateStage) {
+      try {
+        recordTaskDeliverable(task, output);
+      } catch (e) {
+        console.warn("[task-worker] deliverable log failed:", e instanceof Error ? e.message : e);
+      }
+    }
     recordHeartbeat({ agent_id: agentId, state: "idle", current_task_id: null });
 
     // Telegram approval: when the FINAL deliverable lands in `review`, push

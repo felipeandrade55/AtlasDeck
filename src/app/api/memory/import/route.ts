@@ -41,9 +41,11 @@ function splitMarkdownSections(
   raw: string,
   fallbackTitle: string,
 ): CandidateSection[] {
-  // Strip ATLASDECK auto-managed regions — we never want to re-import them.
+  // Strip every ATLASDECK auto-managed region (auto-recall, orchestrator,
+  // agent prompt, instruction base, profile…) — generated text must never
+  // be re-imported as if the user had written it.
   const cleaned = raw.replace(
-    /<!-- BEGIN ATLASDECK AUTO-RECALL[\s\S]*?<!-- END ATLASDECK AUTO-RECALL -->/g,
+    /<!-- BEGIN ATLASDECK ([A-Z -]+?)\b[\s\S]*?<!-- END ATLASDECK \1 -->/g,
     "",
   );
 

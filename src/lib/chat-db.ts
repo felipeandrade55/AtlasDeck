@@ -620,3 +620,90 @@ export function getThreadStats(): ThreadStats {
 export function getChatDbPath(): string {
   return DB_PATH;
 }
+
+// ─── Memory extraction support ────────────────────────────────────────
+// chats.db is the canonical transcript store (web chat writes here
+// directly; gateway sessions are imported by the sessions bridge), so
+// the memory extractor reads from it instead of raw OpenClaw files.
+
+export interface ExtractionThreadRow {
+  id: string;
+  agent_id: string;
+  source: ChatSource;
+  title: string;
+  metadata: Record<string, unknown>;
+  last_rowid: number;
+  /** SQLite UTC timestamp "YYYY-MM-DD HH:MM:SS". */
+  last_message_at: string;
+}
+
+/** SQLite `datetime('now')` text (UTC, no zone) → epoch ms. */
+export function sqliteTimeToMs(value: string | null | undefined): number {
+  if (!value) return 0;
+  const iso = value.includes("T") ? value : `${value.replace(" ", "T")}Z`;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+/** epoch ms / ISO → SQLite UTC text, for comparisons against created_at. */
+export function toSqliteTime(value: number | string): string {
+  const d = typeof value === "number" ? new Date(value) : new Date(value);
+  return d.toISOString().replace("T", " ").slice(0, 19);
+}
+
+export function listThreadsForExtraction(opts: {
+  sources: ChatSource[];
+  /** Only threads with a message at/after this SQLite UTC time. */
+  activeSince?: string;
+  limit?: number;
+}): ExtractionThreadRow[] {
+  const db = getDb();
+  const params: unknown[] = [...opts.sources];
+  let having = "";
+  if (opts.activeSince) {
+    having = "HAVING last_message_at >= ?";
+    params.push(opts.activeSince);
+  }
+  params.push(Math.min(Math.max(opts.limit ?? 200, 1), 2000));
+  const rows = db
+    .prepare(
+      `SELECT t.id, t.agent_id, t.source, t.title, t.metadata,
+              MAX(m.rowid) AS last_rowid, MAX(m.created_at) AS last_message_at
+       FROM threads t JOIN messages m ON m.thread_id = t.id
+       WHERE t.source IN (${opts.sources.map(() => "?").join(",")})
+       GROUP BY t.id
+       ${having}
+       ORDER BY last_message_at DESC
+       LIMIT ?`,
+    )
+    .all(...params) as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    id: r.id as string,
+    agent_id: r.agent_id as string,
+    source: r.source as ChatSource,
+    title: r.title as string,
+    metadata: safeJson(r.metadata as string | null),
+    last_rowid: Number(r.last_rowid ?? 0),
+    last_message_at: (r.last_message_at as string) ?? "",
+  }));
+}
+
+export interface MessageWithRowid extends MessageRow {
+  rowid: number;
+}
+
+export function listMessagesAfterRowid(
+  threadId: string,
+  afterRowid: number,
+  limit = 200,
+): MessageWithRowid[] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT rowid AS rowid, * FROM messages
+       WHERE thread_id = ? AND rowid > ?
+       ORDER BY rowid ASC LIMIT ?`,
+    )
+    .all(threadId, afterRowid, Math.min(Math.max(limit, 1), 2000)) as Record<string, unknown>[];
+  return rows.map((r) => ({ ...parseMessage(r), rowid: Number(r.rowid) }));
+}

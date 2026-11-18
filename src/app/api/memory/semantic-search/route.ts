@@ -8,7 +8,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { searchSimilar, type MemoryType } from "@/lib/memory-db";
-import { embedTexts } from "@/lib/embeddings";
+import { embedQuery } from "@/lib/embeddings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -48,12 +48,13 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const { vectors } = await embedTexts([query]);
-    const hits = searchSimilar(vectors[0], {
+    const q = await embedQuery(query);
+    const hits = searchSimilar(q.vector, {
       workspace,
       type,
       k,
       minScore: Number.isFinite(minScore) ? minScore : 0,
+      model: q.model,
     });
     return NextResponse.json({
       results: hits.map((h) => ({

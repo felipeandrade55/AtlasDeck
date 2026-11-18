@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { Database, Download, Play, RefreshCw, Settings as SettingsIcon, Zap } from "lucide-react";
 import { useToast } from "@/components/Toast";
-import { ExtractorPanel, type ExtractorProvider } from "@/components/memory/ExtractorPanel";
+import { type ExtractorProvider } from "@/components/memory/ExtractorPanel";
 
 interface SettingsState {
   embedding_provider: string;
@@ -183,8 +183,8 @@ export function MemorySettings() {
           </h3>
           <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
             <ToggleRow
-              label="Extração automática de sessões"
-              hint="A cada 15 minutos, lê novos JSONLs e cria memórias."
+              label="Aprendizado automático das conversas"
+              hint="Cerca de 90s depois de cada conversa (web e Telegram), extrai fatos, preferências, clientes e entregas."
               value={settings.extraction_enabled}
               onChange={(v) => patch({ extraction_enabled: v })}
             />
@@ -197,11 +197,18 @@ export function MemorySettings() {
           </div>
         </section>
 
-        <ExtractorPanel
-          provider={settings.extractor_provider}
-          ollamaModel={settings.ollama_model}
-          onSettingsChange={patch}
-        />
+        <section style={cardStyle}>
+          <h3 style={sectionTitleStyle}>Extrator de memórias (LLM)</h3>
+          <p style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 8, lineHeight: 1.5 }}>
+            Usa o <strong>modelo da sua assinatura no OpenClaw</strong> (chamada única via{" "}
+            <code>openclaw infer</code>, sem ferramentas e sem passar pela conversa do bot), uma chamada por vez e só
+            quando o bot está ocioso. Não usa Ollama nem API key paga separada, e não grava mais memórias
+            &quot;heurísticas&quot; — se o modelo estiver indisponível, as conversas ficam na fila e são processadas depois.
+          </p>
+          <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6 }}>
+            Status, últimos lotes e tudo o que foi aprendido: aba <strong>Aprendizado</strong>.
+          </p>
+        </section>
 
         <section style={cardStyle}>
           <h3 style={sectionTitleStyle}>Esquecimento</h3>

@@ -1,27 +1,35 @@
 /**
  * Pluggable embedding provider.
  *
- * Default: Xenova/all-MiniLM-L6-v2 running locally via
- * @xenova/transformers. No API key, no network calls after the
- * initial ~30MB model download (cached at data/models/).
+ * Default: Xenova/multilingual-e5-small running locally via
+ * @xenova/transformers (quantized ONNX). No API key, no network calls
+ * after the initial model download (cached at data/models/).
  *
  * The module is intentionally lazy: nothing is loaded until the first
  * embed() call, so the app boots and serves UI even if the model
  * hasn't been pre-downloaded.
  *
- * Future providers (OpenAI, Voyage, Cohere, Ollama) plug in by
- * implementing EmbeddingProvider and registering in `resolveProvider`.
+ * Only ONE pipeline instance per process: concurrent first calls share
+ * the same in-flight load (the VPS has little RAM; two copies of the
+ * model is exactly how we got OOM-killed before).
  */
 import path from "path";
 import { checkIsCostLocked } from "@/lib/usage-queries";
 import { initDatabase } from "@/lib/usage-collector";
+import {
+  DEFAULT_EMBEDDING_MODEL,
+  DEFAULT_EMBEDDING_PROVIDER,
+  embeddingModelTag,
+  usesE5Prefixes,
+  type EmbeddingKind,
+} from "@/lib/embedding-config";
 
 export interface EmbeddingProvider {
   id: string;
   modelId: string;
   dim: number;
   isLocal: boolean;
-  embed(texts: string[]): Promise<Float32Array[]>;
+  embed(texts: string[], kind?: EmbeddingKind): Promise<Float32Array[]>;
   ready(): Promise<boolean>;
 }
 
@@ -29,11 +37,12 @@ const MODEL_CACHE_DIR = path.join(process.cwd(), "data", "models");
 
 const COST_DB_PATH = path.join(process.cwd(), "data", "usage-tracking.db");
 
-let _xenovaProvider: EmbeddingProvider | null = null;
+/** e5 truncates at 512 tokens; keep inputs well under that. */
+const MAX_INPUT_CHARS = 1800;
 
-async function buildXenovaProvider(
-  modelId = "Xenova/all-MiniLM-L6-v2",
-): Promise<EmbeddingProvider> {
+const _xenovaProviders = new Map<string, Promise<EmbeddingProvider>>();
+
+async function buildXenovaProvider(modelId: string): Promise<EmbeddingProvider> {
   // Lazy-import only when needed so a fresh install can boot without the
   // model being available yet.
   type TransformersModule = {
@@ -41,6 +50,7 @@ async function buildXenovaProvider(
     pipeline: (
       task: string,
       modelId: string,
+      options?: { quantized?: boolean },
     ) => Promise<
       (input: string, options: { pooling: string; normalize: boolean }) => Promise<{
         data: Float32Array | number[];
@@ -53,10 +63,16 @@ async function buildXenovaProvider(
   mod.env.allowLocalModels = true;
   mod.env.cacheDir = MODEL_CACHE_DIR;
 
-  const extractor = await mod.pipeline("feature-extraction", modelId);
+  const extractor = await mod.pipeline("feature-extraction", modelId, { quantized: true });
+  const e5 = usesE5Prefixes(modelId);
+
+  const prepare = (text: string, kind: EmbeddingKind): string => {
+    const safe = (text || "").replace(/\s+/g, " ").trim().slice(0, MAX_INPUT_CHARS) || " ";
+    return e5 ? `${kind}: ${safe}` : safe;
+  };
 
   // Detect dimensionality from a probe.
-  const probe = await extractor("dimension probe", {
+  const probe = await extractor(prepare("dimension probe", "passage"), {
     pooling: "mean",
     normalize: true,
   });
@@ -70,11 +86,10 @@ async function buildXenovaProvider(
     modelId,
     dim,
     isLocal: true,
-    async embed(texts: string[]) {
+    async embed(texts: string[], kind: EmbeddingKind = "passage") {
       const out: Float32Array[] = [];
       for (const t of texts) {
-        const safe = (t || "").trim() || " ";
-        const result = await extractor(safe, {
+        const result = await extractor(prepare(t, kind), {
           pooling: "mean",
           normalize: true,
         });
@@ -94,11 +109,15 @@ async function buildXenovaProvider(
 
 async function resolveProvider(providerId: string, modelId?: string): Promise<EmbeddingProvider> {
   if (providerId === "xenova") {
-    if (_xenovaProvider && (!modelId || _xenovaProvider.modelId === modelId)) {
-      return _xenovaProvider;
+    const id = modelId || DEFAULT_EMBEDDING_MODEL;
+    let pending = _xenovaProviders.get(id);
+    if (!pending) {
+      pending = buildXenovaProvider(id);
+      _xenovaProviders.set(id, pending);
+      // A failed load must not poison the cache forever.
+      pending.catch(() => _xenovaProviders.delete(id));
     }
-    _xenovaProvider = await buildXenovaProvider(modelId);
-    return _xenovaProvider;
+    return pending;
   }
   throw new Error(`Unknown embedding provider: ${providerId}`);
 }
@@ -106,36 +125,54 @@ async function resolveProvider(providerId: string, modelId?: string): Promise<Em
 /**
  * Public entrypoint. Resolves the configured provider, applies cost
  * gating for paid providers, embeds, returns the vectors.
+ *
+ * `kind` matters for e5 models: stored memories are "passage", search
+ * queries are "query". Defaults to passage (what most callers store).
  */
 export async function embedTexts(
   texts: string[],
-  providerId = "xenova",
+  providerId = DEFAULT_EMBEDDING_PROVIDER,
   modelId?: string,
+  kind: EmbeddingKind = "passage",
 ): Promise<{ vectors: Float32Array[]; provider: EmbeddingProvider }> {
   const provider = await resolveProvider(providerId, modelId);
 
   if (!provider.isLocal) {
+    const db = initDatabase(COST_DB_PATH);
     try {
-      const db = initDatabase(COST_DB_PATH);
-      try {
-        if (checkIsCostLocked(db)) {
-          throw new Error("Cost lock active — paid embeddings blocked");
-        }
-      } finally {
-        db.close();
+      if (checkIsCostLocked(db)) {
+        throw new Error("Cost lock active — paid embeddings blocked");
       }
-    } catch (err) {
-      // If cost DB is unavailable, fail closed for paid providers
-      throw err;
+    } finally {
+      db.close();
     }
   }
 
-  const vectors = await provider.embed(texts);
+  const vectors = await provider.embed(texts, kind);
   return { vectors, provider };
 }
 
+export interface EmbeddedVector {
+  vector: Float32Array;
+  /** `${provider}:${model}` — what gets stored in memories.embedding_model. */
+  model: string;
+  dim: number;
+}
+
+/** Embed one search query (uses the "query: " prefix on e5 models). */
+export async function embedQuery(text: string): Promise<EmbeddedVector> {
+  const { vectors, provider } = await embedTexts([text], DEFAULT_EMBEDDING_PROVIDER, undefined, "query");
+  return { vector: vectors[0], model: embeddingModelTag(provider.id, provider.modelId), dim: provider.dim };
+}
+
+/** Embed one document/memory body for storage. */
+export async function embedPassage(text: string): Promise<EmbeddedVector> {
+  const { vectors, provider } = await embedTexts([text], DEFAULT_EMBEDDING_PROVIDER, undefined, "passage");
+  return { vector: vectors[0], model: embeddingModelTag(provider.id, provider.modelId), dim: provider.dim };
+}
+
 export async function getProvider(
-  providerId = "xenova",
+  providerId = DEFAULT_EMBEDDING_PROVIDER,
   modelId?: string,
 ): Promise<EmbeddingProvider> {
   return resolveProvider(providerId, modelId);
@@ -146,7 +183,7 @@ export async function getProvider(
  * doesn't have @xenova/transformers installed yet. Used by the
  * scheduler to skip extraction silently rather than crashing.
  */
-export async function isEmbeddingReady(providerId = "xenova"): Promise<boolean> {
+export async function isEmbeddingReady(providerId = DEFAULT_EMBEDDING_PROVIDER): Promise<boolean> {
   try {
     await resolveProvider(providerId);
     return true;

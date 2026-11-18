@@ -23,6 +23,7 @@ import {
   resolveOpenClawAgentsConfigPath,
 } from "@/lib/openclaw-config";
 import { parseOpenClawConfig } from "@/lib/openclaw-agents-compat";
+import { renderAgentsMemorySection } from "@/lib/memory-guidance";
 
 export const INSTRUCTION_MANAGED_FILES = [
   "AGENTS.md",
@@ -118,10 +119,7 @@ function buildAgentsBase(ch: ChannelContext, agentName: string): string {
     "## Início de sessão",
     "Use o contexto de startup já fornecido pelo runtime (este arquivo, SOUL.md, USER.md, IDENTITY.md, MEMORY.md e a memória diária). **Não releia esses arquivos** a menos que: (1) o usuário peça, (2) falte algo no contexto fornecido, ou (3) precise de um aprofundamento específico.",
     "",
-    "## Memória",
-    "- **Diário:** `memory/AAAA-MM-DD.md` — log cru do que aconteceu.",
-    "- **Longo prazo:** `MEMORY.md` — memória curada. **Só carregue/edite na sessão principal**; nunca em contexto compartilhado, por segurança.",
-    '- Quer lembrar de algo? **Escreva no arquivo.** "Nota mental" não sobrevive ao restart. Texto > cérebro.',
+    ...renderAgentsMemorySection(),
     "",
     "## Linhas vermelhas",
     "- Nunca exfiltre dados privados.",

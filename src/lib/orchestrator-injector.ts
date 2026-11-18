@@ -11,7 +11,6 @@
  * Idempotent. Safe to call on a cron + after any orchestration mutation
  * (new task delegated, agent created, settings changed).
  */
-import { promises as fs } from "fs";
 import fsSync from "fs";
 import path from "path";
 import { OPENCLAW_DIR } from "@/lib/paths";
@@ -24,6 +23,7 @@ import { DELEGATION_TOOL_NAMES, renderToolDocs, TOOL_DEFINITIONS } from "@/lib/o
 import { canDelegateTo, getDelegationPool } from "@/lib/delegation-pool";
 import { listEventsInRange } from "@/lib/calendar-db";
 import { listMemories } from "@/lib/memory-db";
+import { updateManagedBlock } from "@/lib/managed-markdown";
 
 const BEGIN = "<!-- BEGIN ATLASDECK ORCHESTRATOR — do not edit; this section regenerates -->";
 const END = "<!-- END ATLASDECK ORCHESTRATOR -->";
@@ -72,18 +72,8 @@ function resolveWorkspaceAbsPath(workspace: string): string {
   return path.join(process.cwd(), "data", "dev-workspaces", stripped);
 }
 
-function splice(existing: string, payload: string): string {
-  const beginIdx = existing.indexOf(BEGIN);
-  const endIdx = existing.indexOf(END);
-  const block = `${BEGIN}\n## Orchestrator (managed by AtlasDeck)\n_Atualizado em ${new Date().toISOString()}_\n\n${payload}\n${END}`;
-
-  if (beginIdx !== -1 && endIdx !== -1 && endIdx > beginIdx) {
-    const before = existing.slice(0, beginIdx).trimEnd();
-    const after = existing.slice(endIdx + END.length).trimStart();
-    return [before, block, after].filter(Boolean).join("\n\n").trim() + "\n";
-  }
-  const base = existing.trimEnd();
-  return base ? `${base}\n\n${block}\n` : `${block}\n`;
+function orchestratorBlock(payload: string): string {
+  return `${BEGIN}\n## Orchestrator (managed by AtlasDeck)\n_Atualizado em ${new Date().toISOString()}_\n\n${payload}\n${END}`;
 }
 
 function buildPayload(
@@ -234,7 +224,7 @@ function buildPayload(
         `{ "parent_prompt": "pesquisar top 20 AS do Brasil e publicar página web", "subtasks": [`,
         `  { "agent_id": "pesquisador", "task": "Pesquisar e rankear os top 20 AS do Brasil com fontes" },`,
         `  { "agent_id": "escritor", "task": "Transformar a pesquisa em texto editorial pt-BR", "depends_on": ["0"] },`,
-        `  { "agent_id": "dev", "task": "Construir a página web com o texto, branding Layer7", "depends_on": ["1"] },`,
+        `  { "agent_id": "dev", "task": "Construir a página web com o texto, usando a identidade visual do cliente", "depends_on": ["1"] },`,
         `  { "agent_id": "revisor", "task": "Revisar a página publicada e apontar correções", "depends_on": ["2"] }`,
         `] }`,
         "```",
@@ -351,53 +341,37 @@ export async function injectOrchestratorContext(
   }
 
   const memoryFile = path.join(wsAbs, "MEMORY.md");
-
-  let existing = "";
-  try {
-    existing = await fs.readFile(memoryFile, "utf-8");
-  } catch {
-    existing = "# MEMORY\n";
-  }
-
   const payload = buildPayload(orchestrator, peers);
-  const next = splice(existing, payload);
-
-  if (next === existing) {
-    return { agent_id: orchestrator.id, memory_file: memoryFile, bytes_written: 0, changed: false };
-  }
-  await fs.writeFile(memoryFile, next, "utf-8");
+  // The timestamp line changes every run; compare without it so an
+  // unchanged payload doesn't rewrite the file every 10 minutes.
+  const stripStamp = (s: string) => s.replace(/_Atualizado em [^_]+_/g, "");
+  const result = await updateManagedBlock(
+    memoryFile,
+    BEGIN,
+    END,
+    (existing) => {
+      const next = orchestratorBlock(payload);
+      const begin = existing.indexOf(BEGIN);
+      const end = existing.indexOf(END);
+      if (begin !== -1 && end > begin) {
+        const current = existing.slice(begin, end + END.length);
+        if (stripStamp(current) === stripStamp(next)) return current;
+      }
+      return next;
+    },
+    { initialContent: "# MEMORY\n" },
+  );
   return {
     agent_id: orchestrator.id,
     memory_file: memoryFile,
-    bytes_written: Buffer.byteLength(next, "utf-8"),
-    changed: true,
+    bytes_written: result.bytes,
+    changed: result.changed,
   };
 }
 
 const PROMPT_BEGIN = "<!-- BEGIN ATLASDECK AGENT PROMPT — do not edit; regenerates on save -->";
 const PROMPT_END = "<!-- END ATLASDECK AGENT PROMPT -->";
 
-function splicePrompt(existing: string, systemPrompt: string): string {
-  const block = `${PROMPT_BEGIN}\n## Instruções do Agente\n\n${systemPrompt.trim()}\n${PROMPT_END}`;
-  const beginIdx = existing.indexOf(PROMPT_BEGIN);
-  const endIdx = existing.indexOf(PROMPT_END);
-  if (beginIdx !== -1 && endIdx !== -1 && endIdx > beginIdx) {
-    const before = existing.slice(0, beginIdx).trimEnd();
-    const after = existing.slice(endIdx + PROMPT_END.length).trimStart();
-    return [before, block, after].filter(Boolean).join("\n\n").trim() + "\n";
-  }
-  const base = existing.trimEnd();
-  return base ? `${base}\n\n${block}\n` : `${block}\n`;
-}
-
-function removePromptSection(existing: string): string {
-  const beginIdx = existing.indexOf(PROMPT_BEGIN);
-  const endIdx = existing.indexOf(PROMPT_END);
-  if (beginIdx === -1 || endIdx === -1 || endIdx <= beginIdx) return existing;
-  const before = existing.slice(0, beginIdx).trimEnd();
-  const after = existing.slice(endIdx + PROMPT_END.length).trimStart();
-  return [before, after].filter(Boolean).join("\n\n").trim() + "\n";
-}
 
 /**
  * Writes (or removes) the custom system_prompt section in a specialist
@@ -422,18 +396,17 @@ export async function injectAgentSystemPrompt(
   }
 
   const memoryFile = path.join(wsAbs, "MEMORY.md");
-  let existing = "";
-  try { existing = await fs.readFile(memoryFile, "utf-8"); } catch { existing = "# MEMORY\n"; }
-
-  const next = systemPrompt?.trim()
-    ? splicePrompt(existing, systemPrompt)
-    : removePromptSection(existing);
-
-  if (next === existing) {
-    return { agent_id: agent.id, memory_file: memoryFile, bytes_written: 0, changed: false };
-  }
-  await fs.writeFile(memoryFile, next, "utf-8");
-  return { agent_id: agent.id, memory_file: memoryFile, bytes_written: Buffer.byteLength(next, "utf-8"), changed: true };
+  const result = await updateManagedBlock(
+    memoryFile,
+    PROMPT_BEGIN,
+    PROMPT_END,
+    () =>
+      systemPrompt?.trim()
+        ? `${PROMPT_BEGIN}\n## Instruções do Agente\n\n${systemPrompt.trim()}\n${PROMPT_END}`
+        : null,
+    { initialContent: "# MEMORY\n" },
+  );
+  return { agent_id: agent.id, memory_file: memoryFile, bytes_written: result.bytes, changed: result.changed };
 }
 
 /**
