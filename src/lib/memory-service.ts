@@ -135,18 +135,27 @@ export async function searchHybrid(query: string, opts: HybridSearchOptions = {}
   const ids = new Set<string>([...vecRank.keys(), ...ftsRank.keys()]);
   const candidates = getMemoriesByIds([...ids].filter((id) => !exclude.has(id)));
 
+  // Relative floor: within `margin` of the best hit, never below `relevant`.
+  let topCos = -1;
+  for (const c of cosById.values()) if (c > topCos) topCos = c;
+  const floor = Math.max(th.relevant, topCos - th.margin);
+
   const out: HybridHit[] = [];
   for (const memory of candidates) {
     const cos = cosById.get(memory.id) ?? null;
     const keyword = ftsRank.has(memory.id);
     if (relevantOnly) {
       const hasCurrentVector = memory.embedding_model === (vector?.model ?? currentEmbeddingModelTag());
-      const semanticOk = cos !== null && cos >= th.relevant;
-      // Keyword-only matches are trusted when we can't judge semantically
-      // (no query vector, or memory not yet re-embedded), or when the
-      // semantic score is close to the floor.
-      const keywordOk =
-        keyword && (!vector || !hasCurrentVector || (cos !== null && cos >= th.relevant - 0.05));
+      const semanticOk = cos !== null && cos >= floor;
+      // A shared word ("cliente") is weak evidence: it only rescues a hit
+      // that is semantically right at the floor, or one we can't judge
+      // semantically at all (no query vector / memory not re-embedded yet,
+      // and then only the strongest keyword matches).
+      const keywordOk = keyword
+        ? vector && hasCurrentVector
+          ? cos !== null && cos >= floor - 0.005
+          : (ftsRank.get(memory.id) ?? 99) < 3
+        : false;
       if (!semanticOk && !keywordOk) continue;
     }
     let rrf = 0;

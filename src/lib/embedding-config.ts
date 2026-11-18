@@ -41,6 +41,8 @@ export function usesE5Prefixes(model: string): boolean {
 export interface SimilarityThresholds {
   /** Minimum cosine for a hit to count as relevant to a query. */
   relevant: number;
+  /** Hits must also be within this distance of the query's best hit. */
+  margin: number;
   /** Cosine above which two memories are linked as "related". */
   related: number;
   /** Cosine above which two memories are considered the same fact. */
@@ -58,16 +60,21 @@ function envFloat(name: string): number | null {
  * Starting points, not gospel: tune per deployment with the
  * ATLAS_SIM_* env vars after looking at real recall logs.
  *
- * Measured with multilingual-e5-small on PT-BR (test suite):
- *   paraphrase of a stored fact ("cores da marca" ↔ "azul #123456…") 0.85–0.90
- *   unrelated query ("receita de bolo") vs the same memories         ~0.82
+ * Measured with multilingual-e5-small on PT-BR, production store (~570
+ * memories, nov/2026):
+ *   relevant hit ("post pro cliente Teste Azul" ↔ its brand memory) 0.874–0.876
+ *   unrelated memories sharing a word like "cliente"/"teste"        0.836–0.848
+ *   paraphrase in a small store ("como formatar respostas")          ~0.849
+ * e5 compresses scores, so an absolute floor alone lets noise in; a
+ * relative margin against the query's best hit does the real filtering.
  */
 export function similarityThresholds(modelTag = currentEmbeddingModelTag()): SimilarityThresholds {
   const base: SimilarityThresholds = usesE5Prefixes(modelTag)
-    ? { relevant: 0.83, related: 0.86, duplicate: 0.93 }
-    : { relevant: 0.35, related: 0.5, duplicate: 0.9 };
+    ? { relevant: 0.845, margin: 0.02, related: 0.86, duplicate: 0.93 }
+    : { relevant: 0.35, margin: 0.15, related: 0.5, duplicate: 0.9 };
   return {
     relevant: envFloat("ATLAS_SIM_RELEVANT") ?? base.relevant,
+    margin: envFloat("ATLAS_SIM_MARGIN") ?? base.margin,
     related: envFloat("ATLAS_SIM_RELATED") ?? base.related,
     duplicate: envFloat("ATLAS_SIM_DUPLICATE") ?? base.duplicate,
   };
